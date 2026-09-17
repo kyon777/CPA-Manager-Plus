@@ -263,6 +263,9 @@ export function CodexInspectionResultsPanel({
                 })?.shortLabel;
                 const inspectionAccountNote =
                   typeof item.raw.note === 'string' ? item.raw.note.trim() : '';
+                const inspectionAccountNoteLabel = inspectionAccountNote
+                  ? `${t('monitoring.codex_inspection_account_note_label')}: ${inspectionAccountNote}`
+                  : '';
                 const quotaWindows = item.quotaWindows ?? [];
                 const errorText = item.errorDetail || item.error;
                 const errorSummary = summarizeInspectionError(item, t, {
@@ -329,10 +332,10 @@ export function CodexInspectionResultsPanel({
                         {inspectionAccountNote ? (
                           <span
                             className={styles.noteBadge}
-                            title={inspectionAccountNote}
+                            title={inspectionAccountNoteLabel}
                             data-inspection-account-note
                           >
-                            {inspectionAccountNote}
+                            {inspectionAccountNoteLabel}
                           </span>
                         ) : null}
                       </div>

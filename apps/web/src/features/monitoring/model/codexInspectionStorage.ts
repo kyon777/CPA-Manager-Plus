@@ -112,7 +112,9 @@ const normalizeStoredSettings = (value: unknown): CodexInspectionSettings => {
   };
 };
 
-type StoredCodexInspectionResultItem = Omit<CodexInspectionResultItem, 'raw'>;
+type StoredCodexInspectionResultItem = Omit<CodexInspectionResultItem, 'raw'> & {
+  note?: string;
+};
 
 const normalizeQuotaWindowLabelParams = (
   value: unknown
@@ -291,32 +293,36 @@ const hydrateQuotaWindow = (value: unknown): CodexInspectionQuotaWindow | null =
 
 const serializeResultItemForStorage = (
   item: CodexInspectionResultItem
-): StoredCodexInspectionResultItem => ({
-  key: item.key,
-  fileName: item.fileName,
-  displayAccount: item.displayAccount,
-  accountSnapshot: readNullableString(item.accountSnapshot),
-  authIndex: item.authIndex,
-  accountId: null,
-  provider: item.provider,
-  disabled: item.disabled,
-  autoRecoverOwned: item.autoRecoverOwned,
-  status: item.status,
-  state: item.state,
-  action: item.action,
-  actionReason: item.actionReason,
-  statusCode: item.statusCode,
-  usedPercent: item.usedPercent,
-  isQuota: item.isQuota,
-  autoRecoverEligible: item.autoRecoverEligible,
-  error: item.error,
-  planType: readNullableString(item.planType),
-  quotaWindows: (item.quotaWindows ?? []).map(serializeQuotaWindow),
-  quotaInventoryObserved: item.quotaInventoryObserved === true,
-  errorKind: readString(item.errorKind),
-  errorDetail: sanitizeStoredText(item.errorDetail),
-  actionHandled: item.actionHandled === true,
-});
+): StoredCodexInspectionResultItem => {
+  const note = readString(item.raw.note);
+  return {
+    key: item.key,
+    fileName: item.fileName,
+    displayAccount: item.displayAccount,
+    accountSnapshot: readNullableString(item.accountSnapshot),
+    authIndex: item.authIndex,
+    accountId: null,
+    provider: item.provider,
+    disabled: item.disabled,
+    autoRecoverOwned: item.autoRecoverOwned,
+    status: item.status,
+    state: item.state,
+    action: item.action,
+    actionReason: item.actionReason,
+    statusCode: item.statusCode,
+    usedPercent: item.usedPercent,
+    isQuota: item.isQuota,
+    autoRecoverEligible: item.autoRecoverEligible,
+    error: item.error,
+    planType: readNullableString(item.planType),
+    quotaWindows: (item.quotaWindows ?? []).map(serializeQuotaWindow),
+    quotaInventoryObserved: item.quotaInventoryObserved === true,
+    errorKind: readString(item.errorKind),
+    errorDetail: sanitizeStoredText(item.errorDetail),
+    actionHandled: item.actionHandled === true,
+    ...(note ? { note } : {}),
+  };
+};
 
 const hydrateStoredResultItem = (
   value: unknown,
@@ -330,6 +336,7 @@ const hydrateStoredResultItem = (
   const provider = readString(value.provider) || settings.targetType;
   const disabled = readBoolean(value.disabled, false);
   const key = readString(value.key) || `${fileName}::${authIndex || '-'}`;
+  const note = readString(value.note);
 
   return {
     key,
@@ -348,6 +355,7 @@ const hydrateStoredResultItem = (
       type: provider,
       authIndex,
       disabled,
+      ...(note ? { note } : {}),
     },
     action: normalizeInspectionAction(value.action),
     actionReason: readString(value.actionReason),

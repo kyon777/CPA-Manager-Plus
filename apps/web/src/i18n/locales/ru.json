@@ -2790,6 +2790,7 @@
     "codex_inspection_log_execution_failed": "Обработка аккаунтов неожиданно остановлена: {{message}}",
     "codex_inspection_results_title": "Результаты проверки",
     "codex_inspection_results_desc": "Показывает состояние учётных данных, ошибки здоровья и предлагаемые действия. Поддерживает пакетное и построчное выполнение.",
+    "codex_inspection_account_note_label": "Заметка",
     "codex_inspection_copy_current_page_accounts": "Копировать аккаунты текущей страницы",
     "codex_inspection_accounts_copied": "Аккаунты текущей страницы скопированы в буфер обмена",
     "codex_inspection_accounts_copy_failed": "Не удалось скопировать аккаунты текущей страницы",

@@ -2786,6 +2786,7 @@
     "codex_inspection_log_execution_failed": "帳號處理發生非預期錯誤並已終止：{{message}}",
     "codex_inspection_results_title": "巡檢結果",
     "codex_inspection_results_desc": "彙總憑證狀態、健康錯誤與下一步建議動作，支援批次執行或逐條手動執行。",
+    "codex_inspection_account_note_label": "備註",
     "codex_inspection_copy_current_page_accounts": "複製目前頁面帳號",
     "codex_inspection_accounts_copied": "目前頁面帳號已複製到剪貼簿",
     "codex_inspection_accounts_copy_failed": "複製目前頁面帳號失敗",

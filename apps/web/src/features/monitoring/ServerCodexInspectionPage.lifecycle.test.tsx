@@ -390,7 +390,9 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
       managementKey: 'management-key',
     });
     const noteBadge = renderer!.root.findByProps({ 'data-inspection-account-note': true });
-    expect(textContent(noteBadge)).toBe('Production Pool');
+    expect(textContent(noteBadge)).toBe(
+      'monitoring.codex_inspection_account_note_label: Production Pool'
+    );
 
     act(() => renderer!.unmount());
   });

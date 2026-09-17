@@ -16,8 +16,10 @@ const mocks = vi.hoisted(() => ({
   configState: {
     config: null,
   },
+  authFilesList: vi.fn(),
   executeActions: vi.fn(),
   loadLastRun: vi.fn(),
+  saveLastRun: vi.fn(),
   lastCodexReauthProps: null as null | {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
@@ -61,7 +63,18 @@ vi.mock('@/features/monitoring/codexInspection', async (importOriginal) => {
     ...actual,
     executeCodexInspectionActions: mocks.executeActions,
     loadCodexInspectionLastRun: mocks.loadLastRun,
-    saveCodexInspectionLastRun: vi.fn(),
+    saveCodexInspectionLastRun: mocks.saveLastRun,
+  };
+});
+
+vi.mock('@/services/api/authFiles', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/api/authFiles')>();
+  return {
+    ...actual,
+    authFilesApi: {
+      ...actual.authFilesApi,
+      list: mocks.authFilesList,
+    },
   };
 });
 
@@ -195,6 +208,7 @@ describe('CodexInspectionPage connection lifecycle', () => {
     mocks.authState.managementKey = 'cpa-key-a';
     mocks.authState.connectionStatus = 'connected';
     mocks.lastCodexReauthProps = null;
+    mocks.authFilesList.mockResolvedValue({ files: [] });
     const firstFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
     const secondFingerprint = fingerprint('http://cpa-b.local:8317', 'cpa-key-b');
     mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
@@ -205,6 +219,56 @@ describe('CodexInspectionPage connection lifecycle', () => {
     mocks.showConfirmation.mockImplementation((options: { onConfirm: () => void }) => {
       options.onConfirm();
     });
+  });
+
+  it('backfills a legacy local inspection note from auth files and saves it for later reloads', async () => {
+    mocks.authFilesList.mockResolvedValue({
+      files: [
+        {
+          id: 'runtime-1',
+          name: 'codex.json',
+          type: 'codex',
+          authIndex: 'auth-1',
+          account: 'account@example.com',
+          disabled: true,
+          note: '  Production Codex Pool  ',
+        } as AuthFileItem,
+      ],
+    });
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const noteBadge = renderer.root.findByProps({ 'data-inspection-account-note': true });
+    expect(textContent(noteBadge)).toBe(
+      'monitoring.codex_inspection_account_note_label: Production Codex Pool'
+    );
+    expect(mocks.authFilesList).toHaveBeenCalledWith({
+      apiBase: 'http://cpa-a.local:8317',
+      managementKey: 'cpa-key-a',
+    });
+    expect(mocks.saveLastRun).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          results: [
+            expect.objectContaining({
+              raw: expect.objectContaining({ note: 'Production Codex Pool' }),
+            }),
+          ],
+        }),
+      })
+    );
+
+    act(() => renderer.unmount());
   });
 
   it('ignores an old action completion after switching CPA scope', async () => {

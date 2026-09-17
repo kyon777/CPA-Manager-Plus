@@ -7,10 +7,19 @@ import {
 } from '@/utils/authFileCredentialIdentity';
 import { resolveAuthFileStatusMutationTarget } from '@/utils/authFileStatusMutation';
 
+export type InspectionAccountNoteTarget = {
+  fileName: string;
+  runtimeId?: string | null;
+  authIndex?: string | number | null;
+  provider?: string;
+  accountId?: string | null;
+  accountSnapshot?: string | null;
+};
+
 const readTrimmedAccountNote = (file: AuthFileItem): string =>
   typeof file.note === 'string' ? file.note.trim() : '';
 
-const resolveHistoricalResultIdentity = (result: CodexInspectionResult) =>
+const resolveHistoricalResultIdentity = (result: InspectionAccountNoteTarget) =>
   resolveCredentialIdentity({
     name: result.fileName,
     runtimeId: result.runtimeId,
@@ -21,7 +30,7 @@ const resolveHistoricalResultIdentity = (result: CodexInspectionResult) =>
   });
 
 const resolveReadOnlyHistoricalTarget = (
-  result: CodexInspectionResult,
+  result: InspectionAccountNoteTarget,
   files: AuthFileItem[]
 ): AuthFileItem | null => {
   const target = resolveHistoricalResultIdentity(result);
@@ -75,10 +84,10 @@ const resolveReadOnlyHistoricalTarget = (
   return matches.length === 1 ? matches[0] : null;
 };
 
-// Server inspection results are historical records. Resolve their stable credential
-// identity against the current auth-files response instead of persisting a stale note.
-export const resolveServerInspectionAccountNote = (
-  result: CodexInspectionResult,
+// Inspection results are historical records. Resolve their stable credential identity
+// against the current auth-files response rather than matching only by display account.
+export const resolveInspectionAccountNote = (
+  result: InspectionAccountNoteTarget,
   files: AuthFileItem[]
 ): string => {
   const resolution = resolveAuthFileStatusMutationTarget(files, {
@@ -95,3 +104,8 @@ export const resolveServerInspectionAccountNote = (
   const historicalTarget = resolveReadOnlyHistoricalTarget(result, files);
   return historicalTarget ? readTrimmedAccountNote(historicalTarget) : '';
 };
+
+export const resolveServerInspectionAccountNote = (
+  result: CodexInspectionResult,
+  files: AuthFileItem[]
+): string => resolveInspectionAccountNote(result, files);

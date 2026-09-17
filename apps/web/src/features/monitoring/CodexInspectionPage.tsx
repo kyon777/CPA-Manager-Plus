@@ -73,8 +73,10 @@ import {
   type CredentialInspectionSnapshot,
   type CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
-import type { AuthFilesApiRequestScope } from '@/services/api/authFiles';
+import { resolveInspectionAccountNote } from '@/features/monitoring/model/serverInspectionAccountNote';
+import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api/authFiles';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
+import type { AuthFileItem } from '@/types';
 import styles from './CodexInspectionPage.module.scss';
 
 interface CodexInspectionPageProps {
@@ -145,6 +147,7 @@ export function CodexInspectionPage({
   const [result, setResult] = useState<CodexInspectionRunResult | null>(
     () => initialLastRun?.result ?? null
   );
+  const [currentAuthFiles, setCurrentAuthFiles] = useState<AuthFileItem[]>([]);
   const [resultConnectionFingerprint, setResultConnectionFingerprint] = useState<string | null>(
     () => initialLastRun?.connectionFingerprint ?? null
   );
@@ -163,6 +166,7 @@ export function CodexInspectionPage({
   const activeSessionIdRef = useRef<string | null>(null);
   const activeConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
   const executionGenerationRef = useRef(0);
+  const authFilesRequestGenerationRef = useRef(0);
   const restoredConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
   const logListRef = useRef<HTMLDivElement | null>(null);
   const executeItemsRef = useRef<
@@ -183,6 +187,32 @@ export function CodexInspectionPage({
     [logs, t]
   );
   activeConnectionFingerprintRef.current = connectionFingerprint;
+
+  const loadCurrentAuthFiles = useCallback(async () => {
+    const requestFingerprint = connectionFingerprint;
+    if (!requestFingerprint) return;
+
+    const requestGeneration = ++authFilesRequestGenerationRef.current;
+    try {
+      const response = await authFilesApi.list(authFilesRequestScope);
+      if (
+        activeConnectionFingerprintRef.current !== requestFingerprint ||
+        requestGeneration !== authFilesRequestGenerationRef.current
+      ) {
+        return;
+      }
+      setCurrentAuthFiles(response.files ?? []);
+    } catch {
+      // The saved result remains available when the current credential list cannot be read.
+    }
+  }, [authFilesRequestScope, connectionFingerprint]);
+
+  useEffect(() => {
+    authFilesRequestGenerationRef.current += 1;
+    setCurrentAuthFiles([]);
+    if (!connectionFingerprint) return;
+    void loadCurrentAuthFiles();
+  }, [connectionFingerprint, loadCurrentAuthFiles]);
 
   useEffect(() => {
     if (restoredConnectionFingerprintRef.current === connectionFingerprint) return;
@@ -214,6 +244,34 @@ export function CodexInspectionPage({
     setHandlingFilter('all');
     logCounterRef.current = restored?.logs.length ?? 0;
   }, [connectionFingerprint]);
+
+  useEffect(() => {
+    if (currentAuthFiles.length === 0) return;
+
+    setResult((current) => {
+      if (!current) return current;
+
+      let changed = false;
+      const results = current.results.map((item) => {
+        const storedNote = typeof item.raw.note === 'string' ? item.raw.note.trim() : '';
+        if (storedNote) return item;
+
+        const currentNote = resolveInspectionAccountNote(item, currentAuthFiles);
+        if (!currentNote) return item;
+
+        changed = true;
+        return {
+          ...item,
+          raw: {
+            ...item.raw,
+            note: currentNote,
+          },
+        };
+      });
+
+      return changed ? { ...current, results } : current;
+    });
+  }, [currentAuthFiles]);
 
   useEffect(() => {
     const nextSettings = loadCodexInspectionConfigurableSettings(config);

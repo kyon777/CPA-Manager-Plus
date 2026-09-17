@@ -2788,6 +2788,7 @@
     "codex_inspection_log_execution_failed": "Account processing stopped unexpectedly: {{message}}",
     "codex_inspection_results_title": "Inspection Results",
     "codex_inspection_results_desc": "Summarizes credential state, health errors, and the next suggested actions. Supports batch and row-level execution.",
+    "codex_inspection_account_note_label": "Note",
     "codex_inspection_copy_current_page_accounts": "Copy current page accounts",
     "codex_inspection_accounts_copied": "Current page accounts copied to clipboard",
     "codex_inspection_accounts_copy_failed": "Failed to copy current page accounts",

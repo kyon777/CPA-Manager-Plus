@@ -125,8 +125,12 @@ describe('CodexInspectionResultsPanel', () => {
     );
     const noteBadge = renderer.root.findByProps({ 'data-inspection-account-note': true });
 
-    expect(noteBadge.children.join('')).toBe('Production Codex Pool');
-    expect(noteBadge.props.title).toBe('Production Codex Pool');
+    expect(noteBadge.children.join('')).toBe(
+      'monitoring.codex_inspection_account_note_label: Production Codex Pool'
+    );
+    expect(noteBadge.props.title).toBe(
+      'monitoring.codex_inspection_account_note_label: Production Codex Pool'
+    );
 
     const blankNoteRenderer = renderPanel(
       createItem({ raw: { name: 'codex-account-free.json', note: '   ' } as AuthFileItem })

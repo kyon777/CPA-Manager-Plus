@@ -266,6 +266,21 @@ describe('credential inspection state labels', () => {
     }
   });
 
+  it('keeps the inspection account note label available in every locale', () => {
+    const labels = [
+      [en, 'Note'],
+      [zhCN, '备注'],
+      [zhTW, '備註'],
+      [ru, 'Заметка'],
+    ] as const;
+
+    for (const [locale, expected] of labels) {
+      expect(
+        (locale.monitoring as Record<string, unknown>).codex_inspection_account_note_label
+      ).toBe(expected);
+    }
+  });
+
   it('uses a neutral details label for inspection logs in every locale', () => {
     expect(en.monitoring.codex_inspection_log_detail).toBe('Details');
     expect(zhCN.monitoring.codex_inspection_log_detail).toBe('详情');
@@ -6798,6 +6813,39 @@ describe('Codex inspection last-run cache', () => {
     expect(loaded?.actionFilter).toBe('delete');
     expect(loaded?.logs).toHaveLength(1);
     expect(loaded?.result.summary.deleteCount).toBe(1);
+  });
+
+  it('stores a trimmed JSON account note without retaining the raw credential payload', () => {
+    const storage = createStorage();
+    vi.stubGlobal('localStorage', storage);
+    const baseResult = createRunResult();
+
+    saveCodexInspectionLastRun({
+      result: {
+        ...baseResult,
+        results: [
+          createResultItem('keep', {
+            raw: {
+              name: 'keep.json',
+              type: 'codex',
+              access_token: 'must-not-be-persisted',
+              note: '  Production Codex Pool  ',
+            } as AuthFileItem,
+          }),
+        ],
+      },
+    });
+
+    const persisted = JSON.parse(
+      storage.getItem(CODEX_INSPECTION_LAST_RUN_STORAGE_KEY) ?? '{}'
+    ) as {
+      result?: { results?: Array<{ note?: unknown; access_token?: unknown }> };
+    };
+    const loaded = loadCodexInspectionLastRun();
+
+    expect(persisted.result?.results?.[0]?.note).toBe('Production Codex Pool');
+    expect(persisted.result?.results?.[0]?.access_token).toBeUndefined();
+    expect(loaded?.result.results[0].raw.note).toBe('Production Codex Pool');
   });
 
   it('restores legacy 401 filters as reauth filters', () => {
