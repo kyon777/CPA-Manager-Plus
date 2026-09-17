@@ -112,6 +112,25 @@ describe('CodexInspectionResultsPanel', () => {
     expect(text).not.toContain('—');
   });
 
+  it('renders only a trimmed JSON account note as a credential badge', () => {
+    const renderer = renderPanel(
+      createItem({
+        raw: { name: 'codex-account-free.json', note: '  Production Codex Pool  ' } as AuthFileItem,
+      })
+    );
+    const noteBadge = renderer.root.findByProps({ 'data-inspection-account-note': true });
+
+    expect(noteBadge.children.join('')).toBe('Production Codex Pool');
+    expect(noteBadge.props.title).toBe('Production Codex Pool');
+
+    const blankNoteRenderer = renderPanel(
+      createItem({ raw: { name: 'codex-account-free.json', note: '   ' } as AuthFileItem })
+    );
+    expect(
+      blankNoteRenderer.root.findAllByProps({ 'data-inspection-account-note': true })
+    ).toHaveLength(0);
+  });
+
   it('places a custom server operation inside the same result card', () => {
     const renderer = renderPanel(
       createItem({ action: 'delete', actionReason: 'invalid account' }),

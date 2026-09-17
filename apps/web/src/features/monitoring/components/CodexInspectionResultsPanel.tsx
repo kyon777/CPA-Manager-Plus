@@ -235,6 +235,8 @@ export function CodexInspectionResultsPanel({
                   planType: item.planType,
                   t,
                 })?.shortLabel;
+                const inspectionAccountNote =
+                  typeof item.raw.note === 'string' ? item.raw.note.trim() : '';
                 const quotaWindows = item.quotaWindows ?? [];
                 const errorText = item.errorDetail || item.error;
                 const errorSummary = summarizeInspectionError(item, t, {
@@ -298,6 +300,15 @@ export function CodexInspectionResultsPanel({
                           {formatCurrentStateLabel(item, t)}
                         </span>
                         {planLabel ? <span className={styles.planBadge}>{planLabel}</span> : null}
+                        {inspectionAccountNote ? (
+                          <span
+                            className={styles.noteBadge}
+                            title={inspectionAccountNote}
+                            data-inspection-account-note
+                          >
+                            {inspectionAccountNote}
+                          </span>
+                        ) : null}
                       </div>
                       <div className={styles.primaryCell}>
                         <strong className={styles.primaryAccount} title={item.displayAccount}>

@@ -783,6 +783,24 @@
   overflow-wrap: anywhere;
 }
 
+.noteBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  max-width: min(100%, 240px);
+  padding: 0 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--inspect-line) 76%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--inspect-surface-muted) 72%, var(--inspect-surface));
+  color: var(--inspect-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .quotaWindowList {
   display: grid;
   gap: 8px;
