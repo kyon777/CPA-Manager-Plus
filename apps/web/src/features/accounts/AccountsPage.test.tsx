@@ -9482,8 +9482,8 @@ describe('AccountsPage replacement flows', () => {
     const renderer = await renderAccountsPage();
     const note = renderer.root.findByProps({ 'data-account-list-note': selectionKey });
 
-    expect(readText(note)).toBe('Production Codex Pool');
-    expect(note.props.title).toBe('Production Codex Pool');
+    expect(readText(note)).toBe('accounts.note_placeholder_empty: Production Codex Pool');
+    expect(note.props.title).toBe('accounts.note_placeholder_empty: Production Codex Pool');
   });
 
   it('renders historical usage alongside the quota trigger', async () => {

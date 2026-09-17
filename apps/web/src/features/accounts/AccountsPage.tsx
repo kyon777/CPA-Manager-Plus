@@ -9189,6 +9189,9 @@ export function AccountsPage() {
             {rowsToRender.map((row) => {
               const ctx = resolveAccountRowContext(row);
               const accountNote = row.note?.trim() ?? '';
+              const accountNoteLabel = accountNote
+                ? `${t('accounts.note_placeholder_empty')}: ${accountNote}`
+                : '';
               return (
                 <article
                   key={row.selectionKey}
@@ -9265,9 +9268,9 @@ export function AccountsPage() {
                         <span
                           className={styles.accountCardNote}
                           data-account-list-note={row.selectionKey}
-                          title={accountNote}
+                          title={accountNoteLabel}
                         >
-                          {accountNote}
+                          {accountNoteLabel}
                         </span>
                       ) : null}
                     </div>
