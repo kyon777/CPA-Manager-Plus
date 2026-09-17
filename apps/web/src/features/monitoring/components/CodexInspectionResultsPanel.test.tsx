@@ -7,9 +7,14 @@ import type {
   CodexInspectionRunResult,
 } from '@/features/monitoring/codexInspection';
 import { Button } from '@/components/ui/Button';
+import { copyToClipboard } from '@/utils/clipboard';
 import inspectionStyles from '@/features/monitoring/CodexInspectionPage.module.scss';
 import tooltipStyles from './FailureDetailsTooltip.module.scss';
 import { CodexInspectionResultsPanel } from './CodexInspectionResultsPanel';
+
+vi.mock('@/utils/clipboard', () => ({
+  copyToClipboard: vi.fn(async () => true),
+}));
 
 const t = ((key: string, options?: Record<string, unknown>) => {
   if (options?.percent) return `${key}:${options.percent}`;
@@ -129,6 +134,32 @@ describe('CodexInspectionResultsPanel', () => {
     expect(
       blankNoteRenderer.root.findAllByProps({ 'data-inspection-account-note': true })
     ).toHaveLength(0);
+  });
+
+  it('copies the current page account names one per line in result order', async () => {
+    const first = createItem({ key: 'credential-1', displayAccount: 'first@example.com' });
+    const second = createItem({ key: 'credential-2', displayAccount: 'second@example.com' });
+    const renderer = renderPanel(first, {
+      filteredResults: [first, second],
+      pagination: {
+        currentPage: 2,
+        totalPages: 3,
+        pageItems: [first, second],
+        startItem: 11,
+        endItem: 12,
+        count: 25,
+      },
+    });
+    const copyButton = renderer.root
+      .findAllByType(Button)
+      .find((node) => node.props['data-copy-inspection-page-accounts'] === true);
+
+    expect(copyButton).toBeDefined();
+    await act(async () => {
+      await copyButton?.props.onClick();
+    });
+
+    expect(copyToClipboard).toHaveBeenLastCalledWith('first@example.com\nsecond@example.com');
   });
 
   it('places a custom server operation inside the same result card', () => {

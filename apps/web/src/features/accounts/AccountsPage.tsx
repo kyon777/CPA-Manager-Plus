@@ -8265,6 +8265,17 @@ export function AccountsPage() {
     />
   );
 
+  const renderCodexCreditsBalance = (row: AccountRow, balance: string) => (
+    <span
+      className={styles.quotaWindowCreditsBalance}
+      data-account-credits-balance={row.selectionKey}
+      title={`${t('codex_quota.credits_label')}: ${balance}`}
+    >
+      <span>{t('codex_quota.credits_label')}</span>
+      <strong>{balance}</strong>
+    </span>
+  );
+
   const renderSingleQuotaWindowCard = (
     row: AccountRow,
     window: AccountQuotaDisplayWindow,
@@ -8462,6 +8473,7 @@ export function AccountsPage() {
     });
     const displayCodexQuota =
       row.provider === CODEX_CONFIG.type ? getDisplayCodexQuota(row.raw) : undefined;
+    const codexCreditsBalance = displayCodexQuota?.creditsBalance?.trim() ?? '';
     const subscriptionPresentation = buildAccountSubscriptionPresentation({
       row,
       codexQuota: resolveAccountListSubscriptionQuota({
@@ -8484,13 +8496,15 @@ export function AccountsPage() {
       quotaWindows.length > 0
         ? t('accounts.quota_details_only')
         : t('accounts.quota_source_none');
-    const quotaWindowTitle =
-      mainListWindows
-        .map((window) => {
-          const label = getQuotaWindowReadableLabel(window, t);
-          return `${label}: ${formatPercent(window.remainingPercent)}`;
-        })
-        .join('\n') || quotaEmptyLabel;
+    const quotaWindowTitle = [
+      ...mainListWindows.map((window) => {
+        const label = getQuotaWindowReadableLabel(window, t);
+        return `${label}: ${formatPercent(window.remainingPercent)}`;
+      }),
+      codexCreditsBalance ? `${t('codex_quota.credits_label')}: ${codexCreditsBalance}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n') || quotaEmptyLabel;
     const healthTitle = t(
       item.health.tooltipKey,
       formatQuotaResetTooltipParams(
@@ -8522,6 +8536,7 @@ export function AccountsPage() {
       codexStatus,
       item,
       codexQuotaState,
+      codexCreditsBalance,
       subscriptionPresentation,
       codexResetCreditsCount,
       hasCodexResetCredits,
@@ -9131,14 +9146,21 @@ export function AccountsPage() {
                                 idx,
                                 null,
                                 false,
-                                ctx.quotaLifecycleBarOverride
+                                ctx.quotaLifecycleBarOverride,
+                                idx === 0 && ctx.codexCreditsBalance
+                                  ? renderCodexCreditsBalance(row, ctx.codexCreditsBalance)
+                                  : undefined
                               )
                             )}
                       </div>
                     ) : (
-                      <span className={styles.quotaEmptyState} data-account-quota-empty="true">
-                        {ctx.quotaEmptyLabel}
-                      </span>
+                      ctx.codexCreditsBalance ? (
+                        renderCodexCreditsBalance(row, ctx.codexCreditsBalance)
+                      ) : (
+                        <span className={styles.quotaEmptyState} data-account-quota-empty="true">
+                          {ctx.quotaEmptyLabel}
+                        </span>
+                      )
                     )}
                   </div>
 
@@ -9166,6 +9188,7 @@ export function AccountsPage() {
               </div>
             {rowsToRender.map((row) => {
               const ctx = resolveAccountRowContext(row);
+              const accountNote = row.note?.trim() ?? '';
               return (
                 <article
                   key={row.selectionKey}
@@ -9238,6 +9261,15 @@ export function AccountsPage() {
                           </span>
                         ) : null}
                       </div>
+                      {accountNote ? (
+                        <span
+                          className={styles.accountCardNote}
+                          data-account-list-note={row.selectionKey}
+                          title={accountNote}
+                        >
+                          {accountNote}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
 
@@ -9373,13 +9405,20 @@ export function AccountsPage() {
                               windowIndex,
                               ctx.codexResetCreditsCount,
                               ctx.hasCodexResetCredits,
-                              ctx.quotaLifecycleBarOverride
+                              ctx.quotaLifecycleBarOverride,
+                              windowIndex === 0 && ctx.codexCreditsBalance
+                                ? renderCodexCreditsBalance(row, ctx.codexCreditsBalance)
+                                : undefined
                             )
                           )
                         ) : (
-                          <span className={styles.quotaEmptyState} data-account-quota-empty="true">
-                            {ctx.quotaEmptyLabel}
-                          </span>
+                          ctx.codexCreditsBalance ? (
+                            renderCodexCreditsBalance(row, ctx.codexCreditsBalance)
+                          ) : (
+                            <span className={styles.quotaEmptyState} data-account-quota-empty="true">
+                              {ctx.quotaEmptyLabel}
+                            </span>
+                          )
                         )}
                       </span>
                       ),

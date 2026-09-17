@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
-import { IconRefreshCw, IconTrash2 } from '@/components/ui/icons';
+import { IconCopy, IconRefreshCw, IconTrash2 } from '@/components/ui/icons';
 import { FailureDetailsTooltip } from '@/features/monitoring/components/FailureDetailsTooltip';
 import {
   type CodexInspectionAction,
@@ -158,6 +158,22 @@ export function CodexInspectionResultsPanel({
       copied ? 'success' : 'error'
     );
   };
+  const currentPageAccountText = filteredResults
+    .map((item) => item.displayAccount.trim())
+    .filter(Boolean)
+    .join('\n');
+  const handleCopyCurrentPageAccounts = async () => {
+    if (!currentPageAccountText) return;
+    const copied = await copyToClipboard(currentPageAccountText);
+    showNotification(
+      t(
+        copied
+          ? 'monitoring.codex_inspection_accounts_copied'
+          : 'monitoring.codex_inspection_accounts_copy_failed'
+      ),
+      copied ? 'success' : 'error'
+    );
+  };
 
   const probeSourceLabel = (source: InspectionProbeSource) =>
     t(`monitoring.codex_inspection_probe_source_${source}`);
@@ -201,6 +217,16 @@ export function CodexInspectionResultsPanel({
             </div>
 
             <div className={styles.resultsToolbarActions}>
+              <Button
+                variant="secondary"
+                size="sm"
+                data-copy-inspection-page-accounts={true}
+                onClick={() => void handleCopyCurrentPageAccounts()}
+                disabled={!currentPageAccountText}
+              >
+                <IconCopy size={14} />
+                {t('monitoring.codex_inspection_copy_current_page_accounts')}
+              </Button>
               {onDeleteReauthPlanned ? (
                 <Button
                   variant="danger"

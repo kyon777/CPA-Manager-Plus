@@ -1295,6 +1295,19 @@
   white-space: nowrap;
 }
 
+.accountCardNote {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .accountIdentityCopyLine {
   display: flex;
   align-items: center;
@@ -1938,6 +1951,11 @@
   grid-column: 1 / -1;
 }
 
+.quotaWindowGrid > .quotaWindowCreditsBalance {
+  grid-column: 1 / -1;
+  align-self: center;
+}
+
 .quotaWindowCard {
   display: grid;
   grid-template-rows: auto 6px auto;
@@ -2072,6 +2090,36 @@
   font-weight: 750;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+}
+
+.quotaWindowCreditsBalance {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+  color: var(--primary-color);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+
+  > span {
+    color: var(--accounts-muted);
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  > strong {
+    color: inherit;
+    font: inherit;
+    font-weight: 800;
+  }
+}
+
+.accountGridCardQuota > .quotaWindowCreditsBalance {
+  align-self: center;
+  min-height: 32px;
 }
 
 .quotaWindowUsageLine {

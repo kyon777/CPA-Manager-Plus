@@ -9471,6 +9471,21 @@ describe('AccountsPage replacement flows', () => {
     expect(treeText(renderer)).not.toContain('SUM');
   });
 
+  it('renders a credential JSON note below the list identity', async () => {
+    const file = {
+      ...mocks.files[0],
+      note: '  Production Codex Pool  ',
+    };
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+
+    const renderer = await renderAccountsPage();
+    const note = renderer.root.findByProps({ 'data-account-list-note': selectionKey });
+
+    expect(readText(note)).toBe('Production Codex Pool');
+    expect(note.props.title).toBe('Production Codex Pool');
+  });
+
   it('renders historical usage alongside the quota trigger', async () => {
     const file = mocks.files[0];
     const selectionKey = getAuthFileSelectionKey(file);
@@ -9687,6 +9702,45 @@ describe('AccountsPage replacement flows', () => {
       },
       { replace: true }
     );
+  });
+
+  it('renders the Codex credits balance in the list quota region', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      creditsBalance: '27',
+      windows: [makeCodexQuotaWindow()],
+    });
+
+    const renderer = await renderAccountsPage();
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+    const creditsBalance = quotaRegion.findByProps({
+      'data-account-credits-balance': selectionKey,
+    });
+
+    expect(readText(creditsBalance)).toContain('codex_quota.credits_label');
+    expect(readText(creditsBalance)).toContain('27');
+    expect(creditsBalance.props.title).toContain('27');
+  });
+
+  it('renders a credits-only Codex quota response in the list quota region', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      quotaInventoryObserved: true,
+      creditsBalance: '9',
+      windows: [],
+    });
+
+    const renderer = await renderAccountsPage();
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+
+    expect(
+      quotaRegion.findByProps({ 'data-account-credits-balance': selectionKey })
+    ).toBeDefined();
+    expect(quotaRegion.findAllByProps({ 'data-account-quota-empty': 'true' })).toHaveLength(0);
   });
 
   it('renders plan presentation in main list card', async () => {
