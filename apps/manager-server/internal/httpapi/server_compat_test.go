@@ -330,6 +330,43 @@ func TestServerCompatAccountProcessingPolicyPatchReloadsRuntime(t *testing.T) {
 	}
 }
 
+func TestServerCompatAccountProcessingPolicyPatchEnablesServerErrorPriorityDemotion(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	db := testutil.NewStore(t, cfg)
+	defer db.Close()
+	server := New(cfg, db, collector.NewManager(cfg, db))
+
+	rr := testutil.Request(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/usage-service/account-processing-policy",
+		`{"serverErrorPriorityDemotionEnabled":true}`,
+		testutil.AdminKey,
+	)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	var response struct {
+		Source                      string `json:"source"`
+		ServerErrorPriorityDemotion struct {
+			Enabled       bool   `json:"enabled"`
+			Configured    bool   `json:"configured"`
+			Source        string `json:"source"`
+			EnvKey        string `json:"envKey"`
+			ConfigFileKey string `json:"configFileKey"`
+		} `json:"serverErrorPriorityDemotion"`
+	}
+	testutil.DecodeJSON(t, rr, &response)
+	if response.Source != "database" {
+		t.Fatalf("policy source = %q, want database", response.Source)
+	}
+	if capability := response.ServerErrorPriorityDemotion; !capability.Enabled || !capability.Configured || capability.Source != "database" || capability.EnvKey != "USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED" || capability.ConfigFileKey != "serverErrorPriorityDemotionEnabled" {
+		t.Fatalf("server-error priority response = %#v", capability)
+	}
+	if !server.AppContext().AccountProcessingPolicyService.RuntimeSettings(context.Background()).ServerErrorPriorityDemotionEnabled {
+		t.Fatal("runtime server-error priority demotion was not enabled")
+	}
+}
+
 func TestServerCompatAccountProcessingPolicyPatchRejectsEnvLockedField(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	cfg.QuotaCooldownEnvSet = true

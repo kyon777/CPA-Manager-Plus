@@ -26,35 +26,37 @@ const (
 )
 
 type Config struct {
-	HTTPAddr                     string
-	DataDir                      string
-	DBPath                       string
-	CPAUpstreamURL               string
-	ManagementKey                string
-	AdminKey                     string
-	DataKey                      string
-	DataKeyPath                  string
-	CollectorMode                string
-	Queue                        string
-	PopSide                      string
-	BatchSize                    int
-	PollInterval                 time.Duration
-	QueryLimit                   int
-	PprofAddr                    string
-	PanelPath                    string
-	CORSOrigins                  []string
-	TLSSkipVerify                bool
-	QuotaCooldownEnabled         bool
-	AccountActionsEnabled        bool
-	AccountActionsAutoDisable    bool
-	DashboardHourlyRollupEnabled bool
-	UsageImportChunkBytes        int64
-	UsageImportDiskQuotaBytes    int64
-	UsageImportMaxSessions       int
-	UsageImportSessionTTL        time.Duration
-	QuotaCooldownEnvSet          bool
-	AccountActionsEnvSet         bool
-	AccountActionsAutoEnvSet     bool
+	HTTPAddr                           string
+	DataDir                            string
+	DBPath                             string
+	CPAUpstreamURL                     string
+	ManagementKey                      string
+	AdminKey                           string
+	DataKey                            string
+	DataKeyPath                        string
+	CollectorMode                      string
+	Queue                              string
+	PopSide                            string
+	BatchSize                          int
+	PollInterval                       time.Duration
+	QueryLimit                         int
+	PprofAddr                          string
+	PanelPath                          string
+	CORSOrigins                        []string
+	TLSSkipVerify                      bool
+	QuotaCooldownEnabled               bool
+	AccountActionsEnabled              bool
+	AccountActionsAutoDisable          bool
+	ServerErrorPriorityDemotionEnabled bool
+	DashboardHourlyRollupEnabled       bool
+	UsageImportChunkBytes              int64
+	UsageImportDiskQuotaBytes          int64
+	UsageImportMaxSessions             int
+	UsageImportSessionTTL              time.Duration
+	QuotaCooldownEnvSet                bool
+	AccountActionsEnvSet               bool
+	AccountActionsAutoEnvSet           bool
+	ServerErrorPriorityDemotionEnvSet  bool
 }
 
 type LoadOptions struct {
@@ -62,31 +64,32 @@ type LoadOptions struct {
 }
 
 type fileConfig struct {
-	HTTPAddr                  string   `json:"httpAddr,omitempty"`
-	DataDir                   string   `json:"dataDir,omitempty"`
-	DBPath                    string   `json:"dbPath,omitempty"`
-	CPAUpstreamURL            string   `json:"cpaUpstreamUrl,omitempty"`
-	ManagementKeyFile         string   `json:"managementKeyFile,omitempty"`
-	AdminKeyFile              string   `json:"adminKeyFile,omitempty"`
-	DataKeyFile               string   `json:"dataKeyFile,omitempty"`
-	DataKeyPath               string   `json:"dataKeyPath,omitempty"`
-	CollectorMode             string   `json:"collectorMode,omitempty"`
-	Queue                     string   `json:"queue,omitempty"`
-	PopSide                   string   `json:"popSide,omitempty"`
-	BatchSize                 int      `json:"batchSize,omitempty"`
-	PollIntervalMS            int      `json:"pollIntervalMs,omitempty"`
-	QueryLimit                int      `json:"queryLimit,omitempty"`
-	PprofAddr                 string   `json:"pprofAddr,omitempty"`
-	PanelPath                 string   `json:"panelPath,omitempty"`
-	CORSOrigins               []string `json:"corsOrigins,omitempty"`
-	TLSSkipVerify             bool     `json:"tlsSkipVerify,omitempty"`
-	QuotaCooldownEnabled      bool     `json:"quotaCooldownEnabled,omitempty"`
-	AccountActionsEnabled     bool     `json:"accountActionsEnabled,omitempty"`
-	AccountActionsAutoDisable bool     `json:"accountActionsAutoDisable,omitempty"`
-	UsageImportChunkBytes     int64    `json:"usageImportChunkBytes,omitempty"`
-	UsageImportDiskQuotaBytes int64    `json:"usageImportDiskQuotaBytes,omitempty"`
-	UsageImportMaxSessions    int      `json:"usageImportMaxSessions,omitempty"`
-	UsageImportTTLMinutes     int      `json:"usageImportSessionTTLMinutes,omitempty"`
+	HTTPAddr                           string   `json:"httpAddr,omitempty"`
+	DataDir                            string   `json:"dataDir,omitempty"`
+	DBPath                             string   `json:"dbPath,omitempty"`
+	CPAUpstreamURL                     string   `json:"cpaUpstreamUrl,omitempty"`
+	ManagementKeyFile                  string   `json:"managementKeyFile,omitempty"`
+	AdminKeyFile                       string   `json:"adminKeyFile,omitempty"`
+	DataKeyFile                        string   `json:"dataKeyFile,omitempty"`
+	DataKeyPath                        string   `json:"dataKeyPath,omitempty"`
+	CollectorMode                      string   `json:"collectorMode,omitempty"`
+	Queue                              string   `json:"queue,omitempty"`
+	PopSide                            string   `json:"popSide,omitempty"`
+	BatchSize                          int      `json:"batchSize,omitempty"`
+	PollIntervalMS                     int      `json:"pollIntervalMs,omitempty"`
+	QueryLimit                         int      `json:"queryLimit,omitempty"`
+	PprofAddr                          string   `json:"pprofAddr,omitempty"`
+	PanelPath                          string   `json:"panelPath,omitempty"`
+	CORSOrigins                        []string `json:"corsOrigins,omitempty"`
+	TLSSkipVerify                      bool     `json:"tlsSkipVerify,omitempty"`
+	QuotaCooldownEnabled               bool     `json:"quotaCooldownEnabled,omitempty"`
+	AccountActionsEnabled              bool     `json:"accountActionsEnabled,omitempty"`
+	AccountActionsAutoDisable          bool     `json:"accountActionsAutoDisable,omitempty"`
+	ServerErrorPriorityDemotionEnabled bool     `json:"serverErrorPriorityDemotionEnabled,omitempty"`
+	UsageImportChunkBytes              int64    `json:"usageImportChunkBytes,omitempty"`
+	UsageImportDiskQuotaBytes          int64    `json:"usageImportDiskQuotaBytes,omitempty"`
+	UsageImportMaxSessions             int      `json:"usageImportMaxSessions,omitempty"`
+	UsageImportTTLMinutes              int      `json:"usageImportSessionTTLMinutes,omitempty"`
 }
 
 func Load() (Config, error) {
@@ -136,28 +139,29 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 	}
 
 	return Config{
-		HTTPAddr:                     env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
-		DataDir:                      dataDir,
-		DBPath:                       env("USAGE_DB_PATH", dbPathFallback),
-		CPAUpstreamURL:               env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
-		ManagementKey:                readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
-		AdminKey:                     readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
-		DataKey:                      readSecret("CPA_MANAGER_DATA_KEY", "CPA_MANAGER_DATA_KEY_FILE", dataKeyFile),
-		DataKeyPath:                  env("CPA_MANAGER_DATA_KEY_PATH", dataKeyPath),
-		CollectorMode:                normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
-		Queue:                        env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
-		PopSide:                      env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
-		BatchSize:                    envInt("USAGE_BATCH_SIZE", intFallback(cfgFile.BatchSize, 100)),
-		PollInterval:                 time.Duration(envInt("USAGE_POLL_INTERVAL_MS", intFallback(cfgFile.PollIntervalMS, 500))) * time.Millisecond,
-		QueryLimit:                   envInt("USAGE_QUERY_LIMIT", intFallback(cfgFile.QueryLimit, 50000)),
-		PprofAddr:                    env("CPA_MANAGER_PPROF_ADDR", cfgFile.PprofAddr),
-		PanelPath:                    env("PANEL_PATH", resolveConfigPath(cfgFile.PanelPath, cfgDir)),
-		CORSOrigins:                  splitCSV(env("USAGE_CORS_ORIGINS", strings.Join(sliceFallback(cfgFile.CORSOrigins, []string{"*"}), ","))),
-		TLSSkipVerify:                envBool("USAGE_RESP_TLS_SKIP_VERIFY", cfgFile.TLSSkipVerify),
-		QuotaCooldownEnabled:         envBool("USAGE_QUOTA_COOLDOWN_ENABLED", cfgFile.QuotaCooldownEnabled),
-		AccountActionsEnabled:        envBool("USAGE_ACCOUNT_ACTIONS_ENABLED", cfgFile.AccountActionsEnabled),
-		AccountActionsAutoDisable:    envBool("USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE", cfgFile.AccountActionsAutoDisable),
-		DashboardHourlyRollupEnabled: envBool("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", true),
+		HTTPAddr:                           env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
+		DataDir:                            dataDir,
+		DBPath:                             env("USAGE_DB_PATH", dbPathFallback),
+		CPAUpstreamURL:                     env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
+		ManagementKey:                      readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
+		AdminKey:                           readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
+		DataKey:                            readSecret("CPA_MANAGER_DATA_KEY", "CPA_MANAGER_DATA_KEY_FILE", dataKeyFile),
+		DataKeyPath:                        env("CPA_MANAGER_DATA_KEY_PATH", dataKeyPath),
+		CollectorMode:                      normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
+		Queue:                              env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
+		PopSide:                            env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
+		BatchSize:                          envInt("USAGE_BATCH_SIZE", intFallback(cfgFile.BatchSize, 100)),
+		PollInterval:                       time.Duration(envInt("USAGE_POLL_INTERVAL_MS", intFallback(cfgFile.PollIntervalMS, 500))) * time.Millisecond,
+		QueryLimit:                         envInt("USAGE_QUERY_LIMIT", intFallback(cfgFile.QueryLimit, 50000)),
+		PprofAddr:                          env("CPA_MANAGER_PPROF_ADDR", cfgFile.PprofAddr),
+		PanelPath:                          env("PANEL_PATH", resolveConfigPath(cfgFile.PanelPath, cfgDir)),
+		CORSOrigins:                        splitCSV(env("USAGE_CORS_ORIGINS", strings.Join(sliceFallback(cfgFile.CORSOrigins, []string{"*"}), ","))),
+		TLSSkipVerify:                      envBool("USAGE_RESP_TLS_SKIP_VERIFY", cfgFile.TLSSkipVerify),
+		QuotaCooldownEnabled:               envBool("USAGE_QUOTA_COOLDOWN_ENABLED", cfgFile.QuotaCooldownEnabled),
+		AccountActionsEnabled:              envBool("USAGE_ACCOUNT_ACTIONS_ENABLED", cfgFile.AccountActionsEnabled),
+		AccountActionsAutoDisable:          envBool("USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE", cfgFile.AccountActionsAutoDisable),
+		ServerErrorPriorityDemotionEnabled: envBool("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED", cfgFile.ServerErrorPriorityDemotionEnabled),
+		DashboardHourlyRollupEnabled:       envBool("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", true),
 		UsageImportChunkBytes: envInt64(
 			"USAGE_IMPORT_CHUNK_BYTES",
 			int64Fallback(cfgFile.UsageImportChunkBytes, DefaultUsageImportChunkBytes),
@@ -174,9 +178,10 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 			"USAGE_IMPORT_SESSION_TTL_MINUTES",
 			intFallback(cfgFile.UsageImportTTLMinutes, int(DefaultUsageImportSessionTTL/time.Minute)),
 		)) * time.Minute,
-		QuotaCooldownEnvSet:      hasEnv("USAGE_QUOTA_COOLDOWN_ENABLED"),
-		AccountActionsEnvSet:     hasEnv("USAGE_ACCOUNT_ACTIONS_ENABLED"),
-		AccountActionsAutoEnvSet: hasEnv("USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE"),
+		QuotaCooldownEnvSet:               hasEnv("USAGE_QUOTA_COOLDOWN_ENABLED"),
+		AccountActionsEnvSet:              hasEnv("USAGE_ACCOUNT_ACTIONS_ENABLED"),
+		AccountActionsAutoEnvSet:          hasEnv("USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE"),
+		ServerErrorPriorityDemotionEnvSet: hasEnv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED"),
 	}, nil
 }
 

@@ -264,3 +264,39 @@ func TestUpdateReturnsPersistedRecordWithoutRereading(t *testing.T) {
 		t.Fatalf("runtime cache should reflect persisted value after Update, got %#v", runtime)
 	}
 }
+
+func TestStatusExposesServerErrorPriorityDemotionPolicy(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	svc := New(config.Config{}, st)
+	if _, err := svc.Update(ctx, UpdateRequest{ServerErrorPriorityDemotionEnabled: boolPtr(true)}); err != nil {
+		t.Fatalf("enable server-error priority demotion: %v", err)
+	}
+	status := mustStatus(t, svc, ctx)
+	if !status.ServerErrorPriorityDemotion.Enabled ||
+		!status.ServerErrorPriorityDemotion.Configured ||
+		status.ServerErrorPriorityDemotion.Source != SourceDB ||
+		status.ServerErrorPriorityDemotion.EnvKey != "USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED" ||
+		status.ServerErrorPriorityDemotion.ConfigFileKey != "serverErrorPriorityDemotionEnabled" {
+		t.Fatalf("serverErrorPriorityDemotion = %#v", status.ServerErrorPriorityDemotion)
+	}
+	if !svc.RuntimeSettings(ctx).ServerErrorPriorityDemotionEnabled {
+		t.Fatalf("server-error priority demotion must be enabled in runtime settings")
+	}
+
+	locked := New(config.Config{
+		ServerErrorPriorityDemotionEnabled: false,
+		ServerErrorPriorityDemotionEnvSet:  true,
+	}, st)
+	lockedStatus := mustStatus(t, locked, ctx)
+	if lockedStatus.ServerErrorPriorityDemotion.Enabled ||
+		!lockedStatus.ServerErrorPriorityDemotion.Locked ||
+		lockedStatus.ServerErrorPriorityDemotion.Source != SourceEnv {
+		t.Fatalf("environment-locked serverErrorPriorityDemotion = %#v", lockedStatus.ServerErrorPriorityDemotion)
+	}
+}

@@ -3,9 +3,10 @@ import type { AccountPolicyCapability, AccountProcessingPolicy } from '@/service
 export type AccountPolicyCapabilityKey =
   | 'providerQuotaCooldown'
   | 'authIssueQueue'
-  | 'authIssueAutoDisable';
+  | 'authIssueAutoDisable'
+  | 'serverErrorPriorityDemotion';
 
-export type AccountPolicyGroupKey = 'quota' | 'authIssues';
+export type AccountPolicyGroupKey = 'quota' | 'authIssues' | 'serverErrors';
 
 export interface AccountPolicyViewOptions {
   loading?: boolean;
@@ -44,15 +45,17 @@ const capabilityKeys: AccountPolicyCapabilityKey[] = [
   'providerQuotaCooldown',
   'authIssueQueue',
   'authIssueAutoDisable',
+  'serverErrorPriorityDemotion',
 ];
 
 const capabilitySourceKey: Record<
   AccountPolicyCapabilityKey,
-  'codexQuotaCooldown' | 'authIssueQueue' | 'authIssueAutoDisable'
+  'codexQuotaCooldown' | 'authIssueQueue' | 'authIssueAutoDisable' | 'serverErrorPriorityDemotion'
 > = {
   providerQuotaCooldown: 'codexQuotaCooldown',
   authIssueQueue: 'authIssueQueue',
   authIssueAutoDisable: 'authIssueAutoDisable',
+  serverErrorPriorityDemotion: 'serverErrorPriorityDemotion',
 };
 
 const capabilityMetadata: Record<
@@ -86,6 +89,14 @@ const capabilityMetadata: Record<
     toggleLabelKey: 'accountPolicy.authIssueAutoDisable_toggle',
     nested: true,
   },
+  serverErrorPriorityDemotion: {
+    titleKey: 'accountPolicy.serverErrorPriorityDemotion_title',
+    descriptionKey: 'accountPolicy.serverErrorPriorityDemotion_description',
+    behaviorKey: 'accountPolicy.serverErrorPriorityDemotion_behavior',
+    summaryKey: 'accountPolicy.serverErrorPriorityDemotion_summary',
+    toggleLabelKey: 'accountPolicy.serverErrorPriorityDemotion_toggle',
+    nested: false,
+  },
 };
 
 const groupDefinitions: Array<{
@@ -105,6 +116,12 @@ const groupDefinitions: Array<{
     titleKey: 'accountPolicy.group_auth_issues_title',
     descriptionKey: 'accountPolicy.group_auth_issues_description',
     itemKeys: ['authIssueQueue', 'authIssueAutoDisable'],
+  },
+  {
+    key: 'serverErrors',
+    titleKey: 'accountPolicy.group_server_errors_title',
+    descriptionKey: 'accountPolicy.group_server_errors_description',
+    itemKeys: ['serverErrorPriorityDemotion'],
   },
 ];
 

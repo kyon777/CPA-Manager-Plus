@@ -6524,6 +6524,14 @@ export const getDemoAccountProcessingPolicy = (): AccountProcessingPolicy => ({
     envKey: 'CPA_AUTH_ISSUE_AUTO_DISABLE_ENABLED',
     configFileKey: 'authIssueAutoDisableEnabled',
   },
+  serverErrorPriorityDemotion: {
+    enabled: false,
+    configured: false,
+    source: 'startup',
+    locked: false,
+    envKey: 'USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED',
+    configFileKey: 'serverErrorPriorityDemotionEnabled',
+  },
 });
 
 export const getDemoQuotaCooldowns = (): QuotaCooldownInfo[] => {

@@ -160,12 +160,14 @@ export interface AccountProcessingPolicy {
   codexQuotaCooldown: AccountPolicyCapability;
   authIssueQueue: AccountPolicyCapability;
   authIssueAutoDisable: AccountPolicyCapability;
+  serverErrorPriorityDemotion: AccountPolicyCapability;
 }
 
 export interface AccountProcessingPolicyPatch {
   codexQuotaCooldownEnabled?: boolean;
   authIssueQueueEnabled?: boolean;
   authIssueAutoDisableEnabled?: boolean;
+  serverErrorPriorityDemotionEnabled?: boolean;
 }
 
 export interface QuotaCooldownInfo {
@@ -2083,6 +2085,11 @@ const getDemoPatchedAccountProcessingPolicy = (
     authIssueAutoDisable: {
       ...policy.authIssueAutoDisable,
       enabled: patch.authIssueAutoDisableEnabled ?? policy.authIssueAutoDisable.enabled,
+    },
+    serverErrorPriorityDemotion: {
+      ...policy.serverErrorPriorityDemotion,
+      enabled:
+        patch.serverErrorPriorityDemotionEnabled ?? policy.serverErrorPriorityDemotion.enabled,
     },
   };
 };

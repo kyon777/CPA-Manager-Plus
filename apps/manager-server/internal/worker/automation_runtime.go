@@ -21,26 +21,40 @@ type accountAutomationWorker interface {
 	HandleUsageEvents(ctx context.Context, cfg collectorpkg.RuntimeConfig, events []usage.Event)
 }
 
-type AutomationRuntime struct {
-	settings      *automationsvc.Service
-	manager       *collectorpkg.Manager
-	quotaWorker   quotaAutomationWorker
-	accountWorker accountAutomationWorker
-	handler       *automationUsageHandler
+type serverErrorPriorityAutomationWorker interface {
+	Start(ctx context.Context)
+	HandleUsageEvents(ctx context.Context, cfg collectorpkg.RuntimeConfig, events []usage.Event)
 }
 
-func NewAutomationRuntime(settings *automationsvc.Service, manager *collectorpkg.Manager, quotaWorker quotaAutomationWorker, accountWorker accountAutomationWorker) *AutomationRuntime {
+type AutomationRuntime struct {
+	settings                  *automationsvc.Service
+	manager                   *collectorpkg.Manager
+	quotaWorker               quotaAutomationWorker
+	accountWorker             accountAutomationWorker
+	serverErrorPriorityWorker serverErrorPriorityAutomationWorker
+	handler                   *automationUsageHandler
+}
+
+func NewAutomationRuntime(
+	settings *automationsvc.Service,
+	manager *collectorpkg.Manager,
+	quotaWorker quotaAutomationWorker,
+	accountWorker accountAutomationWorker,
+	serverErrorPriorityWorker serverErrorPriorityAutomationWorker,
+) *AutomationRuntime {
 	handler := &automationUsageHandler{
-		settings:      settings,
-		quotaWorker:   quotaWorker,
-		accountWorker: accountWorker,
+		settings:                  settings,
+		quotaWorker:               quotaWorker,
+		accountWorker:             accountWorker,
+		serverErrorPriorityWorker: serverErrorPriorityWorker,
 	}
 	return &AutomationRuntime{
-		settings:      settings,
-		manager:       manager,
-		quotaWorker:   quotaWorker,
-		accountWorker: accountWorker,
-		handler:       handler,
+		settings:                  settings,
+		manager:                   manager,
+		quotaWorker:               quotaWorker,
+		accountWorker:             accountWorker,
+		serverErrorPriorityWorker: serverErrorPriorityWorker,
+		handler:                   handler,
 	}
 }
 
@@ -53,6 +67,9 @@ func (r *AutomationRuntime) Start(ctx context.Context) {
 	}
 	if r.accountWorker != nil {
 		r.accountWorker.Start(ctx)
+	}
+	if r.serverErrorPriorityWorker != nil {
+		r.serverErrorPriorityWorker.Start(ctx)
 	}
 	if r.manager != nil && r.handler != nil {
 		r.manager.SetUsageEventHandler(r.handler)
@@ -84,13 +101,14 @@ func (r *AutomationRuntime) logState(ctx context.Context, action string) {
 		return
 	}
 	settings := r.settings.RuntimeSettings(ctx)
-	log.Printf("[automation] runtime settings %s quotaCooldown=%t accountActions=%t accountActionsAutoDisable=%t", action, settings.QuotaCooldownEnabled, settings.AccountActionsEnabled, settings.AccountActionsAutoDisable)
+	log.Printf("[automation] runtime settings %s quotaCooldown=%t accountActions=%t accountActionsAutoDisable=%t serverErrorPriorityDemotion=%t", action, settings.QuotaCooldownEnabled, settings.AccountActionsEnabled, settings.AccountActionsAutoDisable, settings.ServerErrorPriorityDemotionEnabled)
 }
 
 type automationUsageHandler struct {
-	settings      *automationsvc.Service
-	quotaWorker   quotaAutomationWorker
-	accountWorker accountAutomationWorker
+	settings                  *automationsvc.Service
+	quotaWorker               quotaAutomationWorker
+	accountWorker             accountAutomationWorker
+	serverErrorPriorityWorker serverErrorPriorityAutomationWorker
 }
 
 func (h *automationUsageHandler) HandleUsageEvents(ctx context.Context, cfg collectorpkg.RuntimeConfig, events []usage.Event) {
@@ -104,6 +122,9 @@ func (h *automationUsageHandler) HandleUsageEvents(ctx context.Context, cfg coll
 	if settings.AccountActionsEnabled && h.accountWorker != nil {
 		h.accountWorker.SetAutoDisable(settings.AccountActionsAutoDisable)
 		h.accountWorker.HandleUsageEvents(ctx, cfg, events)
+	}
+	if settings.ServerErrorPriorityDemotionEnabled && h.serverErrorPriorityWorker != nil {
+		h.serverErrorPriorityWorker.HandleUsageEvents(ctx, cfg, events)
 	}
 }
 

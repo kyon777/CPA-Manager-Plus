@@ -194,6 +194,9 @@ func runServer() {
 		serverApp.AppContext().AuthFileMutationCoordinator,
 		runtimeSettings.AccountActionsAutoDisable,
 	)
+	serverErrorPriorityDemotionWorker := worker.NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(
+		serverApp.AppContext().AuthFileMutationCoordinator,
+	)
 	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)
 	usageDerivedRollupWorker := worker.NewUsagePricingRollupWorker(db)
 	serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
@@ -213,6 +216,7 @@ func runServer() {
 		manager,
 		rateLimitAutoDisableWorker,
 		accountActionWorker,
+		serverErrorPriorityDemotionWorker,
 	)
 	serverApp.AppContext().AutomationRuntimeService = automationRuntime
 	manager.SetUsageEventHandler(worker.NewUsageEventFanout(

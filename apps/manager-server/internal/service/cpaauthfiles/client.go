@@ -120,6 +120,7 @@ func New(client *http.Client, timeout ...time.Duration) *Client {
 
 const authFilesPath = "/v0/management/auth-files"
 const authFilesStatusPath = "/v0/management/auth-files/status"
+const authFilesFieldsPath = "/v0/management/auth-files/fields"
 const authFilesDownloadPath = "/v0/management/auth-files/download"
 
 func authFilesEndpoint(baseURL string, fileName string, authIndex string) string {
@@ -1185,6 +1186,60 @@ func (c *Client) PatchDisabledTargetAllowSourceFile(
 	disabled bool,
 ) error {
 	return c.patchDisabledTarget(ctx, baseURL, managementKey, target, disabled, true)
+}
+
+func (c *Client) PatchPriorityTarget(
+	ctx context.Context,
+	baseURL string,
+	managementKey string,
+	target StatusMutationTarget,
+	priority int,
+) error {
+	if target.Scope != StatusMutationScopeCredential {
+		return fmt.Errorf("PATCH %s preflight: %w: target scope is %q", authFilesFieldsPath, ErrStatusMutationScopeAmbiguous, target.Scope)
+	}
+	selector := strings.TrimSpace(target.File.ID)
+	if selector == "" {
+		return fmt.Errorf("PATCH %s preflight: %w: mutation target has no stable runtime id", authFilesFieldsPath, ErrStatusMutationScopeAmbiguous)
+	}
+	if priority < 0 {
+		priority = 0
+	}
+	payload := map[string]any{"name": selector, "priority": priority}
+	if authIndex := strings.TrimSpace(target.File.AuthIndex); authIndex != "" {
+		payload["auth_index"] = authIndex
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal priority payload: %w", err)
+	}
+	base := cpa.NormalizeBaseURL(baseURL)
+	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPatch, base+authFilesFieldsPath, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("PATCH %s: %w", authFilesFieldsPath, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+managementKey)
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("PATCH %s: %w", authFilesFieldsPath, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= http.StatusOK && res.StatusCode < http.StatusMultipleChoices {
+		if err := ValidateActionResponse(res.Body); err != nil {
+			return fmt.Errorf("PATCH %s: %w", authFilesFieldsPath, err)
+		}
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	return &actionHTTPError{
+		method:     http.MethodPatch,
+		path:       authFilesFieldsPath,
+		statusCode: res.StatusCode,
+		body:       strings.TrimSpace(string(body)),
+	}
 }
 
 func (c *Client) patchDisabledTarget(

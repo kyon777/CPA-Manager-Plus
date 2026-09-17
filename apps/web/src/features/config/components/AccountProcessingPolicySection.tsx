@@ -25,6 +25,7 @@ const patchKeyByCapability: Record<AccountPolicyCapabilityKey, keyof AccountProc
     providerQuotaCooldown: 'codexQuotaCooldownEnabled',
     authIssueQueue: 'authIssueQueueEnabled',
     authIssueAutoDisable: 'authIssueAutoDisableEnabled',
+    serverErrorPriorityDemotion: 'serverErrorPriorityDemotionEnabled',
   };
 
 const toneClassByStatus: Record<AccountPolicyViewItem['statusTone'], string> = {

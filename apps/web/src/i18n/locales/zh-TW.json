@@ -4584,6 +4584,8 @@
     "group_quota_description": "控制真實請求回傳明確額度耗盡訊號後的憑證冷卻與恢復行為。",
     "group_auth_issues_title": "認證異常處理",
     "group_auth_issues_description": "控制登入失效、帳號不可用、工作區停用等異常的記錄和處理方式。",
+    "group_server_errors_title": "伺服器錯誤處理",
+    "group_server_errors_description": "控制真實請求回傳 HTTP 50X 後的帳號優先順序調整。",
     "refresh": "重新整理",
     "load_failed_title": "載入失敗",
     "load_failed": "載入失敗：{{message}}",
@@ -4627,6 +4629,15 @@
       "在認證異常頁面手動處理",
       "未開啟時不記錄新異常",
       "既有的待處理異常仍可繼續處理"
+    ],
+    "serverErrorPriorityDemotion_title": "50X 降低優先順序",
+    "serverErrorPriorityDemotion_summary": "每個新入庫的 HTTP 500–599 請求都會將符合帳號的目前優先順序減 1，最低為 0。",
+    "serverErrorPriorityDemotion_toggle": "啟用 HTTP 50X 降低優先順序",
+    "serverErrorPriorityDemotion_description": "此策略只處理新入庫的真實請求監控事件。它會重新確認符合的 JSON 帳號，再將目前優先順序減 1。",
+    "serverErrorPriorityDemotion_behavior": [
+      "只處理新入庫且唯一的 HTTP 500–599 請求事件；重新整理頁面或讀取歷史不會重複扣減",
+      "先重新讀取並驗證符合的 JSON 帳號，再按目前優先順序減 1",
+      "優先順序已為 0、帳號身分不明確或優先順序不是整數時會略過，不會修改其他帳號"
     ],
     "authIssueAutoDisable_title": "自動停用異常認證檔案",
     "authIssueAutoDisable_summary": "發現明確的失效或需重新登入帳號時，先自動停用對應登入檔案，但仍保留人工確認流程。",

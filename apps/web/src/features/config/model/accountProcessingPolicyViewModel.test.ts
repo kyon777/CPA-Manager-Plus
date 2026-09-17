@@ -30,15 +30,23 @@ function policy(overrides: Partial<AccountProcessingPolicy> = {}): AccountProces
       configFileKey: 'accountActionsAutoDisable',
       dependsOn: 'authIssueQueue',
     },
+    serverErrorPriorityDemotion: {
+      enabled: false,
+      configured: false,
+      source: 'startup',
+      locked: false,
+      envKey: 'USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED',
+      configFileKey: 'serverErrorPriorityDemotionEnabled',
+    },
     ...overrides,
   };
 }
 
 describe('buildAccountProcessingPolicyViewModel', () => {
-  it('groups quota handling and auth issue handling separately', () => {
+  it('groups quota handling, auth issue handling, and server error handling separately', () => {
     const groups = buildAccountProcessingPolicyViewModel(policy());
 
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(3);
     expect(groups[0].key).toBe('quota');
     expect(groups[0].items.map((item) => item.key)).toEqual(['providerQuotaCooldown']);
     expect(groups[1].key).toBe('authIssues');
@@ -46,6 +54,32 @@ describe('buildAccountProcessingPolicyViewModel', () => {
       'authIssueQueue',
       'authIssueAutoDisable',
     ]);
+    expect(groups[2].key).toBe('serverErrors');
+    expect(groups[2].items.map((item) => item.key)).toEqual(['serverErrorPriorityDemotion']);
+  });
+
+  it('shows server-error priority demotion as an independent editable switch', () => {
+    const groups = buildAccountProcessingPolicyViewModel(
+      policy({
+        serverErrorPriorityDemotion: {
+          enabled: true,
+          configured: true,
+          source: 'database',
+          locked: false,
+          envKey: 'USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED',
+          configFileKey: 'serverErrorPriorityDemotionEnabled',
+        },
+      })
+    );
+
+    const priorityDemotion = groups[2].items[0];
+    expect(priorityDemotion.key).toBe('serverErrorPriorityDemotion');
+    expect(priorityDemotion.enabled).toBe(true);
+    expect(priorityDemotion.dependencyBlocked).toBe(false);
+    expect(priorityDemotion.toggleDisabled).toBe(false);
+    expect(priorityDemotion.toggleLabelKey).toBe(
+      'accountPolicy.serverErrorPriorityDemotion_toggle'
+    );
   });
 
   it('marks auto-disable as configured but blocked when its dependency is off', () => {

@@ -87,6 +87,7 @@ func TestLoadReadsConfigAndResolvesRelativePaths(t *testing.T) {
   "quotaCooldownEnabled": true,
 	  "accountActionsEnabled": true,
 	  "accountActionsAutoDisable": true,
+	  "serverErrorPriorityDemotionEnabled": true,
 	  "usageImportChunkBytes": 1048576,
 	  "usageImportDiskQuotaBytes": 1073741824,
 	  "usageImportMaxSessions": 3,
@@ -139,6 +140,9 @@ func TestLoadReadsConfigAndResolvesRelativePaths(t *testing.T) {
 	if !cfg.AccountActionsAutoDisable {
 		t.Fatal("AccountActionsAutoDisable = false")
 	}
+	if !cfg.ServerErrorPriorityDemotionEnabled || cfg.ServerErrorPriorityDemotionEnvSet {
+		t.Fatalf("ServerErrorPriorityDemotion config = enabled:%t envSet:%t", cfg.ServerErrorPriorityDemotionEnabled, cfg.ServerErrorPriorityDemotionEnvSet)
+	}
 	if cfg.UsageImportChunkBytes != 1048576 || cfg.UsageImportDiskQuotaBytes != 1073741824 ||
 		cfg.UsageImportMaxSessions != 3 || cfg.UsageImportSessionTTL != 2*time.Hour {
 		t.Fatalf("usage import config = %#v", cfg)
@@ -164,6 +168,7 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	t.Setenv("USAGE_BATCH_SIZE", "12")
 	t.Setenv("CPA_MANAGER_PPROF_ADDR", "[::1]:6061")
 	t.Setenv("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", "false")
+	t.Setenv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED", "true")
 	t.Setenv("USAGE_IMPORT_CHUNK_BYTES", "2097152")
 	t.Setenv("USAGE_IMPORT_DISK_QUOTA_BYTES", "2147483648")
 	t.Setenv("USAGE_IMPORT_MAX_SESSIONS", "4")
@@ -190,6 +195,9 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	}
 	if cfg.DashboardHourlyRollupEnabled {
 		t.Fatal("DashboardHourlyRollupEnabled = true, want false")
+	}
+	if !cfg.ServerErrorPriorityDemotionEnabled || !cfg.ServerErrorPriorityDemotionEnvSet {
+		t.Fatalf("ServerErrorPriorityDemotion env config = enabled:%t envSet:%t", cfg.ServerErrorPriorityDemotionEnabled, cfg.ServerErrorPriorityDemotionEnvSet)
 	}
 	if cfg.UsageImportChunkBytes != 2097152 || cfg.UsageImportDiskQuotaBytes != 2147483648 ||
 		cfg.UsageImportMaxSessions != 4 || cfg.UsageImportSessionTTL != 30*time.Minute {
@@ -240,6 +248,7 @@ func clearConfigEnv(t *testing.T) {
 		"USAGE_QUOTA_COOLDOWN_ENABLED",
 		"USAGE_ACCOUNT_ACTIONS_ENABLED",
 		"USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE",
+		"USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED",
 		"USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED",
 		"USAGE_IMPORT_CHUNK_BYTES",
 		"USAGE_IMPORT_DISK_QUOTA_BYTES",

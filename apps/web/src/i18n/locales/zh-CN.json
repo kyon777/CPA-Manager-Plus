@@ -4584,6 +4584,8 @@
     "group_quota_description": "控制真实请求返回明确额度耗尽信号后的凭证冷却与恢复行为。",
     "group_auth_issues_title": "认证异常处理",
     "group_auth_issues_description": "控制登录失效、账号不可用、工作区停用等异常的记录和处理方式。",
+    "group_server_errors_title": "服务端错误处理",
+    "group_server_errors_description": "控制真实请求返回 HTTP 50X 后的账号优先级调整。",
     "refresh": "刷新",
     "load_failed_title": "加载失败",
     "load_failed": "加载失败：{{message}}",
@@ -4627,6 +4629,15 @@
       "在认证异常页面手动处理",
       "未开启时不记录新异常",
       "已有的待处理异常仍可继续处理"
+    ],
+    "serverErrorPriorityDemotion_title": "50X降优先级",
+    "serverErrorPriorityDemotion_summary": "每个新入库的 HTTP 500–599 请求都会将匹配账号的当前优先级减 1，最低为 0。",
+    "serverErrorPriorityDemotion_toggle": "启用 HTTP 50X 降优先级",
+    "serverErrorPriorityDemotion_description": "此策略只处理新入库的真实请求监控事件。它会重新确认匹配 JSON 账号，再将当前优先级减 1。",
+    "serverErrorPriorityDemotion_behavior": [
+      "仅处理新入库且唯一的 HTTP 500–599 请求事件；刷新页面或读取历史不会重复扣减",
+      "先重新读取并验证匹配 JSON 账号，再按当前优先级减 1",
+      "优先级已为 0、账号身份不明确或优先级不是整数时跳过，不会修改其他账号"
     ],
     "authIssueAutoDisable_title": "自动禁用异常认证文件",
     "authIssueAutoDisable_summary": "发现明确的失效或需重新登录账号时，先自动停用对应登录文件，但仍保留人工确认流程。",

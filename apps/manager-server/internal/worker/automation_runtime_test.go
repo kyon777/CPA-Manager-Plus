@@ -21,7 +21,7 @@ func TestAutomationUsageHandlerGatesNewEvents(t *testing.T) {
 	settings := automationsvc.New(config.Config{}, st)
 	quota := &recordingQuotaAutomationWorker{}
 	account := &recordingAccountAutomationWorker{}
-	handler := NewAutomationRuntime(settings, nil, quota, account).handler
+	handler := NewAutomationRuntime(settings, nil, quota, account, nil).handler
 
 	handler.HandleUsageEvents(ctx, collectorpkg.RuntimeConfig{}, []usage.Event{{EventHash: "evt-off"}})
 	if quota.handleCount != 0 || account.handleCount != 0 {
@@ -45,6 +45,37 @@ func TestAutomationUsageHandlerGatesNewEvents(t *testing.T) {
 	}
 }
 
+func TestAutomationUsageHandlerGatesServerErrorPriorityDemotion(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	settings := automationsvc.New(config.Config{}, st)
+	priority := &recordingServerErrorPriorityAutomationWorker{}
+	handler := NewAutomationRuntime(settings, nil, nil, nil, priority).handler
+
+	handler.HandleUsageEvents(ctx, collectorpkg.RuntimeConfig{}, []usage.Event{{EventHash: "evt-off"}})
+	if priority.handleCount != 0 {
+		t.Fatalf("disabled priority worker was called count=%d", priority.handleCount)
+	}
+
+	if _, err := settings.Update(ctx, automationsvc.UpdateRequest{ServerErrorPriorityDemotionEnabled: boolPtr(true)}); err != nil {
+		t.Fatalf("enable server error priority demotion: %v", err)
+	}
+	handler.HandleUsageEvents(ctx, collectorpkg.RuntimeConfig{}, []usage.Event{{EventHash: "evt-server-error"}})
+	if priority.handleCount != 1 {
+		t.Fatalf("enabled priority worker count=%d", priority.handleCount)
+	}
+
+	runtime := NewAutomationRuntime(settings, nil, nil, nil, priority)
+	runtime.Start(ctx)
+	if priority.startCount != 1 {
+		t.Fatalf("priority worker was not started count=%d", priority.startCount)
+	}
+}
+
 func TestAutomationRuntimeReloadUpdatesAutoDisable(t *testing.T) {
 	st, err := store.Open(t.TempDir() + "/usage.sqlite")
 	if err != nil {
@@ -54,7 +85,7 @@ func TestAutomationRuntimeReloadUpdatesAutoDisable(t *testing.T) {
 	ctx := context.Background()
 	settings := automationsvc.New(config.Config{}, st)
 	account := &recordingAccountAutomationWorker{}
-	runtime := NewAutomationRuntime(settings, nil, &recordingQuotaAutomationWorker{}, account)
+	runtime := NewAutomationRuntime(settings, nil, &recordingQuotaAutomationWorker{}, account, nil)
 
 	if _, err := settings.Update(ctx, automationsvc.UpdateRequest{AccountActionsEnabled: boolPtr(true), AccountActionsAutoDisable: boolPtr(true)}); err != nil {
 		t.Fatalf("enable auto-disable: %v", err)
@@ -100,6 +131,19 @@ func (w *recordingAccountAutomationWorker) SetAutoDisable(enabled bool) {
 }
 
 func (w *recordingAccountAutomationWorker) HandleUsageEvents(context.Context, collectorpkg.RuntimeConfig, []usage.Event) {
+	w.handleCount++
+}
+
+type recordingServerErrorPriorityAutomationWorker struct {
+	startCount  int
+	handleCount int
+}
+
+func (w *recordingServerErrorPriorityAutomationWorker) Start(context.Context) {
+	w.startCount++
+}
+
+func (w *recordingServerErrorPriorityAutomationWorker) HandleUsageEvents(context.Context, collectorpkg.RuntimeConfig, []usage.Event) {
 	w.handleCount++
 }
 

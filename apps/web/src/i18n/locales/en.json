@@ -4586,6 +4586,8 @@
     "group_quota_description": "Controls credential cooldown and recovery after real requests return explicit quota-exhaustion signals.",
     "group_auth_issues_title": "Auth Issue Handling",
     "group_auth_issues_description": "Controls how expired logins, unavailable accounts, and deactivated workspaces are recorded and handled.",
+    "group_server_errors_title": "Server Error Handling",
+    "group_server_errors_description": "Controls credential priority adjustments after real requests return HTTP 50X responses.",
     "refresh": "Refresh",
     "load_failed_title": "Load failed",
     "load_failed": "Load failed: {{message}}",
@@ -4629,6 +4631,15 @@
       "Handled manually on the Auth Issues page",
       "Does not record new issues when disabled",
       "Existing pending issues can still be processed"
+    ],
+    "serverErrorPriorityDemotion_title": "Lower Priority on 50X",
+    "serverErrorPriorityDemotion_summary": "Each newly stored HTTP 500–599 request lowers the matching credential's current priority by 1, never below 0.",
+    "serverErrorPriorityDemotion_toggle": "Enable HTTP 50X priority demotion",
+    "serverErrorPriorityDemotion_description": "This policy handles only newly stored real request-monitoring events. It re-verifies the matching JSON credential, then lowers its current priority by 1.",
+    "serverErrorPriorityDemotion_behavior": [
+      "Handles only new, unique HTTP 500–599 request events; page refreshes and historical reads do not lower priority again",
+      "Re-reads and verifies the matching JSON credential before lowering its current priority by 1",
+      "Skips priority 0, ambiguous identities, and non-integer priority values without changing another credential"
     ],
     "authIssueAutoDisable_title": "Auto-Disable Problem Auth Files",
     "authIssueAutoDisable_summary": "Automatically pauses login files for accounts that are clearly invalid or need re-login, while keeping manual confirmation.",

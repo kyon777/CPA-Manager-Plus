@@ -34,17 +34,19 @@ type Capability struct {
 }
 
 type Status struct {
-	Source                    string     `json:"source"`
-	UpdatedAtMS               int64      `json:"updatedAtMs,omitempty"`
-	QuotaCooldown             Capability `json:"codexQuotaCooldown"`
-	AccountActions            Capability `json:"authIssueQueue"`
-	AccountActionsAutoDisable Capability `json:"authIssueAutoDisable"`
+	Source                      string     `json:"source"`
+	UpdatedAtMS                 int64      `json:"updatedAtMs,omitempty"`
+	QuotaCooldown               Capability `json:"codexQuotaCooldown"`
+	AccountActions              Capability `json:"authIssueQueue"`
+	AccountActionsAutoDisable   Capability `json:"authIssueAutoDisable"`
+	ServerErrorPriorityDemotion Capability `json:"serverErrorPriorityDemotion"`
 }
 
 type UpdateRequest struct {
-	QuotaCooldownEnabled      *bool `json:"codexQuotaCooldownEnabled,omitempty"`
-	AccountActionsEnabled     *bool `json:"authIssueQueueEnabled,omitempty"`
-	AccountActionsAutoDisable *bool `json:"authIssueAutoDisableEnabled,omitempty"`
+	QuotaCooldownEnabled               *bool `json:"codexQuotaCooldownEnabled,omitempty"`
+	AccountActionsEnabled              *bool `json:"authIssueQueueEnabled,omitempty"`
+	AccountActionsAutoDisable          *bool `json:"authIssueAutoDisableEnabled,omitempty"`
+	ServerErrorPriorityDemotionEnabled *bool `json:"serverErrorPriorityDemotionEnabled,omitempty"`
 }
 
 type Service struct {
@@ -111,6 +113,12 @@ func (s *Service) Update(ctx context.Context, req UpdateRequest) (Status, error)
 		}
 		current.AccountActionsAutoDisable = boolPtr(*req.AccountActionsAutoDisable)
 	}
+	if req.ServerErrorPriorityDemotionEnabled != nil {
+		if s.cfg.ServerErrorPriorityDemotionEnvSet {
+			return Status{}, errors.New("serverErrorPriorityDemotionEnabled is locked by environment variable")
+		}
+		current.ServerErrorPriorityDemotionEnabled = boolPtr(*req.ServerErrorPriorityDemotionEnabled)
+	}
 	// SaveAutomationSettings returns the record it persisted (including the
 	// UpdatedAtMS it assigned). We build the response from that record instead
 	// of re-reading, so a transient read failure after a successful save cannot
@@ -150,9 +158,10 @@ func (s *Service) RuntimeSettings(ctx context.Context) RuntimeSettings {
 }
 
 type RuntimeSettings struct {
-	QuotaCooldownEnabled      bool
-	AccountActionsEnabled     bool
-	AccountActionsAutoDisable bool
+	QuotaCooldownEnabled               bool
+	AccountActionsEnabled              bool
+	AccountActionsAutoDisable          bool
+	ServerErrorPriorityDemotionEnabled bool
 }
 
 func (s *Service) loadSettings(ctx context.Context) (store.AutomationSettings, bool, error) {
@@ -163,28 +172,34 @@ func (s *Service) loadSettings(ctx context.Context) (store.AutomationSettings, b
 }
 
 type resolved struct {
-	quotaValue, quotaLocked     bool
-	quotaSource                 string
-	accountValue, accountLocked bool
-	accountSource               string
-	autoConfigured, autoLocked  bool
-	autoSource                  string
+	quotaValue, quotaLocked             bool
+	quotaSource                         string
+	accountValue, accountLocked         bool
+	accountSource                       string
+	autoConfigured, autoLocked          bool
+	autoSource                          string
+	serverErrorValue, serverErrorLocked bool
+	serverErrorSource                   string
 }
 
 func (s *Service) resolve(settings store.AutomationSettings) resolved {
 	quotaValue, quotaSource, quotaLocked := s.resolveField(settings.QuotaCooldownEnabled, s.cfg.QuotaCooldownEnabled, s.cfg.QuotaCooldownEnvSet)
 	accountValue, accountSource, accountLocked := s.resolveField(settings.AccountActionsEnabled, s.cfg.AccountActionsEnabled, s.cfg.AccountActionsEnvSet)
 	autoConfigured, autoSource, autoLocked := s.resolveField(settings.AccountActionsAutoDisable, s.cfg.AccountActionsAutoDisable, s.cfg.AccountActionsAutoEnvSet)
+	serverErrorValue, serverErrorSource, serverErrorLocked := s.resolveField(settings.ServerErrorPriorityDemotionEnabled, s.cfg.ServerErrorPriorityDemotionEnabled, s.cfg.ServerErrorPriorityDemotionEnvSet)
 	return resolved{
-		quotaValue:     quotaValue,
-		quotaSource:    quotaSource,
-		quotaLocked:    quotaLocked,
-		accountValue:   accountValue,
-		accountSource:  accountSource,
-		accountLocked:  accountLocked,
-		autoConfigured: autoConfigured,
-		autoSource:     autoSource,
-		autoLocked:     autoLocked,
+		quotaValue:        quotaValue,
+		quotaSource:       quotaSource,
+		quotaLocked:       quotaLocked,
+		accountValue:      accountValue,
+		accountSource:     accountSource,
+		accountLocked:     accountLocked,
+		autoConfigured:    autoConfigured,
+		autoSource:        autoSource,
+		autoLocked:        autoLocked,
+		serverErrorValue:  serverErrorValue,
+		serverErrorSource: serverErrorSource,
+		serverErrorLocked: serverErrorLocked,
 	}
 }
 
@@ -193,7 +208,7 @@ func (s *Service) statusFromSettings(settings store.AutomationSettings) Status {
 	autoEffective := r.accountValue && r.autoConfigured
 
 	return Status{
-		Source:      overallSource(r.quotaSource, r.accountSource, r.autoSource),
+		Source:      overallSource(r.quotaSource, r.accountSource, r.autoSource, r.serverErrorSource),
 		UpdatedAtMS: settings.UpdatedAtMS,
 		QuotaCooldown: Capability{
 			Enabled:       r.quotaValue,
@@ -220,15 +235,24 @@ func (s *Service) statusFromSettings(settings store.AutomationSettings) Status {
 			ConfigFileKey: "accountActionsAutoDisable",
 			DependsOn:     "authIssueQueue",
 		},
+		ServerErrorPriorityDemotion: Capability{
+			Enabled:       r.serverErrorValue,
+			Configured:    r.serverErrorValue,
+			Source:        r.serverErrorSource,
+			Locked:        r.serverErrorLocked,
+			EnvKey:        "USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED",
+			ConfigFileKey: "serverErrorPriorityDemotionEnabled",
+		},
 	}
 }
 
 func (s *Service) runtimeFromSettings(settings store.AutomationSettings) RuntimeSettings {
 	r := s.resolve(settings)
 	return RuntimeSettings{
-		QuotaCooldownEnabled:      r.quotaValue,
-		AccountActionsEnabled:     r.accountValue,
-		AccountActionsAutoDisable: r.accountValue && r.autoConfigured,
+		QuotaCooldownEnabled:               r.quotaValue,
+		AccountActionsEnabled:              r.accountValue,
+		AccountActionsAutoDisable:          r.accountValue && r.autoConfigured,
+		ServerErrorPriorityDemotionEnabled: r.serverErrorValue,
 	}
 }
 
