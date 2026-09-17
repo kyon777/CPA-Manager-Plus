@@ -76,7 +76,9 @@ import {
   hasActiveRun,
   isActiveRun,
 } from '@/features/monitoring/model/serverCodexInspectionLifecycle';
+import { resolveServerInspectionAccountNote } from '@/features/monitoring/model/serverInspectionAccountNote';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
+import { authFilesApi } from '@/services/api/authFiles';
 import {
   getUsageServiceErrorCode,
   monitoringAnalyticsApi,
@@ -90,6 +92,7 @@ import {
   type UsageHeaderSnapshot,
 } from '@/services/api/usageService';
 import { useAuthStore, useNotificationStore } from '@/stores';
+import type { AuthFileItem } from '@/types';
 import {
   buildUsageHeaderSnapshotLookup,
   getHeaderSnapshotErrorCode,
@@ -605,12 +608,14 @@ export function toServerResultItem(
   item: CodexInspectionResult,
   t: ReturnType<typeof useTranslation>['t'],
   snapshot: UsageHeaderSnapshot | undefined,
-  locale: string
+  locale: string,
+  accountNote = ''
 ): CodexInspectionResultItem {
   const actionReason = item.actionReason?.startsWith('monitoring.')
     ? t(item.actionReason)
     : item.actionReason;
   const observedHeaderEvidence = buildObservedHeaderEvidence(snapshot, item.provider, locale, t);
+  const normalizedAccountNote = accountNote.trim();
   return {
     key: `server-${item.id || item.accountKey}`,
     runtimeId: item.runtimeId ?? null,
@@ -624,7 +629,10 @@ export function toServerResultItem(
     autoRecoverOwned: item.autoRecoverEligible === true,
     status: item.status ?? '',
     state: item.state ?? '',
-    raw: item as unknown as CodexInspectionResultItem['raw'],
+    raw: {
+      ...(item as unknown as CodexInspectionResultItem['raw']),
+      ...(normalizedAccountNote ? { note: normalizedAccountNote } : {}),
+    },
     action: normalizeServerResultAction(item.action),
     actionReason,
     statusCode: item.statusCode ?? null,
@@ -729,6 +737,7 @@ export function ServerCodexInspectionPage({
   const [runs, setRuns] = useState<CodexInspectionRun[]>([]);
   const [detail, setDetail] = useState<CodexInspectionRunDetail | null>(null);
   const [headerSnapshots, setHeaderSnapshots] = useState<UsageHeaderSnapshot[]>([]);
+  const [currentAuthFiles, setCurrentAuthFiles] = useState<AuthFileItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -754,6 +763,7 @@ export function ServerCodexInspectionPage({
   const detailContextRef = useRef<object | null>(null);
   const detailRequestGenerationRef = useRef(0);
   const runListMutationGenerationRef = useRef(0);
+  const authFilesRequestGenerationRef = useRef(0);
   const selectedRunIdRef = useRef<number | null>(null);
   const logListRef = useRef<HTMLDivElement | null>(null);
   const previousServerLogCursorRef = useRef<{
@@ -799,6 +809,24 @@ export function ServerCodexInspectionPage({
   const activeManagerConnectionIdentityRef = useRef(managerConnectionIdentity);
   activeManagerConnectionIdentityRef.current = managerConnectionIdentity;
 
+  const loadCurrentAuthFiles = useCallback(async () => {
+    const connectionContext = managerConnectionIdentity;
+    const requestGeneration = ++authFilesRequestGenerationRef.current;
+    try {
+      const response = await authFilesApi.list(authFilesRequestScope);
+      if (
+        activeManagerConnectionIdentityRef.current !== connectionContext ||
+        requestGeneration !== authFilesRequestGenerationRef.current
+      ) {
+        return;
+      }
+      setCurrentAuthFiles(response.files ?? []);
+    } catch {
+      // Historical inspection results remain usable when the live auth-files
+      // lookup is unavailable; only the presentation note is omitted.
+    }
+  }, [authFilesRequestScope, managerConnectionIdentity]);
+
   useLayoutEffect(() => {
     detailRequestGenerationRef.current += 1;
     runListMutationGenerationRef.current += 1;
@@ -813,6 +841,8 @@ export function ServerCodexInspectionPage({
     setRuns([]);
     setDetail(null);
     setHeaderSnapshots([]);
+    setCurrentAuthFiles([]);
+    authFilesRequestGenerationRef.current += 1;
     setSelectedRunId(null);
     setExecutingResultIds(new Set());
     setExecutingAllActions(false);
@@ -877,6 +907,7 @@ export function ServerCodexInspectionPage({
       if (!resolvedBase || !featureAvailability.serverCodexInspectionAvailable) {
         throw new Error(t('monitoring.server_codex_inspection_service_unavailable'));
       }
+      void loadCurrentAuthFiles();
       const response = await usageServiceApi.getManagerConfig(resolvedBase, managementKey);
       if (!isCurrentConnection()) return;
       const responseConfig = response.config;
@@ -922,6 +953,7 @@ export function ServerCodexInspectionPage({
   }, [
     featureAvailability.managerServiceBase,
     featureAvailability.serverCodexInspectionAvailable,
+    loadCurrentAuthFiles,
     loadRunDetail,
     managementKey,
     managerConnectionIdentity,
@@ -1010,10 +1042,11 @@ export function ServerCodexInspectionPage({
           item,
           t,
           snapshotMatch.confidence === 'high' ? snapshotMatch.snapshot : undefined,
-          i18n.language
+          i18n.language,
+          resolveServerInspectionAccountNote(item, currentAuthFiles)
         );
       }),
-    [headerSnapshotLookup, i18n.language, resultRows, t]
+    [currentAuthFiles, headerSnapshotLookup, i18n.language, resultRows, t]
   );
   const resultByKey = useMemo(() => {
     const map = new Map<string, CodexInspectionResult>();
@@ -1105,6 +1138,7 @@ export function ServerCodexInspectionPage({
         setLoading(true);
         setError('');
       }
+      void loadCurrentAuthFiles();
       try {
         const mutationGeneration = runListMutationGenerationRef.current;
         const response = await usageServiceApi.listCodexInspectionRuns(
@@ -1153,6 +1187,7 @@ export function ServerCodexInspectionPage({
     },
     [
       currentDetail,
+      loadCurrentAuthFiles,
       loadPageData,
       loadRunDetail,
       managementKey,

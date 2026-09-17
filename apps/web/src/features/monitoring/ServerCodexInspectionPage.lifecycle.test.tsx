@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   executeActions: vi.fn(),
   getHeaderSnapshots: vi.fn(),
+  listAuthFiles: vi.fn(),
   lastCodexReauthProps: null as null | {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
@@ -109,6 +110,17 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
     monitoringAnalyticsApi: {
       ...actual.monitoringAnalyticsApi,
       getHeaderSnapshots: mocks.getHeaderSnapshots,
+    },
+  };
+});
+
+vi.mock('@/services/api/authFiles', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/api/authFiles')>();
+  return {
+    ...actual,
+    authFilesApi: {
+      ...actual.authFilesApi,
+      list: mocks.listAuthFiles,
     },
   };
 });
@@ -242,9 +254,26 @@ describe('ServerCodexInspectionPage quota mapping', () => {
       }),
     ]);
     expect(mapped.observedHeaderEvidence?.join(' · ')).toContain('Business Premium 5x');
-    expect(mapped.observedHeaderEvidence?.join(' · ')).not.toContain(
-      'self_serve_business_prolite'
-    );
+    expect(mapped.observedHeaderEvidence?.join(' · ')).not.toContain('self_serve_business_prolite');
+  });
+  it('passes a resolved account note through to the result card raw source', () => {
+    const item: CodexInspectionResult = {
+      id: 8,
+      runId: 1,
+      accountKey: 'codex.json::auth-8',
+      fileName: 'codex.json',
+      displayAccount: 'account@example.com',
+      provider: 'codex',
+      disabled: false,
+      action: 'keep',
+      actionReason: '',
+      isQuota: false,
+      createdAtMs: 0,
+    };
+
+    const mapped = toServerResultItem(item, t, undefined, 'en', 'Production Pool');
+
+    expect(mapped.raw.note).toBe('Production Pool');
   });
 });
 
@@ -281,6 +310,7 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
     });
     mocks.getManagerConfig.mockResolvedValue({ config: managerConfig, source: 'db' });
     mocks.getHeaderSnapshots.mockResolvedValue({ items: [] });
+    mocks.listAuthFiles.mockResolvedValue({ files: [] });
     mocks.executeActions.mockReset();
     mocks.showConfirmation.mockImplementation((options: { onConfirm: () => void }) => {
       options.onConfirm();
@@ -294,6 +324,75 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
 
     expect(markup).toContain('monitoring.server_codex_inspection_stop');
     expect(markup).not.toContain('disabled=""');
+  });
+
+  it('shows the matching current JSON account note on a historical server result', async () => {
+    const completed = run({
+      id: 81,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      totalFiles: 1,
+      probeSetCount: 1,
+      sampledCount: 1,
+      keepCount: 1,
+      finishedAtMs: 2_000,
+    });
+    const inspectionResult: CodexInspectionResult = {
+      id: 810,
+      runId: completed.id,
+      accountKey: 'codex.json::auth-81',
+      fileName: 'codex.json',
+      displayAccount: 'account@example.com',
+      authIndex: 'auth-81',
+      accountId: 'workspace-81',
+      accountSnapshot: 'account@example.com',
+      provider: 'codex',
+      disabled: false,
+      action: 'keep',
+      actionReason: '',
+      isQuota: false,
+      createdAtMs: 2_000,
+    };
+    mocks.listRuns.mockResolvedValue({ items: [completed] });
+    mocks.getRun.mockResolvedValue({
+      run: completed,
+      results: [inspectionResult],
+      logs: [],
+    });
+    mocks.listAuthFiles.mockResolvedValue({
+      files: [
+        {
+          id: 'runtime-auth-81',
+          name: 'codex.json',
+          provider: 'codex',
+          authIndex: 'auth-81',
+          account: 'account@example.com',
+          account_id: 'workspace-81',
+          note: '  Production Pool  ',
+        },
+      ],
+    });
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage />
+        </MemoryRouter>
+      );
+      await flush();
+      await flush();
+    });
+
+    expect(mocks.listAuthFiles).toHaveBeenCalledWith({
+      apiBase: 'http://cpa.local:8317',
+      managementKey: 'management-key',
+    });
+    const noteBadge = renderer!.root.findByProps({ 'data-inspection-account-note': true });
+    expect(textContent(noteBadge)).toBe('Production Pool');
+
+    act(() => renderer!.unmount());
   });
 
   it('disables the stop button while the run is cancelling', () => {
