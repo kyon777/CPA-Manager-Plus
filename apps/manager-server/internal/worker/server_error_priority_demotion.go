@@ -22,9 +22,9 @@ const (
 )
 
 // ServerErrorPriorityDemotionWorker lowers a credential's current priority by
-// one for each newly persisted 5xx request-monitoring event. The collector only
-// forwards inserted event hashes, so a historical event is never replayed by a
-// page refresh or process restart.
+// one for each newly persisted HTTP 502 or 503 request-monitoring event. The
+// collector only forwards inserted event hashes, so a historical event is never
+// replayed by a page refresh or process restart.
 type ServerErrorPriorityDemotionWorker struct {
 	client            *http.Client
 	authFileMutations *cpaauthfiles.MutationCoordinator
@@ -161,7 +161,7 @@ func serverErrorPriorityDemotionCandidateFromEvent(
 	baseURL string,
 	managementKey string,
 ) (serverErrorPriorityDemotionCandidate, bool) {
-	if !event.Failed || event.FailStatusCode < http.StatusInternalServerError || event.FailStatusCode > 599 {
+	if !event.Failed || (event.FailStatusCode != http.StatusBadGateway && event.FailStatusCode != http.StatusServiceUnavailable) {
 		return serverErrorPriorityDemotionCandidate{}, false
 	}
 	fileName := strings.TrimSpace(event.AuthFileSnapshot)

@@ -11,7 +11,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
-func TestServerErrorPriorityDemotionWorkerDecreasesCurrentPriorityForHTTP5xx(t *testing.T) {
+func TestServerErrorPriorityDemotionWorkerDecreasesCurrentPriorityForHTTP502(t *testing.T) {
 	patchCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
@@ -111,7 +111,7 @@ func TestServerErrorPriorityDemotionWorkerDoesNotMakePriorityNegative(t *testing
 	}
 }
 
-func TestServerErrorPriorityDemotionCandidateOnlyAcceptsHTTP5xx(t *testing.T) {
+func TestServerErrorPriorityDemotionCandidateOnlyAcceptsHTTP502And503(t *testing.T) {
 	base := usage.Event{
 		Failed:           true,
 		AuthFileSnapshot: "codex-auth.json",
@@ -119,14 +119,22 @@ func TestServerErrorPriorityDemotionCandidateOnlyAcceptsHTTP5xx(t *testing.T) {
 		AccountSnapshot:  "user@example.com",
 		Provider:         "codex",
 	}
-	for _, statusCode := range []int{http.StatusInternalServerError, http.StatusNetworkAuthenticationRequired} {
+	for _, statusCode := range []int{http.StatusBadGateway, http.StatusServiceUnavailable} {
 		event := base
 		event.FailStatusCode = statusCode
 		if _, ok := serverErrorPriorityDemotionCandidateFromEvent(event, "http://cpa", "management-key"); !ok {
 			t.Fatalf("HTTP %d should produce a priority-demotion candidate", statusCode)
 		}
 	}
-	for _, statusCode := range []int{http.StatusTooManyRequests, 499, 600} {
+	for _, statusCode := range []int{
+		http.StatusTooManyRequests,
+		499,
+		http.StatusInternalServerError,
+		http.StatusNotImplemented,
+		http.StatusGatewayTimeout,
+		http.StatusNetworkAuthenticationRequired,
+		600,
+	} {
 		event := base
 		event.FailStatusCode = statusCode
 		if _, ok := serverErrorPriorityDemotionCandidateFromEvent(event, "http://cpa", "management-key"); ok {
