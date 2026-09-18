@@ -18,6 +18,7 @@ import {
   isCodexMainQuotaWindow,
   resolveCodexUsageQuotaScope,
 } from '@/utils/quota/codexQuota';
+import { hasUsableCodexCredits } from '@/utils/quota/codexCredits';
 import {
   getAuthFileStatusMessage,
   isHealthyAuthFileStatusMessage,
@@ -1264,7 +1265,13 @@ export const getAuthFileCodexStatus = (
     observedQuotaLimited && observedLimitWindowKind === 'weekly' && !observedWeeklyUnderLimit;
   const observedMonthlyLimited =
     observedQuotaLimited && observedLimitWindowKind === 'monthly' && !observedMonthlyUnderLimit;
-  const observedQuotaLimitedStatus = observedQuotaLimited && !observedSpecificLimitSuppressed;
+  const hasMonthlyAllowanceCreditFallback = isCodex && hasUsableCodexCredits(quota);
+  const observedMonthlyAllowanceCoveredByCredits =
+    hasMonthlyAllowanceCreditFallback && observedLimitWindowKind === 'monthly';
+  const observedQuotaLimitedStatus =
+    observedQuotaLimited &&
+    !observedSpecificLimitSuppressed &&
+    !observedMonthlyAllowanceCoveredByCredits;
   const monthlyUsedPercent =
     monthlyWindowUsedPercent ?? (monthlyWindow ? inspectionUsedPercent : null);
   const longWindowUsedPercent = weeklyWindowUsedPercent ?? monthlyUsedPercent;
@@ -1300,6 +1307,7 @@ export const getAuthFileCodexStatus = (
       observedWeeklyLimited);
   const isMonthlyLimited =
     isCodex &&
+    !hasMonthlyAllowanceCreditFallback &&
     ((monthlyUsedPercent !== null && monthlyUsedPercent >= 100) ||
       (inspectionReachedQuota && monthlyWindow !== null && !weeklyWindow) ||
       observedMonthlyLimited);

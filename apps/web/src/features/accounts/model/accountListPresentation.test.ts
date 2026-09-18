@@ -1011,6 +1011,37 @@ describe('accountListPresentation', () => {
     );
     expect(explicitMonthlyItem.health.status).toBe('monthly_exhausted');
 
+    const monthlyCreditsAvailableItem = buildAccountListItem(
+      makeRow({
+        quota: {
+          status: 'ok',
+          remainingPercent: 0,
+          usedPercent: 100,
+          resetLabel: 'month-end',
+          planType: null,
+          source: 'cache',
+          creditsBalance: '996.8907575',
+          creditsHasCredits: false,
+          creditsOverageLimitReached: false,
+          spendControlReached: false,
+        },
+      }),
+      {
+        quotaWindows: [
+          {
+            key: 'monthly',
+            label: 'Monthly limit',
+            kind: 'monthly',
+            remainingPercent: 0,
+            usedPercent: 100,
+            resetLabel: 'month-end',
+            modelScope: CODEX_MAIN_SCOPE,
+          },
+        ],
+      }
+    );
+    expect(monthlyCreditsAvailableItem.health.status).toBe('available');
+
     const dailyExhaustedItem = buildAccountListItem(
       makeRow({
         quota: {

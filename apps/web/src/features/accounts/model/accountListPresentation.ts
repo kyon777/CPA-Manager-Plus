@@ -17,6 +17,7 @@ import {
 import type { UsageValueSource } from './usageValueRows';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import { isCodexMainQuotaWindow } from '@/utils/quota/codexQuota';
+import { hasUsableCodexCredits } from '@/utils/quota/codexCredits';
 import { getPlanPresentation, type PlanPresentation } from '@/utils/plans';
 import {
   classifyAccountCredentialStatusEvidence,
@@ -483,6 +484,20 @@ const resolveQuotaWindowLimitKind = (
   return hasUnknownLimitedWindow ? 'unknown' : null;
 };
 
+const isCodexMonthlyAllowanceCoveredByCredits = (
+  row: AccountRow,
+  quotaWindows: AccountListQuotaWindowPresentation[]
+): boolean => {
+  if (row.provider !== 'codex' || !hasUsableCodexCredits(row.quota)) return false;
+  const exhaustedWindows = quotaWindows.filter(
+    (window) => window.remainingPercent !== null && window.remainingPercent <= 0
+  );
+  return (
+    exhaustedWindows.length > 0 &&
+    exhaustedWindows.every((window) => inferQuotaWindowKind(window) === 'monthly')
+  );
+};
+
 const resolveAntigravityAvailability = (
   row: AccountRow,
   quotaWindows: AccountListQuotaWindowPresentation[]
@@ -612,6 +627,7 @@ const hasKnownAvailableQuota = (
       antigravityAvailability.state === 'available' || antigravityAvailability.state === 'partial'
     );
   }
+  if (isCodexMonthlyAllowanceCoveredByCredits(row, quotaWindows)) return true;
   const hasPaygRemaining = hasAvailablePaygWindow(quotaWindows);
   const knownWindowRemaining = quotaWindows
     .filter((window) => !isCoveredBillingWindow(window, hasPaygRemaining))
@@ -776,16 +792,22 @@ const resolveHealthStatus = (
     !hasRowAuthenticationEvidence &&
     requestCredentialEvidence?.direction !== 'positive';
   const antigravityAvailability = resolveAntigravityAvailability(row, quotaWindows);
-  const resolveEffectiveQuotaWindowLimitKind = () =>
-    antigravityAvailability
-      ? antigravityAvailability.state !== 'exhausted'
-        ? null
-        : isSupportedLimitWindowKind(
-              (antigravityAvailability.resetKind as AccountListQuotaWindowKind | undefined) ?? null
-            )
-          ? (antigravityAvailability.resetKind as AccountListSupportedLimitKind)
-          : 'unknown'
-      : resolveQuotaWindowLimitKind(quotaWindows);
+  const codexMonthlyAllowanceCoveredByCredits = isCodexMonthlyAllowanceCoveredByCredits(
+    row,
+    quotaWindows
+  );
+  const resolveEffectiveQuotaWindowLimitKind = (): AccountListQuotaLimitKind | null => {
+    if (antigravityAvailability) {
+      if (antigravityAvailability.state !== 'exhausted') return null;
+      return isSupportedLimitWindowKind(
+        (antigravityAvailability.resetKind as AccountListQuotaWindowKind | undefined) ?? null
+      )
+        ? (antigravityAvailability.resetKind as AccountListSupportedLimitKind)
+        : 'unknown';
+    }
+    const limitKind = resolveQuotaWindowLimitKind(quotaWindows);
+    return limitKind === 'monthly' && codexMonthlyAllowanceCoveredByCredits ? null : limitKind;
+  };
 
   if (authenticationProblem || providerStatusNeedsReauth) {
     const authenticationSource =
@@ -949,7 +971,10 @@ const resolveHealthStatus = (
     };
   }
 
-  if (row.quota.status === 'exhausted' || row.quota.remainingPercent === 0) {
+  if (
+    !codexMonthlyAllowanceCoveredByCredits &&
+    (row.quota.status === 'exhausted' || row.quota.remainingPercent === 0)
+  ) {
     return {
       status: 'limited',
       tooltipKey: 'accounts.health_tip_limited',

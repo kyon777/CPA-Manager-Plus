@@ -274,6 +274,32 @@ describe('auth file Codex status helpers', () => {
     expect(status.badges.map((badge) => badge.kind)).toContain('monthly_limited');
   });
 
+  it('keeps a monthly-exhausted Codex account available while positive credits remain', () => {
+    const status = getAuthFileCodexStatus(
+      codexFile(),
+      codexQuota({
+        creditsHasCredits: false,
+        creditsBalance: '996.8907575',
+        creditsOverageLimitReached: false,
+        spendControlReached: false,
+        windows: [
+          {
+            id: 'monthly',
+            label: 'Monthly limit',
+            usedPercent: 100,
+            resetLabel: '06/30 12:00',
+            limitWindowSeconds: 2_592_000,
+          },
+        ],
+      })
+    );
+
+    expect(status.isMonthlyLimited).toBe(false);
+    expect(status.isQuotaLimited).toBe(false);
+    expect(authFileMatchesCodexStatusFilter(status, 'monthly_limited')).toBe(false);
+    expect(status.badges.map((badge) => badge.kind)).not.toContain('monthly_limited');
+  });
+
   it('detects disabled Codex files with a known quota recovery label', () => {
     const status = getAuthFileCodexStatus(codexFile({ disabled: true }), codexQuota());
 

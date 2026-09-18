@@ -394,6 +394,157 @@ describe('resolveAccountQuota', () => {
     });
   });
 
+  it('keeps a Codex account available when its monthly allowance is exhausted but paid credits remain', () => {
+    const file = {
+      name: 'codex-paid-credits.json',
+      type: 'codex',
+      authIndex: 'auth-1',
+    } as AuthFileItem;
+    const quota: CodexQuotaState = {
+      status: 'success',
+      creditsHasCredits: false,
+      creditsBalance: '996.8907575',
+      creditsOverageLimitReached: false,
+      spendControlReached: false,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          usedPercent: 100,
+          resetLabel: 'month-end',
+          limitWindowSeconds: 2_592_000,
+          modelScope: { kind: 'family', key: 'codex_main', complete: true },
+        },
+      ],
+    };
+
+    expect(
+      resolveAccountQuota(file, emptyStores(), {
+        codexQuotaBySelectionKey: new Map([[getAuthFileSelectionKey(file), quota]]),
+      })
+    ).toMatchObject({
+      status: 'ok',
+      remainingPercent: 0,
+      creditsBalance: '996.8907575',
+    });
+  });
+
+  it('keeps a Codex account exhausted when paid credits are blocked by spend controls', () => {
+    const file = {
+      name: 'codex-credits-blocked.json',
+      type: 'codex',
+      authIndex: 'auth-1',
+    } as AuthFileItem;
+    const quota: CodexQuotaState = {
+      status: 'success',
+      creditsHasCredits: true,
+      creditsBalance: '996.8907575',
+      creditsOverageLimitReached: false,
+      spendControlReached: true,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          usedPercent: 100,
+          resetLabel: 'month-end',
+          limitWindowSeconds: 2_592_000,
+          modelScope: { kind: 'family', key: 'codex_main', complete: true },
+        },
+      ],
+    };
+
+    expect(
+      resolveAccountQuota(file, emptyStores(), {
+        codexQuotaBySelectionKey: new Map([[getAuthFileSelectionKey(file), quota]]),
+      })
+    ).toMatchObject({
+      status: 'exhausted',
+      remainingPercent: 0,
+    });
+  });
+
+  it('does not let paid credits bypass an exhausted short Codex window', () => {
+    const file = {
+      name: 'codex-short-window-exhausted.json',
+      type: 'codex',
+      authIndex: 'auth-1',
+    } as AuthFileItem;
+    const quota: CodexQuotaState = {
+      status: 'success',
+      creditsHasCredits: false,
+      creditsBalance: '996.8907575',
+      creditsOverageLimitReached: false,
+      spendControlReached: false,
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5-hour limit',
+          usedPercent: 100,
+          resetLabel: 'soon',
+          limitWindowSeconds: 18_000,
+          modelScope: { kind: 'family', key: 'codex_main', complete: true },
+        },
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          usedPercent: 100,
+          resetLabel: 'month-end',
+          limitWindowSeconds: 2_592_000,
+          modelScope: { kind: 'family', key: 'codex_main', complete: true },
+        },
+      ],
+    };
+
+    expect(
+      resolveAccountQuota(file, emptyStores(), {
+        codexQuotaBySelectionKey: new Map([[getAuthFileSelectionKey(file), quota]]),
+      })
+    ).toMatchObject({
+      status: 'exhausted',
+      remainingPercent: 0,
+      resetLabel: 'soon',
+    });
+  });
+
+  it('retains paid-credit availability when the latest Codex quota refresh fails', () => {
+    const file = {
+      name: 'codex-credits-refresh-error.json',
+      type: 'codex',
+      authIndex: 'auth-1',
+    } as AuthFileItem;
+    const quota: CodexQuotaState = {
+      status: 'error',
+      error: 'HTTP 503',
+      errorStatus: 503,
+      creditsHasCredits: false,
+      creditsBalance: '996.8907575',
+      creditsOverageLimitReached: false,
+      spendControlReached: false,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          usedPercent: 100,
+          resetLabel: 'month-end',
+          limitWindowSeconds: 2_592_000,
+          modelScope: { kind: 'family', key: 'codex_main', complete: true },
+        },
+      ],
+    };
+
+    expect(
+      resolveAccountQuota(file, emptyStores(), {
+        codexQuotaBySelectionKey: new Map([[getAuthFileSelectionKey(file), quota]]),
+      })
+    ).toMatchObject({
+      status: 'ok',
+      remainingPercent: 0,
+      creditsBalance: '996.8907575',
+      error: 'HTTP 503',
+      errorStatus: 503,
+    });
+  });
+
   it('does not treat a scoped Header observation as fresh account-wide quota evidence', () => {
     const file = {
       name: 'codex.json',

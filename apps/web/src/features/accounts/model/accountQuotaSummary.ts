@@ -25,6 +25,7 @@ import {
 } from '@/utils/usageHeaderSnapshots';
 import { getCredentialScopedQuotaState } from '@/utils/quota/credentialScope';
 import { isCodexMainQuotaModelScope, isCodexMainQuotaWindow } from '@/utils/quota/codexQuota';
+import { hasUsableCodexCredits } from '@/utils/quota/codexCredits';
 import { resolveAuthFilePlanType, resolveAntigravityPlanType } from '@/utils/plans';
 
 export type AccountQuotaStatus =
@@ -529,6 +530,30 @@ const quotaFromUsedWindows = (
 const codexMainQuotaWindows = (quota: CodexQuotaState) =>
   quota.windows.filter(isCodexMainQuotaWindow);
 
+const isCodexMonthlyQuotaWindow = (window: CodexQuotaState['windows'][number]): boolean =>
+  window.id === 'monthly' ||
+  window.labelKey === 'codex_quota.monthly_window' ||
+  window.limitWindowSeconds === 2_592_000;
+
+const isCodexQuotaWindowExhausted = (window: CodexQuotaState['windows'][number]): boolean =>
+  typeof window.usedPercent === 'number' &&
+  Number.isFinite(window.usedPercent) &&
+  window.usedPercent >= 100;
+
+const isCodexMonthlyAllowanceCoveredByCredits = (quota: CodexQuotaState): boolean => {
+  if (!hasUsableCodexCredits(quota)) return false;
+  const exhaustedWindows = codexMainQuotaWindows(quota).filter(isCodexQuotaWindowExhausted);
+  return exhaustedWindows.length > 0 && exhaustedWindows.every(isCodexMonthlyQuotaWindow);
+};
+
+const applyCodexCreditAvailability = (
+  summary: AccountQuotaSummary,
+  quota: CodexQuotaState
+): AccountQuotaSummary =>
+  summary.status === 'exhausted' && isCodexMonthlyAllowanceCoveredByCredits(quota)
+    ? { ...summary, status: 'ok' }
+    : summary;
+
 const normalizeXaiPlanType = (planType?: string | null): string =>
   planType ? planType.trim().toLowerCase().replace(/[\s\-_]+/g, '') : '';
 
@@ -919,9 +944,13 @@ export const resolveAccountQuota = (
       if (quota.windows.length > 0) {
         return mergeQuotaObservationFields(
           {
-            ...quotaFromUsedWindows(
-              codexMainQuotaWindows(quota),
-              quota.planType ?? observedPlanType
+            ...applyCodexCreditAvailability(
+              quotaFromUsedWindows(
+                codexMainQuotaWindows(quota),
+                quota.planType ?? observedPlanType,
+                quotaObservationFields(quota)
+              ),
+              quota
             ),
             error: quota.error,
             errorStatus: quota.errorStatus,
@@ -961,10 +990,13 @@ export const resolveAccountQuota = (
       );
     }
     return mergeQuotaObservationFields(
-      quotaFromUsedWindows(
-        codexMainQuotaWindows(quota),
-        quota.planType ?? observedPlanType,
-        quotaObservationFields(quota)
+      applyCodexCreditAvailability(
+        quotaFromUsedWindows(
+          codexMainQuotaWindows(quota),
+          quota.planType ?? observedPlanType,
+          quotaObservationFields(quota)
+        ),
+        quota
       ),
       headerObservationFields
     );
