@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountRow } from './accountRows';
+import type { CredentialRuntimeMetadataItem, TokenRecoveryStatus } from '@/services/api/usageService';
 import {
   buildCredentialRuntimeMetadataTargets,
+  buildPageAccountBannedRows,
   buildPageRecoveryCandidates,
   formatRecoveryState,
   isPendingRecoveryStatus,
@@ -40,6 +42,72 @@ const makeRow = (overrides: Partial<AccountRow> = {}): AccountRow =>
   }) as AccountRow;
 
 describe('credential runtime metadata model', () => {
+  it('selects only current-page Codex rows with terminal account_banned recovery errors', () => {
+    const banned = makeRow({ selectionKey: 'row-banned', fileName: 'banned.json' });
+    const caseVariant = makeRow({ selectionKey: 'row-case', fileName: 'case.json' });
+    const pending = makeRow({ selectionKey: 'row-pending', fileName: 'pending.json' });
+    const runtimeOnly = makeRow({
+      selectionKey: 'row-runtime',
+      fileName: 'runtime.json',
+      runtimeOnly: true,
+    });
+    const nonCodex = makeRow({ selectionKey: 'row-xai', fileName: 'xai.json', provider: 'xai' });
+    const metadata = (clientKey: string, status: TokenRecoveryStatus, lastErrorCode?: string) =>
+      ({
+        clientKey,
+        recoveryTask: {
+          id: 1,
+          fileName: `${clientKey}.json`,
+          provider: 'codex',
+          status,
+          mode: 'manual',
+          ...(lastErrorCode === undefined ? {} : { lastErrorCode }),
+        },
+      }) satisfies CredentialRuntimeMetadataItem;
+
+    const rows = buildPageAccountBannedRows(
+      [banned, caseVariant, pending, runtimeOnly, nonCodex],
+      new Map([
+        ['row-banned', metadata('row-banned', 'manual_failed_manual_only', 'account_banned')],
+        ['row-case', metadata('row-case', 'auto_failed_manual_only', ' ACCOUNT_BANNED ')],
+        ['row-pending', metadata('row-pending', 'manual_running', 'account_banned')],
+        ['row-runtime', metadata('row-runtime', 'manual_failed_manual_only', 'account_banned')],
+        ['row-xai', metadata('row-xai', 'manual_failed_manual_only', 'account_banned')],
+      ])
+    );
+
+    expect(rows.map((row) => row.selectionKey)).toEqual(['row-banned', 'row-case']);
+  });
+
+  it('ignores terminal recovery tasks without an exact banned error code', () => {
+    const blank = makeRow({ selectionKey: 'row-blank', fileName: 'blank.json' });
+    const missing = makeRow({ selectionKey: 'row-missing', fileName: 'missing.json' });
+    const other = makeRow({ selectionKey: 'row-other', fileName: 'other.json' });
+    const task = (clientKey: string, lastErrorCode?: string) =>
+      ({
+        clientKey,
+        recoveryTask: {
+          id: 2,
+          fileName: `${clientKey}.json`,
+          provider: 'codex',
+          status: 'manual_failed_manual_only',
+          mode: 'manual',
+          ...(lastErrorCode === undefined ? {} : { lastErrorCode }),
+        },
+      }) satisfies CredentialRuntimeMetadataItem;
+
+    expect(
+      buildPageAccountBannedRows(
+        [blank, missing, other],
+        new Map([
+          ['row-blank', task('row-blank', '   ')],
+          ['row-missing', task('row-missing')],
+          ['row-other', task('row-other', 'account_disabled')],
+        ])
+      )
+    ).toEqual([]);
+  });
+
   it('creates redacted metadata locators from visible rows', () => {
     const targets = buildCredentialRuntimeMetadataTargets([
       makeRow(),

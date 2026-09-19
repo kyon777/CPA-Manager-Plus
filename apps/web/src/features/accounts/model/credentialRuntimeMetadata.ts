@@ -1,4 +1,5 @@
 import type {
+  CredentialRuntimeMetadataItem,
   CredentialRuntimeMetadataTarget,
   TokenRecoveryBatchTargetRequest,
   TokenRecoveryStatus,
@@ -72,6 +73,17 @@ export const buildCredentialRuntimeMetadataTargets = (
         provider: normalizeProvider(row.provider),
       },
     ];
+  });
+
+export const buildPageAccountBannedRows = (
+  rows: readonly AccountRow[],
+  metadataByClientKey: ReadonlyMap<string, CredentialRuntimeMetadataItem>
+): AccountRow[] =>
+  rows.filter((row) => {
+    if (row.runtimeOnly || normalizeProvider(row.provider) !== 'codex') return false;
+    const task = metadataByClientKey.get(row.selectionKey)?.recoveryTask;
+    if (!task || !failedRecoveryStatuses.has(task.status)) return false;
+    return (task.lastErrorCode ?? '').trim().toLowerCase() === 'account_banned';
   });
 
 export const buildPageRecoveryCandidates = (
