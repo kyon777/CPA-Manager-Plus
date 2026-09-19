@@ -80,6 +80,7 @@ import {
   useCredentialInspectionSnapshot,
 } from '@/features/accounts/hooks/useCredentialInspectionSnapshot';
 import { useAccountsWorkspaceRefresh } from '@/features/accounts/hooks/useAccountsWorkspaceRefresh';
+import { useCredentialRuntimeMetadata } from '@/features/accounts/hooks/useCredentialRuntimeMetadata';
 import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderSnapshotsLoader';
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
@@ -92,11 +93,17 @@ import {
 import { OAuthModelAliasCard } from '@/features/authFiles/components/OAuthModelAliasCard';
 import { CodexReauthDialog } from '@/features/oauth/CodexReauthDialog';
 import {
+  buildCodexTokenRecoveryTarget,
   CodexReauthReconciliationError,
   createCodexReauthTargetFromAuthFile,
   type CodexReauthTarget,
 } from '@/features/oauth/codexReauthModel';
 import { runCredentialVisibilityRetry } from '@/features/accounts/model/accountCredentialVisibilityRetry';
+import {
+  buildCredentialRuntimeMetadataTargets,
+  buildPageRecoveryCandidates,
+  formatRecoveryState,
+} from '@/features/accounts/model/credentialRuntimeMetadata';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
   buildAccountInspectionBySelectionKey,
@@ -313,6 +320,8 @@ import {
   type MonitoringAccountHistoryItem,
   type MonitoringAccountWindowUsageItem,
   type QuotaCooldownInfo,
+  type TokenRecoveryBatchTargetRequest,
+  type TokenRecoveryTargetRequest,
   type UsageHeaderSnapshot,
   type UsageHeaderSnapshotsResponse,
 } from '@/services/api';
@@ -1270,6 +1279,7 @@ export function AccountsPage() {
   const credentialMutationHandlerRef = useRef<(mutation: AuthFilesCredentialMutation) => void>(
     () => undefined
   );
+  const handledRuntimeRecoveryCompletionsRef = useRef(new Set<string>());
   const handleCredentialMutation = useCallback((mutation: AuthFilesCredentialMutation) => {
     credentialMutationHandlerRef.current(mutation);
   }, []);
@@ -1381,6 +1391,7 @@ export function AccountsPage() {
   const inspectionSnapshotRef = useRef(inspectionSnapshot);
   inspectionSnapshotRef.current = inspectionSnapshot;
   const [quotaRefreshing, setQuotaRefreshing] = useState(false);
+  const [batchRecoverySubmitting, setBatchRecoverySubmitting] = useState(false);
   const [manualQuotaRefreshingKeys, setManualQuotaRefreshingKeys] = useState<ReadonlySet<string>>(
     () => new Set()
   );
@@ -3543,42 +3554,52 @@ export function AccountsPage() {
     t,
   ]);
 
-  const handleServerTokenRecoverySuccess = useCallback(async () => {
-    const fileName = codexReauthTarget?.fileName?.trim() ?? '';
-    if (!fileName) throw new Error(t('notification.refresh_failed'));
+  const handleServerTokenRecoverySuccessForTarget = useCallback(
+    async (target: TokenRecoveryTargetRequest) => {
+      const fileName = target.fileName?.trim() ?? '';
+      if (!fileName) throw new Error(t('notification.refresh_failed'));
 
-    // TokenAcquisition may rotate the Codex ChatGPT account id. Manager Server
-    // already validates the email before the Core write, so do not reconcile
-    // this completion against the old account id in the browser.
-    invalidateCodexCredentialEvidenceForSourceFiles([fileName]);
-    const reloadedFiles = await reloadInspectionCredentialArtifacts({
-      requireSuccessfulReload: true,
-      loadCredentialsLast: true,
-    });
-    if (!reloadedFiles) throw new Error(t('notification.refresh_failed'));
+      // TokenAcquisition may rotate the Codex ChatGPT account id. Manager Server
+      // validates the email before the Core write, so browser reconciliation must
+      // track the physical file/auth-index locator rather than the old account id.
+      invalidateCodexCredentialEvidenceForSourceFiles([fileName]);
+      const reloadedFiles = await reloadInspectionCredentialArtifacts({
+        requireSuccessfulReload: true,
+        loadCredentialsLast: true,
+      });
+      if (!reloadedFiles) throw new Error(t('notification.refresh_failed'));
 
-    const targetAuthIndex = normalizeAuthIndex(codexReauthTarget?.authIndex);
-    const recoveredFile = reloadedFiles.find(
-      (file) =>
-        file.name === fileName &&
-        (!targetAuthIndex ||
-          normalizeAuthIndex(file['auth_index'] ?? file.authIndex) === targetAuthIndex)
-    );
-    publishAccountCredentialMutationRevision({
+      const targetAuthIndex = normalizeAuthIndex(target.authIndex);
+      const recoveredFile = reloadedFiles.find(
+        (file) =>
+          file.name === fileName &&
+          (!targetAuthIndex ||
+            normalizeAuthIndex(file['auth_index'] ?? file.authIndex) === targetAuthIndex)
+      );
+      publishAccountCredentialMutationRevision({
+        connectionFingerprint,
+        provider: 'codex',
+        kind: 'reauth',
+        ...(recoveredFile
+          ? { credentialIdentity: getAuthFileSelectionKey(recoveredFile) }
+          : {}),
+      });
+    },
+    [
       connectionFingerprint,
-      provider: 'codex',
-      kind: 'reauth',
-      ...(recoveredFile
-        ? { credentialIdentity: getAuthFileSelectionKey(recoveredFile) }
-        : {}),
-    });
-  }, [
-    codexReauthTarget,
-    connectionFingerprint,
-    invalidateCodexCredentialEvidenceForSourceFiles,
-    reloadInspectionCredentialArtifacts,
-    t,
-  ]);
+      invalidateCodexCredentialEvidenceForSourceFiles,
+      reloadInspectionCredentialArtifacts,
+      t,
+    ]
+  );
+
+  const handleServerTokenRecoverySuccess = useCallback(async () => {
+    const target = codexReauthTarget
+      ? buildCodexTokenRecoveryTarget(codexReauthTarget)
+      : null;
+    if (!target) throw new Error(t('notification.refresh_failed'));
+    await handleServerTokenRecoverySuccessForTarget(target);
+  }, [codexReauthTarget, handleServerTokenRecoverySuccessForTarget, t]);
   const handleReauthAccount = useCallback(
     (file: AuthFileItem) => {
       const action = resolveAccountReauthAction(file);
@@ -4376,6 +4397,18 @@ export function AccountsPage() {
     () => filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize),
     [currentPage, filteredRows, pageSize]
   );
+  const pageCredentialRuntimeTargets = useMemo(
+    () => buildCredentialRuntimeMetadataTargets(pageRows),
+    [pageRows]
+  );
+  const {
+    itemsByClientKey: credentialRuntimeItemsByClientKey,
+    applyBatchTasks: applyCredentialRuntimeBatchTasks,
+  } = useCredentialRuntimeMetadata({
+    active: activeView === 'accounts',
+    managerRequestScope,
+    targets: pageCredentialRuntimeTargets,
+  });
   const paginationStartItem = filteredRows.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const paginationEndItem = Math.min(filteredRows.length, currentPage * pageSize);
   const pageAuthFiles = useMemo(() => pageRows.map((row) => row.raw), [pageRows]);
@@ -7949,6 +7982,26 @@ export function AccountsPage() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => void queuePageTokenRecovery(pageRecoveryCandidates)}
+              disabled={
+                disableControls ||
+                batchRecoverySubmitting ||
+                !managerRequestScope ||
+                pageRecoveryCandidates.length === 0
+              }
+              loading={batchRecoverySubmitting}
+              aria-label={t('accounts.batch_recovery_page', {
+                count: pageRecoveryCandidates.length,
+              })}
+            >
+              {!batchRecoverySubmitting ? <IconShield size={15} /> : null}
+              {t('accounts.batch_recovery_page', { count: pageRecoveryCandidates.length })}
+            </Button>
+          ) : null}
+          {!hasSelection && !isSelectionMode ? (
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => refreshQuotaRows(refreshTargets)}
               disabled={disableControls || quotaRefreshing || refreshTargets.length === 0}
               loading={quotaRefreshing}
@@ -8597,6 +8650,138 @@ export function AccountsPage() {
     };
   };
 
+  const pageRecoveryHealthBySelectionKey = new Map<string, string | undefined>();
+  for (const row of pageRows) {
+    pageRecoveryHealthBySelectionKey.set(
+      row.selectionKey,
+      resolveAccountRowContext(row).item.health.status
+    );
+  }
+  const pageRecoveryCandidates = buildPageRecoveryCandidates(
+    pageRows,
+    pageRecoveryHealthBySelectionKey
+  );
+
+  const queuePageTokenRecovery = useCallback(
+    async (targets: readonly TokenRecoveryBatchTargetRequest[]) => {
+      if (
+        !managerRequestScope ||
+        batchRecoverySubmitting ||
+        targets.length === 0
+      ) {
+        return;
+      }
+
+      setBatchRecoverySubmitting(true);
+      try {
+        const response = await usageServiceApi.requestTokenRecoveryManualBatch(
+          managerRequestScope.apiBase,
+          managerRequestScope.managementKey,
+          [...targets]
+        );
+        const items = response.items ?? [];
+        applyCredentialRuntimeBatchTasks(items);
+        const submittedCount = items.filter((item) => item.task).length;
+        const failureReasons = Array.from(
+          new Set(
+            items
+              .map((item) => item.errorCode?.trim() ?? '')
+              .filter(Boolean)
+          )
+        );
+        const summary = t('accounts.batch_recovery_result', {
+          count: submittedCount,
+          failed: failureReasons.length,
+        });
+        showNotification(
+          failureReasons.length > 0 ? `${summary}: ${failureReasons.join(', ')}` : summary,
+          failureReasons.length > 0 ? 'warning' : 'success'
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.trim() : '';
+        showNotification(reason || t('accounts.batch_recovery_unavailable'), 'error');
+      } finally {
+        setBatchRecoverySubmitting(false);
+      }
+    },
+    [
+      applyCredentialRuntimeBatchTasks,
+      batchRecoverySubmitting,
+      managerRequestScope,
+      showNotification,
+      t,
+    ]
+  );
+
+  useEffect(() => {
+    handledRuntimeRecoveryCompletionsRef.current.clear();
+  }, [managerConnectionFingerprint]);
+
+  useEffect(() => {
+    for (const candidate of pageRecoveryCandidates) {
+      const task = credentialRuntimeItemsByClientKey.get(candidate.clientKey)?.recoveryTask;
+      if (task?.status !== 'succeeded') continue;
+      const completionTimestamp =
+        task.completedAtMs ?? task.updatedAtMs ?? task.lastSignalAtMs ?? task.createdAtMs ?? 0;
+      const completionKey = [
+        managerConnectionFingerprint,
+        candidate.clientKey,
+        task.id,
+        completionTimestamp,
+      ].join('\u0000');
+      if (handledRuntimeRecoveryCompletionsRef.current.has(completionKey)) continue;
+      handledRuntimeRecoveryCompletionsRef.current.add(completionKey);
+      void handleServerTokenRecoverySuccessForTarget(candidate).catch((error) => {
+        const reason = error instanceof Error ? error.message.trim() : '';
+        showNotification(reason || t('notification.refresh_failed'), 'error');
+      });
+    }
+  }, [
+    credentialRuntimeItemsByClientKey,
+    handleServerTokenRecoverySuccessForTarget,
+    managerConnectionFingerprint,
+    pageRecoveryCandidates,
+    showNotification,
+    t,
+  ]);
+
+  const renderAccountRecoveryStatus = (
+    row: AccountRow,
+    recoveryPresentation: ReturnType<typeof formatRecoveryState>
+  ) => {
+    if (!recoveryPresentation) return null;
+    const label = t(recoveryPresentation.labelKey, recoveryPresentation.values);
+    const className = [
+      styles.accountRecoveryStatus,
+      recoveryPresentation.tone === 'danger'
+        ? styles.accountRecoveryStatusDanger
+        : recoveryPresentation.tone === 'success'
+          ? styles.accountRecoveryStatusSuccess
+          : styles.accountRecoveryStatusInfo,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const props = {
+      className,
+      'data-account-recovery-status': row.selectionKey,
+      title: label,
+    };
+
+    return recoveryPresentation.tone === 'danger' ? (
+      <button
+        type="button"
+        {...props}
+        onClick={(event) => {
+          event.stopPropagation();
+          handleReauthAccount(row.raw);
+        }}
+      >
+        {label}
+      </button>
+    ) : (
+      <span {...props}>{label}</span>
+    );
+  };
   const renderAccountHistory = (
     row: AccountRow,
     ctx: ReturnType<typeof resolveAccountRowContext>,
@@ -8710,6 +8895,12 @@ export function AccountsPage() {
             {rowsToRender.map((row) => {
               const ctx = resolveAccountRowContext(row);
               const quotaWindowGroups = getCardQuotaWindowGroups(row, ctx.mainListWindows);
+              const runtime = credentialRuntimeItemsByClientKey.get(row.selectionKey);
+              const accountProxyURL = runtime?.proxyUrl?.trim() || row.proxyUrl?.trim() || '';
+              const accountProxyURLLabel = accountProxyURL
+                ? `${t('auth_files.proxy_url')}: ${accountProxyURL}`
+                : '';
+              const recoveryPresentation = formatRecoveryState(runtime?.recoveryTask);
               return (
                 <article
                   key={row.selectionKey}
@@ -9063,6 +9254,23 @@ export function AccountsPage() {
                       </span>
                     </div>
                   )}
+                  {accountProxyURL || recoveryPresentation ? (
+                    <div
+                      className={styles.accountGridCardRuntimeMeta}
+                      data-account-list-annotations={row.selectionKey}
+                    >
+                      {accountProxyURL ? (
+                        <span
+                          className={styles.accountCardProxyURL}
+                          data-account-list-proxy={row.selectionKey}
+                          title={accountProxyURLLabel}
+                        >
+                          {accountProxyURLLabel}
+                        </span>
+                      ) : null}
+                      {renderAccountRecoveryStatus(row, recoveryPresentation)}
+                    </div>
+                  ) : null}
                 </div>
 
                   {renderAccountHistory(row, ctx, true)}
@@ -9234,14 +9442,16 @@ export function AccountsPage() {
               </div>
             {rowsToRender.map((row) => {
               const ctx = resolveAccountRowContext(row);
+              const runtime = credentialRuntimeItemsByClientKey.get(row.selectionKey);
               const accountNote = row.note?.trim() ?? '';
               const accountNoteLabel = accountNote
                 ? `${t('accounts.note_placeholder_empty')}: ${accountNote}`
                 : '';
-              const accountProxyURL = row.proxyUrl?.trim() ?? '';
+              const accountProxyURL = runtime?.proxyUrl?.trim() || row.proxyUrl?.trim() || '';
               const accountProxyURLLabel = accountProxyURL
                 ? `${t('auth_files.proxy_url')}: ${accountProxyURL}`
                 : '';
+              const recoveryPresentation = formatRecoveryState(runtime?.recoveryTask);
               return (
                 <article
                   key={row.selectionKey}
@@ -9314,7 +9524,7 @@ export function AccountsPage() {
                           </span>
                         ) : null}
                       </div>
-                      {accountNote || accountProxyURL ? (
+                      {accountNote || accountProxyURL || recoveryPresentation ? (
                         <div
                           className={styles.accountCardAnnotations}
                           data-account-list-annotations={row.selectionKey}
@@ -9337,6 +9547,7 @@ export function AccountsPage() {
                               {accountProxyURLLabel}
                             </span>
                           ) : null}
+                          {renderAccountRecoveryStatus(row, recoveryPresentation)}
                         </div>
                       ) : null}
                     </div>

@@ -26,7 +26,9 @@ import type {
   AccountQuotaSnapshotWriteEntry,
   CodexInspectionResult,
   CodexInspectionRun,
+  CredentialRuntimeMetadataItem,
   QuotaCooldownInfo,
+  TokenRecoveryBatchItem,
   UsageHeaderSnapshot,
 } from '@/services/api/usageService';
 import { copyToClipboard } from '@/utils/clipboard';
@@ -494,6 +496,11 @@ const { mocks } = vi.hoisted(() => {
           items: [],
         })
       ),
+      credentialRuntimeItemsByClientKey: new Map<string, CredentialRuntimeMetadataItem>(),
+      applyCredentialRuntimeBatchTasks: vi.fn(),
+      requestTokenRecoveryManualBatch: vi.fn(
+        async (): Promise<{ items: TokenRecoveryBatchItem[] }> => ({ items: [] })
+      ),
       panelFeatureAvailability: {
         checking: false,
         managerServiceBase: 'http://manager.local:18317',
@@ -552,6 +559,7 @@ const { mocks } = vi.hoisted(() => {
         if (typeof options.success === 'number') parts.push(String(options.success));
         if (typeof options.total === 'number') parts.push(String(options.total));
         if (typeof options.message === 'string') parts.push(options.message);
+        if (typeof options.reason === 'string') parts.push(options.reason);
         if (typeof options.requests === 'string') parts.push(options.requests);
         if (typeof options.tokens === 'string') parts.push(options.tokens);
         if (typeof options.cost === 'string') parts.push(options.cost);
@@ -636,6 +644,16 @@ vi.mock('@/features/authFiles/hooks/useAuthFilesData', () => ({
       batchDelete: mocks.batchDelete,
     };
   },
+}));
+
+vi.mock('@/features/accounts/hooks/useCredentialRuntimeMetadata', () => ({
+  useCredentialRuntimeMetadata: () => ({
+    itemsByClientKey: mocks.credentialRuntimeItemsByClientKey,
+    loading: false,
+    error: '',
+    applyBatchTasks: mocks.applyCredentialRuntimeBatchTasks,
+    refresh: async () => undefined,
+  }),
 }));
 
 vi.mock('@/features/authFiles/hooks/useAuthFilesOauth', () => ({
@@ -880,6 +898,7 @@ vi.mock('@/services/api', () => ({
     getCodexInspectionRun: mocks.getCodexInspectionRun,
     getActiveQuotaCooldowns: mocks.getActiveQuotaCooldowns,
     listAccountActionCandidates: mocks.listAccountActionCandidates,
+    requestTokenRecoveryManualBatch: mocks.requestTokenRecoveryManualBatch,
   },
   authFilesApi: {
     resetQuota: mocks.resetQuota,
@@ -1369,6 +1388,10 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockResolvedValue(makeAccountHistoryResponse([]));
     mocks.getAccountWindowUsage.mockReset();
     mocks.getAccountWindowUsage.mockResolvedValue({ generated_at_ms: 1, items: [] });
+    mocks.credentialRuntimeItemsByClientKey = new Map();
+    mocks.applyCredentialRuntimeBatchTasks.mockReset();
+    mocks.requestTokenRecoveryManualBatch.mockReset();
+    mocks.requestTokenRecoveryManualBatch.mockResolvedValue({ items: [] });
     vi.mocked(accountQuotaSnapshotApi.write).mockReset();
     vi.mocked(accountQuotaSnapshotApi.write).mockImplementation(
       async (_base, _managementKey, entries) => ({
@@ -9509,6 +9532,112 @@ describe('AccountsPage replacement flows', () => {
     );
   });
 
+  it('renders server-projected proxy URL next to a credential note after reload', async () => {
+    const file = {
+      ...mocks.files[0],
+      note: 'Production Codex Pool',
+    };
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    mocks.credentialRuntimeItemsByClientKey = new Map([
+      [
+        selectionKey,
+        {
+          clientKey: selectionKey,
+          proxyUrl: 'socks5://runtime-proxy.example:1080',
+        },
+      ],
+    ]);
+
+    const renderer = await renderAccountsPage();
+    const proxy = renderer.root.findByProps({ 'data-account-list-proxy': selectionKey });
+
+    expect(readText(proxy)).toBe('auth_files.proxy_url: socks5://runtime-proxy.example:1080');
+    expect(proxy.props.title).toBe('auth_files.proxy_url: socks5://runtime-proxy.example:1080');
+  });
+
+  it('queues only current-page Codex reauth candidates in one batch request', async () => {
+    const reauthFile = {
+      ...makeCodexFile('reauth.json', 'auth-reauth', 'reauth@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+    } as AuthFileItem;
+    const healthyFile = makeCodexFile('healthy.json', 'auth-healthy', 'healthy@example.com');
+    const reauthKey = getAuthFileSelectionKey(reauthFile);
+    const responseItems: TokenRecoveryBatchItem[] = [
+      {
+        clientKey: reauthKey,
+        task: {
+          id: 7,
+          fileName: reauthFile.name,
+          authIndex: 'auth-reauth',
+          accountEmail: 'reauth@example.com',
+          provider: 'codex',
+          status: 'manual_queued',
+          mode: 'manual',
+        },
+      },
+    ];
+    mocks.files = [reauthFile, healthyFile];
+    mocks.requestTokenRecoveryManualBatch.mockResolvedValue({ items: responseItems });
+
+    const renderer = await renderAccountsPage();
+    await act(async () => {
+      findButtonByText(renderer, 'accounts.batch_recovery_page:1').props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.requestTokenRecoveryManualBatch).toHaveBeenCalledWith(
+      'http://manager.local:18317',
+      'manager-key',
+      [
+        {
+          clientKey: reauthKey,
+          fileName: 'reauth.json',
+          authIndex: 'auth-reauth',
+          accountEmail: 'reauth@example.com',
+          provider: 'codex',
+        },
+      ]
+    );
+    expect(mocks.applyCredentialRuntimeBatchTasks).toHaveBeenCalledWith(responseItems);
+  });
+
+  it('shows a safe recovery failure reason after a pending batch task becomes terminal', async () => {
+    const file = {
+      ...mocks.files[0],
+      note: 'Production Codex Pool',
+    };
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    mocks.credentialRuntimeItemsByClientKey = new Map([
+      [
+        selectionKey,
+        {
+          clientKey: selectionKey,
+          recoveryTask: {
+            id: 8,
+            fileName: file.name,
+            authIndex: 'auth-1',
+            accountEmail: 'codex@example.com',
+            provider: 'codex',
+            status: 'manual_failed_manual_only',
+            mode: 'manual',
+            lastErrorMessage: 'proxy handshake timed out',
+          },
+        },
+      ],
+    ]);
+
+    const renderer = await renderAccountsPage();
+    const status = renderer.root.findByProps({ 'data-account-recovery-status': selectionKey });
+
+    expect(readText(status)).toBe('accounts.recovery_failed_reason:proxy handshake timed out');
+    expect(status.props.title).toBe('accounts.recovery_failed_reason:proxy handshake timed out');
+  });
   it('renders historical usage alongside the quota trigger', async () => {
     const file = mocks.files[0];
     const selectionKey = getAuthFileSelectionKey(file);
