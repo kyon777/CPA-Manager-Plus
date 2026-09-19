@@ -76,6 +76,7 @@ type Service struct {
 	client               *http.Client
 	authFileMutations    *cpaauthfiles.MutationCoordinator
 	quotaSnapshots       quotaSnapshotWriter
+	reauthRecovery       ReauthRecoveryNotifier
 
 	mu                             sync.Mutex
 	cancelMu                       sync.Mutex
@@ -101,11 +102,18 @@ type quotaSnapshotWriter interface {
 	WriteCodexInspectionResult(context.Context, model.CodexInspectionResult) error
 }
 
+// ReauthRecoveryNotifier receives a strictly redacted Codex locator after an
+// inspection run is durably completed. Account IDs are not recovery evidence.
+type ReauthRecoveryNotifier interface {
+	SignalAutomatic(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, error)
+}
+
 type ServiceOptions struct {
 	OwnerID                     string
 	LeaseDuration               time.Duration
 	HeartbeatInterval           time.Duration
 	AuthFileMutationCoordinator *cpaauthfiles.MutationCoordinator
+	ReauthRecoveryNotifier      ReauthRecoveryNotifier
 }
 
 var inspectionOwnerSequence atomic.Uint64
@@ -339,6 +347,7 @@ func NewWithOptions(st *store.Store, managerConfigService *managerconfig.Service
 		client:                         client,
 		authFileMutations:              authFileMutations,
 		quotaSnapshots:                 quotasnapshotsvc.New(st),
+		reauthRecovery:                 options.ReauthRecoveryNotifier,
 		ownerID:                        ownerID,
 		leaseDuration:                  leaseDuration,
 		heartbeatInterval:              heartbeatInterval,
@@ -681,6 +690,39 @@ func (s *Service) executeRun(ctx context.Context, req RunRequest, run model.Code
 	return detail, nil
 }
 
+func (s *Service) signalCompletedReauthRecoveries(ctx context.Context, results []model.CodexInspectionResult) {
+	if s == nil || s.reauthRecovery == nil {
+		return
+	}
+	for _, result := range results {
+		if normalizeInspectionProvider(result.Provider) != "codex" || strings.ToLower(strings.TrimSpace(result.Action)) != "reauth" {
+			continue
+		}
+		fileName := strings.TrimSpace(result.FileName)
+		if fileName == "" {
+			continue
+		}
+		accountEmail := strings.TrimSpace(result.AccountSnapshot)
+		if accountEmail == "" && strings.Contains(result.DisplayAccount, "@") {
+			accountEmail = strings.TrimSpace(result.DisplayAccount)
+		}
+		if accountEmail == fileName {
+			accountEmail = ""
+		}
+		seenAt := result.CreatedAtMS
+		if seenAt <= 0 {
+			seenAt = time.Now().UnixMilli()
+		}
+		_, _ = s.reauthRecovery.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+			FileName:     fileName,
+			AuthIndex:    strings.TrimSpace(result.AuthIndex),
+			AccountEmail: accountEmail,
+			Provider:     "codex",
+			ObservedAtMS: seenAt,
+		})
+	}
+}
+
 func (s *Service) runTask(task *localRun, ctx context.Context, req RunRequest, run model.CodexInspectionRun, settings model.ManagerCodexInspectionConfig, setup store.Setup) {
 	heartbeatCtx, stopHeartbeat := context.WithCancel(context.WithoutCancel(ctx))
 	heartbeatStopped := make(chan struct{})
@@ -848,6 +890,11 @@ func (s *Service) runTask(task *localRun, ctx context.Context, req RunRequest, r
 		detail = RunDetail{Run: finalRun, Results: results, Logs: logs}
 	}
 	cancelFinalize()
+	if finalizeErr == nil && finalRun.Status == model.CodexInspectionStatusCompleted {
+		signalCtx, cancelSignal := context.WithTimeout(context.Background(), criticalWriteTimeout)
+		s.signalCompletedReauthRecoveries(signalCtx, detail.Results)
+		cancelSignal()
+	}
 	task.result = detail
 	task.err = runErr
 	s.mu.Lock()

@@ -197,6 +197,7 @@ func runServer() {
 	serverErrorPriorityDemotionWorker := worker.NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(
 		serverApp.AppContext().AuthFileMutationCoordinator,
 	)
+	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryService)
 	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)
 	usageDerivedRollupWorker := worker.NewUsagePricingRollupWorker(db)
 	serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
@@ -221,6 +222,7 @@ func runServer() {
 	serverApp.AppContext().AutomationRuntimeService = automationRuntime
 	manager.SetUsageEventHandler(worker.NewUsageEventFanout(
 		automationRuntime.UsageEventHandler(),
+		tokenRecoverySignalWorker,
 		accountHistoryRollupWorker,
 		usageDerivedRollupWorker,
 		usageHourlyAggregateWorker,
@@ -260,6 +262,7 @@ func runServer() {
 	if ctx.Err() == nil {
 		log.Printf("[startup] starting background workers")
 		automationRuntime.Start(ctx)
+		serverApp.AppContext().TokenRecoveryService.Start(ctx)
 		codexInspectionWorker.Start(ctx)
 		accountHistoryRollupWorker.Start(ctx)
 		usageDerivedRollupWorker.Start(ctx)

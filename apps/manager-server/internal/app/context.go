@@ -27,6 +27,8 @@ import (
 	proxysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxy"
 	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	setupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/setup"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenacquisition"
+	tokenrecoverysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenrecovery"
 	updatechecksvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/updatecheck"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -57,6 +59,7 @@ type Context struct {
 	UsageService                   *usagesvc.Service
 	DashboardService               *dashboardsvc.Service
 	CodexInspectionService         *codexinspectionsvc.Service
+	TokenRecoveryService           *tokenrecoverysvc.Service
 	MonitoringService              *monitoringsvc.Service
 	QuotaSnapshotService           *quotasnapshotsvc.Service
 	ModelPriceService              *modelpricesvc.Service
@@ -152,6 +155,16 @@ func fromExisting(
 		TTL:            cfg.UsageImportSessionTTL,
 	}))
 	authFileMutationCoordinator := cpaauthfiles.NewMutationCoordinator()
+	tokenRecoveryService := tokenrecoverysvc.NewWithOptions(tokenrecoverysvc.Options{
+		Tasks:               st,
+		SetupResolver:       managerConfigService,
+		AuthFiles:           cpaauthfiles.New(nil),
+		MutationCoordinator: authFileMutationCoordinator,
+		Acquirer: tokenacquisition.New(tokenacquisition.Config{
+			BaseURL: cfg.TokenAcquisitionBaseURL,
+			APIKey:  cfg.TokenAcquisitionAPIKey,
+		}),
+	})
 	return &Context{
 		UpdateCheckService:   updatechecksvc.New(st, buildinfo.Version, buildinfo.SourceCommit, os.Getenv("CPAMP_UPDATE_CHECK_ENABLED") != "false"),
 		Config:               cfg,
@@ -168,8 +181,12 @@ func fromExisting(
 		CodexInspectionService: codexinspectionsvc.NewWithOptions(
 			st,
 			managerConfigService,
-			codexinspectionsvc.ServiceOptions{AuthFileMutationCoordinator: authFileMutationCoordinator},
+			codexinspectionsvc.ServiceOptions{
+				AuthFileMutationCoordinator: authFileMutationCoordinator,
+				ReauthRecoveryNotifier:      tokenRecoveryService,
+			},
 		),
+		TokenRecoveryService: tokenRecoveryService,
 		MonitoringService:    monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
 		QuotaSnapshotService: quotasnapshotsvc.New(st),
 		ModelPriceService:    modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
