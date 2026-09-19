@@ -221,4 +221,21 @@ describe('accounts workspace wiring', () => {
     expect(String(recovery.recovery_failed_reason)).toContain('{{reason}}');
     expect(String(recovery.batch_recovery_result)).toContain('{{count}}');
   });
+
+  it.each([en, ru, zhCN, zhTW])('defines the current-page banned deletion copy', (locale) => {
+    const accounts = locale.accounts as Record<string, unknown>;
+    for (const key of [
+      'batch_delete_banned_page',
+      'batch_delete_banned_title',
+      'batch_delete_banned_summary',
+      'batch_delete_banned_warning',
+    ]) {
+      expect(accounts[key], key).toBeTypeOf('string');
+      expect(String(accounts[key]), key).not.toContain('?');
+    }
+    expect(String(accounts.batch_delete_banned_page)).toContain('{{count}}');
+    expect(String(accounts.batch_delete_banned_title)).toContain('{{count}}');
+    expect(String(accounts.batch_delete_banned_summary)).toContain('{{rows}}');
+    expect(String(accounts.batch_delete_banned_summary)).toContain('{{files}}');
+  });
 });
