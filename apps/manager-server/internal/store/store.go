@@ -19,6 +19,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	tokenrecoveryrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/tokenrecovery"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
@@ -56,6 +57,8 @@ type QuotaCooldownUpsert = model.QuotaCooldownUpsert
 type AccountQuotaSnapshot = model.AccountQuotaSnapshot
 type AccountActionCandidate = model.AccountActionCandidate
 type AccountActionCandidateUpsert = model.AccountActionCandidateUpsert
+type TokenRecoveryTarget = model.TokenRecoveryTarget
+type TokenRecoveryTask = model.TokenRecoveryTask
 type AutomationSettings = model.AutomationSettings
 type DataMigrationState = datamigration.State
 type DataMigrationBatchResult = datamigration.BatchResult
@@ -133,6 +136,7 @@ type Store struct {
 	ModelPrices      modelprice.Repository
 	APIKeyAliases    apikeyalias.Repository
 	AccountActions   accountaction.Repository
+	TokenRecoveries  tokenrecoveryrepo.Repository
 	CodexInspections codexinspection.Repository
 	DataMigrations   datamigration.Repository
 	QuotaCooldowns   quotacooldown.Repository
@@ -160,6 +164,7 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 		ModelPrices:      modelprice.New(db),
 		APIKeyAliases:    apikeyalias.New(db),
 		AccountActions:   accountaction.New(db),
+		TokenRecoveries:  tokenrecoveryrepo.New(db),
 		CodexInspections: codexinspection.New(db),
 		DataMigrations:   datamigration.New(db),
 		QuotaCooldowns:   quotacooldown.New(db),
@@ -339,6 +344,38 @@ func (s *Store) RecordAccountActionCandidateFailure(ctx context.Context, id int6
 
 func (s *Store) MarkAccountActionCandidateAutoDisabled(ctx context.Context, id int64, disabledAtMS int64) error {
 	return s.AccountActions.MarkAutoDisabled(ctx, id, disabledAtMS)
+}
+
+func (s *Store) SignalTokenRecoveryAutomatic(ctx context.Context, target TokenRecoveryTarget) (TokenRecoveryTask, error) {
+	return s.TokenRecoveries.SignalAutomatic(ctx, target)
+}
+
+func (s *Store) RequestTokenRecoveryManual(ctx context.Context, target TokenRecoveryTarget) (TokenRecoveryTask, error) {
+	return s.TokenRecoveries.RequestManual(ctx, target)
+}
+
+func (s *Store) GetTokenRecovery(ctx context.Context, target TokenRecoveryTarget) (TokenRecoveryTask, bool, error) {
+	return s.TokenRecoveries.Get(ctx, target)
+}
+
+func (s *Store) GetTokenRecoveryByID(ctx context.Context, id int64) (TokenRecoveryTask, bool, error) {
+	return s.TokenRecoveries.GetByID(ctx, id)
+}
+
+func (s *Store) ClaimNextTokenRecovery(ctx context.Context) (TokenRecoveryTask, bool, error) {
+	return s.TokenRecoveries.ClaimNextQueued(ctx)
+}
+
+func (s *Store) CompleteTokenRecovery(ctx context.Context, id int64) (TokenRecoveryTask, error) {
+	return s.TokenRecoveries.Complete(ctx, id)
+}
+
+func (s *Store) FailTokenRecovery(ctx context.Context, id int64, errorCode string) (TokenRecoveryTask, error) {
+	return s.TokenRecoveries.Fail(ctx, id, errorCode)
+}
+
+func (s *Store) FailRunningTokenRecoveriesOnStartup(ctx context.Context) (int64, error) {
+	return s.TokenRecoveries.FailRunningOnStartup(ctx)
 }
 
 func (s *Store) CreateCodexInspectionRun(ctx context.Context, run CodexInspectionRun) (CodexInspectionRun, error) {

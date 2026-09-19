@@ -155,6 +155,33 @@ func TestMigrateCreatesLatestAccountRequestIndexes(t *testing.T) {
 	}
 }
 
+func TestMigrateCreatesTokenRecoveryTaskSchema(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "token-recovery-tasks.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	columns := migrationTableColumns(t, db, "token_recovery_tasks")
+	for _, column := range []string{
+		"id", "identity_key", "file_name", "auth_index", "account_email", "provider", "status", "mode",
+		"last_error_code", "last_signal_at_ms", "started_at_ms", "completed_at_ms", "created_at_ms", "updated_at_ms",
+	} {
+		if !columns[column] {
+			t.Fatalf("token recovery task columns = %#v, missing %s", columns, column)
+		}
+	}
+	for _, index := range []string{"idx_token_recovery_tasks_claim", "idx_token_recovery_tasks_updated"} {
+		var count int
+		if err := db.QueryRow(`select count(*) from sqlite_master where type = 'index' and name = ?`, index).Scan(&count); err != nil {
+			t.Fatalf("inspect token recovery index %s: %v", index, err)
+		}
+		if count != 1 {
+			t.Fatalf("token recovery index %s count = %d, want 1", index, count)
+		}
+	}
+}
+
 func TestMigrateCreatesAccountQuotaSnapshotSchema(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "account-quota-snapshots.sqlite"))
 	if err != nil {
