@@ -1706,7 +1706,7 @@
     "batch_websockets_enable": "启用 WebSockets",
     "batch_websockets_disable": "禁用 WebSockets",
     "prefix_label": "前缀（prefix）",
-    "proxy_url_label": "代理 URL（proxy_url）",
+    "proxy_url_label": "代理:",
     "proxy_url_placeholder": "socks5://username:password@proxy_ip:port/",
     "priority_label": "优先级（priority）",
     "priority_hint": "仅支持整数；非法值会被忽略。数值越大优先级越高。",

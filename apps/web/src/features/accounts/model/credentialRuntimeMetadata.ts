@@ -34,6 +34,15 @@ const failedRecoveryStatuses = new Set<TokenRecoveryStatus>([
   'manual_failed_manual_only',
 ]);
 
+// The manager keeps the transport-level category in lastErrorCode (for example
+// "token_acquisition_failed") and puts TokenAcquisition's terminal reason in
+// lastErrorMessage (for example "account_banned: ...").  Match the structured
+// leading reason too, so already-persisted failed tasks remain actionable.
+const isAccountBannedRecoveryTask = (task: TokenRecoveryTask): boolean => {
+  if ((task.lastErrorCode ?? '').trim().toLowerCase() === 'account_banned') return true;
+  return /^account_banned(?:\s*:|\s*$)/i.test((task.lastErrorMessage ?? '').trim());
+};
+
 const normalizeProvider = (value: string | null | undefined): string => {
   const normalized = (value ?? '').trim().toLowerCase().replace(/_/g, '-');
   if (normalized === 'x-ai' || normalized === 'grok') return 'xai';
@@ -83,7 +92,7 @@ export const buildPageAccountBannedRows = (
     if (row.runtimeOnly || normalizeProvider(row.provider) !== 'codex') return false;
     const task = metadataByClientKey.get(row.selectionKey)?.recoveryTask;
     if (!task || !failedRecoveryStatuses.has(task.status)) return false;
-    return (task.lastErrorCode ?? '').trim().toLowerCase() === 'account_banned';
+    return isAccountBannedRecoveryTask(task);
   });
 
 export const buildPageRecoveryCandidates = (
