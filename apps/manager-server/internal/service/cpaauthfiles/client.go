@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -201,6 +202,47 @@ func (c *Client) Download(ctx context.Context, baseURL string, managementKey str
 		)
 	}
 	return body, nil
+}
+
+// Upload replaces a physical CPA Core auth file with the supplied in-memory
+// bytes. The caller controls the original physical name; this method never
+// derives a runtime credential ID or writes a new filename.
+func (c *Client) Upload(ctx context.Context, baseURL string, managementKey string, fileName string, contents []byte) error {
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		return fmt.Errorf("%w: upload filename is empty", ErrAuthFileNotFound)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", fileName)
+	if err != nil {
+		return fmt.Errorf("create auth-file upload form: %w", err)
+	}
+	if _, err := part.Write(contents); err != nil {
+		return fmt.Errorf("write auth-file upload form: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close auth-file upload form: %w", err)
+	}
+
+	base := cpa.NormalizeBaseURL(baseURL)
+	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+authFilesPath, &body)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+managementKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("POST %s: HTTP %d", authFilesPath, res.StatusCode)
+	}
+	return nil
 }
 
 func (c *Client) Fetch(ctx context.Context, baseURL string, managementKey string) ([]File, error) {

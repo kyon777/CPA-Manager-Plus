@@ -222,6 +222,40 @@ func TestClientDownloadReturnsExactAuthFileContent(t *testing.T) {
 	}
 }
 
+func TestClientUploadPreservesPhysicalFileNameAndContent(t *testing.T) {
+	want := []byte(`{"email":"person@example.com","note":"keep"}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != authFilesPath {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer mgmt" {
+			t.Fatalf("authorization = %q", got)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("FormFile(file): %v", err)
+		}
+		defer file.Close()
+		if header.Filename != "physical account.json" {
+			t.Fatalf("uploaded filename = %q", header.Filename)
+		}
+		got, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("read uploaded file: %v", err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("uploaded content = %q, want %q", got, want)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}))
+	defer server.Close()
+
+	if err := New(server.Client()).Upload(context.Background(), server.URL, "mgmt", "physical account.json", want); err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+}
+
 func TestClientDownloadRejectsOversizedAuthFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, strings.Repeat("x", 129))
