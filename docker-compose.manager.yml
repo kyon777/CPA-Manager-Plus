@@ -15,6 +15,10 @@ services:
       # a stable admin key. If omitted, the first startup log prints a generated key once.
       # Optional: set CPA_MANAGER_DATA_KEY or CPA_MANAGER_DATA_KEY_FILE only when you
       # manage this encryption key outside the /data volume.
+      # Optional: configure the server-only TokenAcquisition integration. Keep the
+      # API key in a file/secret; never put it in the browser or repository.
+      # TOKEN_ACQUISITION_BASE_URL: "https://401.kyon888.xyz"
+      # TOKEN_ACQUISITION_API_KEY_FILE: "/run/secrets/token_acquisition_api_key"
       USAGE_COLLECTOR_MODE: "auto"
       USAGE_RESP_QUEUE: "usage"
       USAGE_RESP_POP_SIDE: "right"
@@ -24,6 +28,7 @@ services:
       USAGE_CORS_ORIGINS: "*"
     volumes:
       - cpa-manager-plus-data:/data
+      # - ./secrets/token_acquisition_api_key:/run/secrets/token_acquisition_api_key:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18317/health"]
       interval: 10s

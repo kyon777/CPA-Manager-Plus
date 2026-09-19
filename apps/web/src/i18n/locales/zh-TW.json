@@ -4181,7 +4181,14 @@
     "identity_ambiguous": "OAuth 授權已完成，但有多個憑證符合原帳號 ID，系統未自動選擇任何憑證。",
     "identity_unconfirmed": "OAuth 授權已完成，但暫時無法確認原憑證已更新。請檢查重新整理後的憑證清單是否發生身份變化。",
     "same_account_hint": "請使用目標帳號完成 OAuth 登入。CPA 會依登入帳號儲存 Codex 憑據；同一帳號通常會覆蓋同名憑據。",
-    "rerun_hint": "重新登入已完成，請重新執行巡檢以更新帳號狀態。"
+    "rerun_hint": "重新登入已完成，請重新執行巡檢以更新帳號狀態。",
+    "server_recovery_title": "伺服器自動更新憑證",
+    "server_recovery_hint": "由 Manager Server 在伺服器內更新憑證，瀏覽器不會接觸 Token。",
+    "server_recovery_action": "伺服器更新",
+    "server_recovery_processing": "正在伺服器內更新憑證…",
+    "server_recovery_success": "伺服器憑證更新成功",
+    "server_recovery_failed_manual": "自動更新失敗，可手動重試。",
+    "server_recovery_error": "伺服器憑證更新暫時不可用。"
   },
   "plugin_management": {
     "title": "插件管理",

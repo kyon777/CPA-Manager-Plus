@@ -11,6 +11,8 @@ const { mocks } = vi.hoisted(() => ({
     startAuth: vi.fn(),
     getAuthStatus: vi.fn(),
     submitCallback: vi.fn(),
+    getTokenRecovery: vi.fn(),
+    requestTokenRecoveryManual: vi.fn(),
     showNotification: vi.fn(),
     translate: vi.fn((key: string) => key),
     intervalCallback: null as null | (() => void | Promise<void>),
@@ -27,6 +29,10 @@ vi.mock('@/services/api', () => ({
     startAuth: mocks.startAuth,
     getAuthStatus: mocks.getAuthStatus,
     submitCallback: mocks.submitCallback,
+  },
+  usageServiceApi: {
+    getTokenRecovery: mocks.getTokenRecovery,
+    requestTokenRecoveryManual: mocks.requestTokenRecoveryManual,
   },
 }));
 
@@ -91,6 +97,10 @@ const NEXT_REQUEST_SCOPE = {
   apiBase: 'http://cpa-b.local:8317',
   managementKey: 'cpa-key-b',
 };
+const MANAGER_REQUEST_SCOPE = {
+  apiBase: 'http://manager.local:8318',
+  managementKey: 'manager-key',
+};
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -149,12 +159,7 @@ describe('CodexReauthDialog connection lifecycle', () => {
     let renderer!: ReactTestRenderer;
     await act(async () => {
       renderer = create(
-        <CodexReauthDialog
-          open
-          target={TARGET}
-          requestScope={REQUEST_SCOPE}
-          onClose={vi.fn()}
-        />
+        <CodexReauthDialog open target={TARGET} requestScope={REQUEST_SCOPE} onClose={vi.fn()} />
       );
     });
     await flushEffects();
@@ -603,9 +608,11 @@ describe('CodexReauthDialog connection lifecycle', () => {
     mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
     mocks.submitCallback.mockResolvedValue({ status: 'ok' });
     mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
-    const onSuccess = vi.fn().mockRejectedValue(
-      new CodexReauthReconciliationError('identity_changed', 'identity changed')
-    );
+    const onSuccess = vi
+      .fn()
+      .mockRejectedValue(
+        new CodexReauthReconciliationError('identity_changed', 'identity changed')
+      );
 
     let renderer!: ReactTestRenderer;
     await act(async () => {
@@ -757,6 +764,100 @@ describe('CodexReauthDialog connection lifecycle', () => {
     expect(mocks.startAuth).toHaveBeenCalledTimes(startCount);
     expect(mocks.showNotification).toHaveBeenCalledWith('codex_reauth.success', 'success');
     expect(textContent(renderer.root)).toContain('codex_reauth.success');
+
+    act(() => renderer.unmount());
+  });
+
+  it('submits only an opaque locator for manual server token recovery', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.getTokenRecovery.mockResolvedValue({ task: null });
+    mocks.requestTokenRecoveryManual.mockResolvedValue({
+      task: {
+        id: 7,
+        fileName: 'codex.json',
+        authIndex: 'auth-1',
+        accountEmail: 'alice@example.com',
+        provider: 'codex',
+        status: 'manual_queued',
+        mode: 'manual',
+      },
+    });
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          managerRequestScope={MANAGER_REQUEST_SCOPE}
+          onClose={vi.fn()}
+        />
+      );
+    });
+    await flushEffects();
+
+    await act(async () => {
+      await findButton(renderer, 'codex_reauth.server_recovery_action').props.onClick();
+    });
+
+    expect(mocks.requestTokenRecoveryManual).toHaveBeenCalledWith(
+      MANAGER_REQUEST_SCOPE.apiBase,
+      MANAGER_REQUEST_SCOPE.managementKey,
+      {
+        fileName: 'codex.json',
+        authIndex: 'auth-1',
+        accountEmail: 'alice@example.com',
+        provider: 'codex',
+      }
+    );
+    expect(JSON.stringify(mocks.requestTokenRecoveryManual.mock.calls[0]?.[2])).not.toContain(
+      'acct-1'
+    );
+
+    act(() => renderer.unmount());
+  });
+
+  it('uses the server recovery completion callback instead of OAuth reconciliation', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.getTokenRecovery.mockResolvedValue({ task: null });
+    mocks.requestTokenRecoveryManual.mockResolvedValue({
+      task: {
+        id: 8,
+        fileName: 'codex.json',
+        authIndex: 'auth-1',
+        accountEmail: 'alice@example.com',
+        provider: 'codex',
+        status: 'succeeded',
+        mode: 'manual',
+        completedAtMs: 123,
+      },
+    });
+    const onSuccess = vi.fn();
+    const onServerRecoverySuccess = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          managerRequestScope={MANAGER_REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+          onServerRecoverySuccess={onServerRecoverySuccess}
+        />
+      );
+    });
+    await flushEffects();
+
+    await act(async () => {
+      await findButton(renderer, 'codex_reauth.server_recovery_action').props.onClick();
+    });
+
+    expect(onServerRecoverySuccess).toHaveBeenCalledTimes(1);
+    expect(onSuccess).not.toHaveBeenCalled();
 
     act(() => renderer.unmount());
   });

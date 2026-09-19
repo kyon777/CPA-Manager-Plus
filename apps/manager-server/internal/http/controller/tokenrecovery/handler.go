@@ -1,6 +1,7 @@
 package tokenrecovery
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -86,7 +87,11 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeTarget(r *http.Request) (model.TokenRecoveryTarget, error) {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, maxTargetRequestBytes))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxTargetRequestBytes+1))
+	if err != nil || len(body) > maxTargetRequestBytes {
+		return model.TokenRecoveryTarget{}, errors.New("invalid token recovery request")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	var raw map[string]json.RawMessage
 	if err := decoder.Decode(&raw); err != nil {
 		return model.TokenRecoveryTarget{}, errors.New("invalid token recovery request")

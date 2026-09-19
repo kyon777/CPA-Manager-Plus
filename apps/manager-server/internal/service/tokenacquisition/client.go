@@ -97,7 +97,10 @@ func (c *Client) Acquire(ctx context.Context, request Request) (Result, error) {
 	if strings.TrimSpace(request.Email) == "" {
 		return Result{}, ErrInvalidResult
 	}
-	if _, err := url.ParseRequestURI(c.baseURL); err != nil {
+	parsedBase, err := url.ParseRequestURI(c.baseURL)
+	if err != nil || parsedBase.Host == "" ||
+		(!strings.EqualFold(parsedBase.Scheme, "http") && !strings.EqualFold(parsedBase.Scheme, "https")) ||
+		parsedBase.User != nil {
 		return Result{}, ErrNotConfigured
 	}
 
@@ -188,7 +191,14 @@ func (c *Client) doJSON(ctx context.Context, method, path string, payload any, o
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	}
-	resp, err := c.httpClient.Do(req)
+	// Never follow a redirect while carrying the administrator API key. A
+	// redirecting upstream must fail closed rather than forwarding credentials
+	// to a different origin.
+	client := *c.httpClient
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -199,7 +209,16 @@ func (c *Client) doJSON(ctx context.Context, method, path string, payload any, o
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("%w: status %d", ErrRequestFailed, resp.StatusCode)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(output); err != nil {
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil || len(responseBody) > maxResponseBytes {
+		return ErrInvalidResult
+	}
+	decoder := json.NewDecoder(bytes.NewReader(responseBody))
+	if err := decoder.Decode(output); err != nil {
+		return ErrInvalidResult
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return ErrInvalidResult
 	}
 	return nil
@@ -222,10 +241,10 @@ func resultFromBatch(batch batchResponse, expectedEmail string) (Result, error) 
 		}
 		result := Result{
 			Email:            strings.TrimSpace(job.Result.Email),
-			AccessToken:      job.Result.AccessToken,
-			RefreshToken:     job.Result.RefreshToken,
-			IDToken:          job.Result.IDToken,
-			ChatGPTAccountID: job.Result.ChatGPTAccountID,
+			AccessToken:      strings.TrimSpace(job.Result.AccessToken),
+			RefreshToken:     strings.TrimSpace(job.Result.RefreshToken),
+			IDToken:          strings.TrimSpace(job.Result.IDToken),
+			ChatGPTAccountID: strings.TrimSpace(job.Result.ChatGPTAccountID),
 		}
 		if normalizeEmail(result.Email) != expectedEmail ||
 			strings.TrimSpace(result.AccessToken) == "" ||

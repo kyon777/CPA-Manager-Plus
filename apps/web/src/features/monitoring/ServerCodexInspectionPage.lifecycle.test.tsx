@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => ({
   lastCodexReauthProps: null as null | {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
+    onServerRecoverySuccess?: () => void | Promise<void>;
   },
   showNotification: vi.fn(),
   showConfirmation: vi.fn(),
@@ -129,6 +130,7 @@ vi.mock('@/features/oauth/CodexReauthDialog', () => ({
   CodexReauthDialog: (props: {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
+    onServerRecoverySuccess?: () => void | Promise<void>;
   }) => {
     mocks.lastCodexReauthProps = props;
     return props.open ? <div data-codex-reauth-open="true" /> : null;
@@ -1364,11 +1366,12 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
     mocks.listRuns.mockResolvedValue({ items: [completed] });
     mocks.getRun.mockResolvedValue({ run: completed, results: [reauthResult], logs: [] });
 
+    const onCredentialsChanged = vi.fn();
     let renderer!: ReactTestRenderer;
     await act(async () => {
       renderer = create(
         <MemoryRouter>
-          <ServerCodexInspectionPage />
+          <ServerCodexInspectionPage onCredentialsChanged={onCredentialsChanged} />
         </MemoryRouter>
       );
       await flush();
@@ -1385,6 +1388,13 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
       apiBase: 'http://cpa.local:8317',
       managementKey: 'management-key',
     });
+    expect(mocks.lastCodexReauthProps?.onServerRecoverySuccess).toBeTypeOf('function');
+    onCredentialsChanged.mockClear();
+    await act(async () => {
+      await mocks.lastCodexReauthProps?.onServerRecoverySuccess?.();
+    });
+    expect(onCredentialsChanged).toHaveBeenCalledTimes(1);
+    expect(onCredentialsChanged).toHaveBeenCalledWith();
 
     mocks.authState.apiBase = 'http://cpa-b.local:8317';
     mocks.authState.managementKey = 'management-key-b';
@@ -1396,7 +1406,7 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
     await act(async () => {
       renderer.update(
         <MemoryRouter>
-          <ServerCodexInspectionPage />
+          <ServerCodexInspectionPage onCredentialsChanged={onCredentialsChanged} />
         </MemoryRouter>
       );
       await flush();

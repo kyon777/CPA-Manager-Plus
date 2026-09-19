@@ -111,3 +111,56 @@ func TestMergeAuthJSONRejectsIncompleteResultAndNonHTTPProxy(t *testing.T) {
 		t.Fatalf("MergeAuthJSON() error = %v, want ErrIncompleteTokenResult", err)
 	}
 }
+
+func TestReadCredentialRejectsTrailingJSONValues(t *testing.T) {
+	_, err := ReadCredential(
+		[]byte(`{"email":"person@example.com"}{"email":"other@example.com"}`),
+		Locator{AccountEmail: "person@example.com"},
+	)
+	if !errors.Is(err, ErrCredentialInvalid) {
+		t.Fatalf("ReadCredential() error = %v, want ErrCredentialInvalid", err)
+	}
+}
+
+func TestReadCredentialMatchesNumericAuthIndex(t *testing.T) {
+	credential, err := ReadCredential(
+		[]byte(`{"auth_index":7,"email":"person@example.com","proxy_url":"http://proxy.example:8080"}`),
+		Locator{AuthIndex: "7", AccountEmail: "person@example.com"},
+	)
+	if err != nil {
+		t.Fatalf("ReadCredential() error = %v", err)
+	}
+	if credential.Email != "person@example.com" {
+		t.Fatalf("credential email = %q", credential.Email)
+	}
+}
+
+func TestReadCredentialUsesEmailForSingleObjectWithoutAuthIndex(t *testing.T) {
+	credential, err := ReadCredential(
+		[]byte(`{"email":"person@example.com","note":"single physical file"}`),
+		Locator{AuthIndex: "runtime-derived-index", AccountEmail: "person@example.com"},
+	)
+	if err != nil {
+		t.Fatalf("ReadCredential() error = %v", err)
+	}
+	if credential.Email != "person@example.com" {
+		t.Fatalf("credential email = %q", credential.Email)
+	}
+}
+
+func TestMergeAuthJSONSynchronizesNestedCodexAccountIDAliases(t *testing.T) {
+	source := []byte(`{"email":"person@example.com","metadata":{"account_id":"old-workspace"},"attributes":{"chatgptAccountId":"old-workspace"}}`)
+	merged, err := MergeAuthJSON(source, Locator{AccountEmail: "person@example.com"}, AcquisitionResult{
+		Email: "person@example.com", AccessToken: "access", RefreshToken: "refresh", IDToken: "id", ChatGPTAccountID: "new-workspace",
+	})
+	if err != nil {
+		t.Fatalf("MergeAuthJSON() error = %v", err)
+	}
+	text := string(merged)
+	if strings.Count(text, `"old-workspace"`) != 0 {
+		t.Fatalf("stale nested account id remained: %s", text)
+	}
+	if strings.Count(text, `"new-workspace"`) != 3 {
+		t.Fatalf("new nested account id aliases = %s", text)
+	}
+}

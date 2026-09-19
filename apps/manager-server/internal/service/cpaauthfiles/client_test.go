@@ -256,6 +256,23 @@ func TestClientUploadPreservesPhysicalFileNameAndContent(t *testing.T) {
 	}
 }
 
+func TestClientUploadRejectsBusinessFailureResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != authFilesPath {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":false}`)
+	}))
+	defer server.Close()
+
+	err := New(server.Client()).Upload(context.Background(), server.URL, "mgmt", "account.json", []byte(`{}`))
+	if err == nil {
+		t.Fatal("Upload() succeeded for ok=false response")
+	}
+}
+
 func TestClientDownloadRejectsOversizedAuthFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, strings.Repeat("x", 129))

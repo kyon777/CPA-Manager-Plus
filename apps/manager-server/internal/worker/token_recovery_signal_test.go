@@ -38,6 +38,20 @@ func TestTokenRecoverySignalWorkerOnlySignalsCodexReauthEvents(t *testing.T) {
 	}
 }
 
+func TestTokenRecoverySignalWorkerDoesNotTreatNonEmailSnapshotAsEmail(t *testing.T) {
+	recorder := &tokenRecoverySignalRecorder{}
+	worker := NewTokenRecoverySignalWorker(recorder)
+	worker.HandleUsageEvents(context.Background(), collectorpkg.RuntimeConfig{}, []usage.Event{{
+		Failed: true, FailStatusCode: 401, FailSummary: "invalid_token", TimestampMS: 123,
+		AuthFileSnapshot: "physical.json", AuthIndex: "7", AccountSnapshot: "display-label",
+		AuthProviderSnapshot: "codex",
+	}})
+	targets := recorder.targets()
+	if len(targets) != 1 || targets[0].AccountEmail != "" {
+		t.Fatalf("signal target = %#v, want empty account email", targets)
+	}
+}
+
 type tokenRecoverySignalRecorder struct {
 	mu    sync.Mutex
 	items []model.TokenRecoveryTarget

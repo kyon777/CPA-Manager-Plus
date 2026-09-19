@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   lastCodexReauthProps: null as null | {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
+    onServerRecoverySuccess?: () => void | Promise<void>;
   },
   showConfirmation: vi.fn(),
   showNotification: vi.fn(),
@@ -82,6 +83,7 @@ vi.mock('@/features/oauth/CodexReauthDialog', () => ({
   CodexReauthDialog: (props: {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
+    onServerRecoverySuccess?: () => void | Promise<void>;
   }) => {
     mocks.lastCodexReauthProps = props;
     return props.open ? <div data-codex-reauth-open="true" /> : null;
@@ -484,11 +486,12 @@ describe('CodexInspectionPage connection lifecycle', () => {
         : null
     );
 
+    const onCredentialsChanged = vi.fn();
     let renderer!: ReactTestRenderer;
     await act(async () => {
       renderer = create(
         <MemoryRouter>
-          <CodexInspectionPage />
+          <CodexInspectionPage onCredentialsChanged={onCredentialsChanged} />
         </MemoryRouter>
       );
       await Promise.resolve();
@@ -505,13 +508,20 @@ describe('CodexInspectionPage connection lifecycle', () => {
       apiBase: 'http://cpa-a.local:8317',
       managementKey: 'cpa-key-a',
     });
+    expect(mocks.lastCodexReauthProps?.onServerRecoverySuccess).toBeTypeOf('function');
+    onCredentialsChanged.mockClear();
+    await act(async () => {
+      await mocks.lastCodexReauthProps?.onServerRecoverySuccess?.();
+    });
+    expect(onCredentialsChanged).toHaveBeenCalledTimes(1);
+    expect(onCredentialsChanged).toHaveBeenCalledWith();
 
     mocks.authState.apiBase = 'http://cpa-b.local:8317';
     mocks.authState.managementKey = 'cpa-key-b';
     await act(async () => {
       renderer.update(
         <MemoryRouter>
-          <CodexInspectionPage />
+          <CodexInspectionPage onCredentialsChanged={onCredentialsChanged} />
         </MemoryRouter>
       );
       await Promise.resolve();

@@ -61,8 +61,16 @@ func tokenRecoveryTargetFromUsageEvent(event usage.Event) (model.TokenRecoveryTa
 	return model.TokenRecoveryTarget{
 		FileName:     fileName,
 		AuthIndex:    strings.TrimSpace(event.AuthIndex),
-		AccountEmail: stableEventAccountSnapshot(fileName, event.AccountSnapshot),
+		AccountEmail: recoveryEmailFromSnapshot(fileName, event.AccountSnapshot),
 		Provider:     "codex",
 		ObservedAtMS: seenAt,
 	}, true
+}
+
+func recoveryEmailFromSnapshot(fileName, value string) string {
+	account := stableEventAccountSnapshot(fileName, value)
+	if !strings.Contains(account, "@") {
+		return ""
+	}
+	return account
 }

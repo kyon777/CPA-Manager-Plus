@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
@@ -71,6 +72,18 @@ func TestHandlerRejectsAccountIDAndRequiresPanelAuthorization(t *testing.T) {
 	handler.Handle(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("accountId request status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHandlerRejectsOversizedTargetBodyEvenWhenJSONPrefixIsValid(t *testing.T) {
+	handler := newTestHandler(t)
+	body := `{"fileName":"a.json","accountEmail":"person@example.com","provider":"codex"}` + strings.Repeat(" ", maxTargetRequestBytes)
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/signals", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
+	recorder := httptest.NewRecorder()
+	handler.Handle(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("oversized target status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

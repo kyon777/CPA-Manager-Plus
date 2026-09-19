@@ -244,7 +244,7 @@ func (s *Service) writeCurrentCredential(ctx context.Context, fileName string, l
 	if err != nil {
 		return err
 	}
-	if err := s.authFiles.Upload(ctx, setup.CPAUpstreamURL, setup.ManagementKey, strings.TrimSpace(fileName), merged); err != nil {
+	if err := s.authFiles.Upload(ctx, setup.CPAUpstreamURL, setup.ManagementKey, fileName, merged); err != nil {
 		return err
 	}
 	verifiedRaw, err := s.authFiles.Download(ctx, setup.CPAUpstreamURL, setup.ManagementKey, fileName)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -42,6 +41,7 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 		return model.TokenRecoveryTask{}, err
 	}
 	now := time.Now().UnixMilli()
+	hasObservedAt := normalized.ObservedAtMS > 0
 	seenAt := normalized.ObservedAtMS
 	if seenAt <= 0 {
 		seenAt = now
@@ -52,7 +52,7 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 	}
 	defer tx.Rollback()
 
-	existing, found, err := getByIdentityKey(ctx, tx, identityKey)
+	existing, found, err := getCompatibleTask(ctx, tx, normalized, identityKey)
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
 	}
@@ -71,15 +71,20 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 		return item, nil
 	}
 
-	if existing.Status == model.TokenRecoveryStatusSucceeded && seenAt > existing.CompletedAtMS {
+	if existing.Status == model.TokenRecoveryStatusSucceeded && hasObservedAt && seenAt > existing.CompletedAtMS {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
-			status = ?, mode = ?, last_error_code = null, last_signal_at_ms = ?,
+			status = ?, mode = ?, last_error_code = null,
+			account_email = case when account_email = '' and ? != '' then ? else account_email end,
+			last_signal_at_ms = ?,
 			started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
-			model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryModeAuto, seenAt, now, existing.ID)
+			model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryModeAuto,
+			normalized.AccountEmail, normalized.AccountEmail, seenAt, now, existing.ID)
 	} else {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
+			account_email = case when account_email = '' and ? != '' then ? else account_email end,
 			last_signal_at_ms = case when ? > last_signal_at_ms then ? else last_signal_at_ms end,
-			updated_at_ms = ? where id = ?`, seenAt, seenAt, now, existing.ID)
+			updated_at_ms = ? where id = ?`,
+			normalized.AccountEmail, normalized.AccountEmail, seenAt, seenAt, now, existing.ID)
 	}
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
@@ -110,7 +115,7 @@ func (r *repository) RequestManual(ctx context.Context, target model.TokenRecove
 	}
 	defer tx.Rollback()
 
-	existing, found, err := getByIdentityKey(ctx, tx, identityKey)
+	existing, found, err := getCompatibleTask(ctx, tx, normalized, identityKey)
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
 	}
@@ -130,13 +135,18 @@ func (r *repository) RequestManual(ctx context.Context, target model.TokenRecove
 	}
 	if isQueuedOrRunning(existing.Status) {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
+			account_email = case when account_email = '' and ? != '' then ? else account_email end,
 			last_signal_at_ms = case when ? > last_signal_at_ms then ? else last_signal_at_ms end,
-			updated_at_ms = ? where id = ?`, seenAt, seenAt, now, existing.ID)
+			updated_at_ms = ? where id = ?`,
+			normalized.AccountEmail, normalized.AccountEmail, seenAt, seenAt, now, existing.ID)
 	} else {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
-			status = ?, mode = ?, last_error_code = null, last_signal_at_ms = ?,
+			status = ?, mode = ?, last_error_code = null,
+			account_email = case when account_email = '' and ? != '' then ? else account_email end,
+			last_signal_at_ms = ?,
 			started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
-			model.TokenRecoveryStatusManualQueued, model.TokenRecoveryModeManual, seenAt, now, existing.ID)
+			model.TokenRecoveryStatusManualQueued, model.TokenRecoveryModeManual,
+			normalized.AccountEmail, normalized.AccountEmail, seenAt, now, existing.ID)
 	}
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
@@ -152,11 +162,11 @@ func (r *repository) RequestManual(ctx context.Context, target model.TokenRecove
 }
 
 func (r *repository) Get(ctx context.Context, target model.TokenRecoveryTarget) (model.TokenRecoveryTask, bool, error) {
-	_, identityKey, err := normalizeTarget(target)
+	normalized, identityKey, err := normalizeTarget(target)
 	if err != nil {
 		return model.TokenRecoveryTask{}, false, err
 	}
-	return getByIdentityKey(ctx, r.db, identityKey)
+	return getCompatibleTask(ctx, r.db, normalized, identityKey)
 }
 
 func (r *repository) GetByID(ctx context.Context, id int64) (model.TokenRecoveryTask, bool, error) {
@@ -316,6 +326,26 @@ func getByIdentityKey(ctx context.Context, q rowQueryer, identityKey string) (mo
 	return item, true, nil
 }
 
+// getCompatibleTask keeps a single automatic-recovery cycle for the same
+// physical credential even when one signal source only knows the auth index
+// while another also has an email snapshot. auth_index is the stable locator
+// when present; email is still retained and checked by the recovery service
+// before any write. Email-only targets remain keyed by email.
+func getCompatibleTask(ctx context.Context, q rowQueryer, target model.TokenRecoveryTarget, identityKey string) (model.TokenRecoveryTask, bool, error) {
+	item, found, err := getByIdentityKey(ctx, q, identityKey)
+	if err != nil || found || target.AuthIndex == "" {
+		return item, found, err
+	}
+	item, err = scanTask(q.QueryRowContext(ctx, selectTasks+` where lower(file_name) = lower(?) and auth_index = ? and provider = ? order by id asc limit 1`, target.FileName, target.AuthIndex, target.Provider))
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.TokenRecoveryTask{}, false, nil
+	}
+	if err != nil {
+		return model.TokenRecoveryTask{}, false, err
+	}
+	return item, true, nil
+}
+
 func getByID(ctx context.Context, q rowQueryer, id int64) (model.TokenRecoveryTask, error) {
 	return scanTask(q.QueryRowContext(ctx, selectTasks+` where id = ?`, id))
 }
@@ -367,8 +397,4 @@ func sanitizeErrorCode(value string) string {
 		return "recovery_failed"
 	}
 	return builder.String()
-}
-
-func (r *repository) String() string {
-	return fmt.Sprintf("tokenrecovery.Repository(%p)", r.db)
 }

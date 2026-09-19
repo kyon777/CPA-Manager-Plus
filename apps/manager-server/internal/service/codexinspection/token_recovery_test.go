@@ -33,6 +33,19 @@ func TestCompletedCodexInspectionSignalsOnlyCodexReauthLocators(t *testing.T) {
 	}
 }
 
+func TestCompletedCodexInspectionIgnoresNonEmailDisplaySnapshot(t *testing.T) {
+	recorder := &inspectionRecoveryRecorder{}
+	service := NewWithOptions(&store.Store{}, nil, ServiceOptions{ReauthRecoveryNotifier: recorder, OwnerID: "test-owner"})
+	service.signalCompletedReauthRecoveries(context.Background(), []model.CodexInspectionResult{{
+		Provider: "codex", Action: "reauth", FileName: "physical.json", AuthIndex: "7",
+		AccountSnapshot: "display-label", DisplayAccount: "fallback@example.com", CreatedAtMS: 123,
+	}})
+	targets := recorder.targets()
+	if len(targets) != 1 || targets[0].AccountEmail != "fallback@example.com" {
+		t.Fatalf("recovery targets = %#v", targets)
+	}
+}
+
 type inspectionRecoveryRecorder struct {
 	mu    sync.Mutex
 	items []model.TokenRecoveryTarget

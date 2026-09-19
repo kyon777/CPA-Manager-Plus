@@ -74,7 +74,9 @@ import {
   type CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import { resolveInspectionAccountNote } from '@/features/monitoring/model/serverInspectionAccountNote';
+import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api/authFiles';
+import { usageServiceApi } from '@/services/api/usageService';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
 import styles from './CodexInspectionPage.module.scss';
@@ -105,6 +107,7 @@ export function CodexInspectionPage({
   const apiBase = useAuthStore((state) => state.apiBase);
   const managementKey = useAuthStore((state) => state.managementKey);
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
+  const featureAvailability = usePanelFeatureAvailability();
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const connectionFingerprint = useMemo(
@@ -114,6 +117,16 @@ export function CodexInspectionPage({
   const authFilesRequestScope = useMemo(
     () => ({ apiBase, managementKey }),
     [apiBase, managementKey]
+  );
+  const managerRequestScope = useMemo(
+    () =>
+      featureAvailability.managerServiceBase
+        ? {
+            apiBase: featureAvailability.managerServiceBase,
+            managementKey,
+          }
+        : undefined,
+    [featureAvailability.managerServiceBase, managementKey]
   );
   const initialLastRunRef = useRef<ReturnType<typeof loadCodexInspectionLastRun> | undefined>(
     undefined
@@ -161,6 +174,7 @@ export function CodexInspectionPage({
     CODEX_INSPECTION_RESULT_PAGE_SIZE_OPTIONS[0]
   );
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
+  const tokenRecoverySignalKeysRef = useRef<Set<string>>(new Set());
   const logCounterRef = useRef(initialLastRun?.logs.length ?? 0);
   const sessionRef = useRef<CodexInspectionSession | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -310,6 +324,60 @@ export function CodexInspectionPage({
       createLocalCredentialInspectionSnapshot(result, result.finishedAt || Date.now())
     );
   }, [connectionFingerprint, onSnapshotChange, result, resultConnectionFingerprint, runStatus]);
+
+  useEffect(() => {
+    if (
+      !managerRequestScope?.apiBase ||
+      !result ||
+      result.finishedAt <= 0 ||
+      runStatus !== 'success' ||
+      !connectionFingerprint ||
+      resultConnectionFingerprint !== connectionFingerprint
+    ) {
+      return;
+    }
+
+    for (const item of result.results) {
+      if (!isReauthAction(item) || item.provider.toLowerCase() !== 'codex') continue;
+      const fileName = item.fileName.trim();
+      if (!fileName) continue;
+      const authIndex = item.authIndex ? String(item.authIndex).trim() : '';
+      const snapshotEmail =
+        typeof item.accountSnapshot === 'string' && item.accountSnapshot.includes('@')
+          ? item.accountSnapshot.trim()
+          : '';
+      const displayEmail = item.displayAccount.includes('@') ? item.displayAccount.trim() : '';
+      const accountEmail = snapshotEmail || displayEmail;
+      if (!authIndex && !accountEmail) continue;
+      const signalKey = [
+        connectionFingerprint,
+        String(result.finishedAt),
+        fileName,
+        authIndex,
+        accountEmail.toLowerCase(),
+      ].join('\u0000');
+      if (tokenRecoverySignalKeysRef.current.has(signalKey)) continue;
+      tokenRecoverySignalKeysRef.current.add(signalKey);
+      void usageServiceApi
+        .signalTokenRecovery(managerRequestScope.apiBase, managerRequestScope.managementKey, {
+          fileName,
+          ...(authIndex ? { authIndex } : {}),
+          ...(accountEmail ? { accountEmail } : {}),
+          provider: 'codex',
+          observedAtMs: result.finishedAt,
+        })
+        .catch(() => {
+          // Automatic recovery is deliberately not retried from the browser.
+        });
+    }
+  }, [
+    connectionFingerprint,
+    managerRequestScope?.apiBase,
+    managerRequestScope?.managementKey,
+    result,
+    resultConnectionFingerprint,
+    runStatus,
+  ]);
 
   const appendLog = useCallback(
     (level: CodexInspectionLogLevel, message: string, detail?: CodexInspectionLogDetail) => {
@@ -1028,6 +1096,13 @@ export function CodexInspectionPage({
     [navigate, onCodexReauthStart]
   );
 
+  const handleServerTokenRecoverySuccess = useCallback(async () => {
+    // Manager Server has already email-verified and written the recovered
+    // credential. Do not feed the old dialog target back into Accounts: a
+    // returned chatgpt_account_id may legitimately differ from the old one.
+    await onCredentialsChanged?.();
+    showNotification(t('codex_reauth.rerun_hint'), 'success');
+  }, [onCredentialsChanged, showNotification, t]);
   const handleCodexReauthSuccess = useCallback(async () => {
     await onCredentialsChanged?.(codexReauthTarget);
     showNotification(t('codex_reauth.rerun_hint'), 'success');
@@ -1470,8 +1545,10 @@ export function CodexInspectionPage({
         open={Boolean(codexReauthTarget)}
         target={codexReauthTarget}
         requestScope={authFilesRequestScope}
+        managerRequestScope={managerRequestScope}
         onClose={() => setCodexReauthTarget(null)}
         onSuccess={handleCodexReauthSuccess}
+        onServerRecoverySuccess={handleServerTokenRecoverySuccess}
       />
     </div>
   );

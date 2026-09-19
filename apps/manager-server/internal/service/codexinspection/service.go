@@ -702,12 +702,9 @@ func (s *Service) signalCompletedReauthRecoveries(ctx context.Context, results [
 		if fileName == "" {
 			continue
 		}
-		accountEmail := strings.TrimSpace(result.AccountSnapshot)
-		if accountEmail == "" && strings.Contains(result.DisplayAccount, "@") {
-			accountEmail = strings.TrimSpace(result.DisplayAccount)
-		}
-		if accountEmail == fileName {
-			accountEmail = ""
+		accountEmail := recoveryEmailFromInspectionSnapshot(fileName, result.AccountSnapshot)
+		if accountEmail == "" {
+			accountEmail = recoveryEmailFromInspectionSnapshot(fileName, result.DisplayAccount)
 		}
 		seenAt := result.CreatedAtMS
 		if seenAt <= 0 {
@@ -721,6 +718,14 @@ func (s *Service) signalCompletedReauthRecoveries(ctx context.Context, results [
 			ObservedAtMS: seenAt,
 		})
 	}
+}
+
+func recoveryEmailFromInspectionSnapshot(fileName, value string) string {
+	account := strings.TrimSpace(value)
+	if account == "" || account == fileName || !strings.Contains(account, "@") {
+		return ""
+	}
+	return account
 }
 
 func (s *Service) runTask(task *localRun, ctx context.Context, req RunRequest, run model.CodexInspectionRun, settings model.ManagerCodexInspectionConfig, setup store.Setup) {

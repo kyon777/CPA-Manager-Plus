@@ -55,6 +55,53 @@ func TestSignalAutomaticDeduplicatesAndFailureRequiresManualRetry(t *testing.T) 
 	}
 }
 
+func TestSignalAutomaticWithoutObservedAtDoesNotRequeueSucceededTask(t *testing.T) {
+	repo := newTestRepository(t)
+	target := model.TokenRecoveryTarget{FileName: "codex.json", AuthIndex: "7", Provider: "codex", ObservedAtMS: 100}
+	queued, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	claimed, ok, err := repo.ClaimNextQueued(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("ClaimNextQueued() = %#v, %t, %v", claimed, ok, err)
+	}
+	if _, err := repo.Complete(context.Background(), queued.ID); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	withoutTimestamp := target
+	withoutTimestamp.ObservedAtMS = 0
+	got, err := repo.SignalAutomatic(context.Background(), withoutTimestamp)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() without timestamp error = %v", err)
+	}
+	if got.Status != model.TokenRecoveryStatusSucceeded {
+		t.Fatalf("task status = %q, want %q", got.Status, model.TokenRecoveryStatusSucceeded)
+	}
+	if _, ok, err := repo.ClaimNextQueued(context.Background()); err != nil || ok {
+		t.Fatalf("succeeded task was requeued: ok=%t err=%v", ok, err)
+	}
+}
+
+func TestSignalAutomaticDeduplicatesSameAuthIndexWhenOneSourceLacksEmail(t *testing.T) {
+	repo := newTestRepository(t)
+	withoutEmail, err := repo.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
+		FileName: "codex.json", AuthIndex: "7", Provider: "codex", ObservedAtMS: 100,
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() without email error = %v", err)
+	}
+	withEmail, err := repo.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
+		FileName: "codex.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: 101,
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() with email error = %v", err)
+	}
+	if withoutEmail.ID != withEmail.ID {
+		t.Fatalf("same auth index created duplicate tasks: %#v / %#v", withoutEmail, withEmail)
+	}
+}
+
 func TestClaimNextQueuedHasExactlyOneConcurrentWinner(t *testing.T) {
 	repo := newTestRepository(t)
 	_, err := repo.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
