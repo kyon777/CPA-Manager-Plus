@@ -425,6 +425,39 @@ export interface TokenRecoveryTaskResponse {
   task: TokenRecoveryTask | null;
 }
 
+export interface TokenRecoveryBatchTargetRequest extends TokenRecoveryTargetRequest {
+  clientKey: string;
+}
+
+export interface TokenRecoveryBatchItem {
+  clientKey: string;
+  task: TokenRecoveryTask | null;
+  errorCode?: string;
+}
+
+export interface TokenRecoveryBatchResponse {
+  items: TokenRecoveryBatchItem[];
+}
+
+export interface CredentialRuntimeMetadataTarget {
+  clientKey: string;
+  fileName: string;
+  authIndex?: string;
+  accountEmail?: string;
+  provider: string;
+}
+
+export interface CredentialRuntimeMetadataItem {
+  clientKey: string;
+  proxyUrl?: string;
+  recoveryTask?: TokenRecoveryTask | null;
+  errorCode?: string;
+}
+
+export interface CredentialRuntimeMetadataResponse {
+  items: CredentialRuntimeMetadataItem[];
+}
+
 export interface ModelPricesResponse {
   prices: Record<string, ModelPrice>;
 }
@@ -1988,6 +2021,21 @@ const tokenRecoveryTargetPayload = (target: TokenRecoveryTargetRequest) => ({
 const tokenRecoveryTargetParams = (target: TokenRecoveryTargetRequest) =>
   tokenRecoveryTargetPayload(target);
 
+const tokenRecoveryBatchTargetPayload = (target: TokenRecoveryBatchTargetRequest) => ({
+  clientKey: target.clientKey,
+  ...tokenRecoveryTargetPayload(target),
+});
+
+const credentialRuntimeMetadataTargetPayload = (target: CredentialRuntimeMetadataTarget) => ({
+  clientKey: target.clientKey,
+  fileName: target.fileName,
+  ...(target.authIndex ? { authIndex: target.authIndex } : {}),
+  ...(target.accountEmail ? { accountEmail: target.accountEmail } : {}),
+  provider: target.provider,
+});
+
+const optionalAbortSignal = (signal?: AbortSignal) => (signal ? { signal } : {});
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object';
 
@@ -2805,6 +2853,88 @@ export const usageServiceApi = {
         {
           timeout: CODEX_INSPECTION_RUN_TIMEOUT_MS,
           headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  getCredentialRuntimeMetadata: async (
+    base: string,
+    managementKey: string | undefined,
+    targets: CredentialRuntimeMetadataTarget[],
+    signal?: AbortSignal
+  ): Promise<CredentialRuntimeMetadataResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { items: targets.map((target) => ({ clientKey: target.clientKey })) };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<CredentialRuntimeMetadataResponse>(
+        buildUrl(base, '/v0/management/credential-runtime-metadata'),
+        { targets: targets.map(credentialRuntimeMetadataTargetPayload) },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          ...optionalAbortSignal(signal),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  queryTokenRecoveryBatch: async (
+    base: string,
+    managementKey: string | undefined,
+    targets: TokenRecoveryBatchTargetRequest[],
+    signal?: AbortSignal
+  ): Promise<TokenRecoveryBatchResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { items: targets.map((target) => ({ clientKey: target.clientKey, task: null })) };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<TokenRecoveryBatchResponse>(
+        buildUrl(base, '/v0/management/token-recovery/query'),
+        { targets: targets.map(tokenRecoveryBatchTargetPayload) },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          ...optionalAbortSignal(signal),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  requestTokenRecoveryManualBatch: async (
+    base: string,
+    managementKey: string | undefined,
+    targets: TokenRecoveryBatchTargetRequest[],
+    signal?: AbortSignal
+  ): Promise<TokenRecoveryBatchResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        items: targets.map((target) => ({
+          clientKey: target.clientKey,
+          task: {
+            id: 0,
+            ...tokenRecoveryTargetPayload(target),
+            status: 'succeeded',
+            mode: 'manual',
+          },
+        })),
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<TokenRecoveryBatchResponse>(
+        buildUrl(base, '/v0/management/token-recovery/manual/batch'),
+        { targets: targets.map(tokenRecoveryBatchTargetPayload) },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          ...optionalAbortSignal(signal),
         }
       );
       return response.data;

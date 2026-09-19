@@ -16,7 +16,11 @@ import (
 	tokenrecoverysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenrecovery"
 )
 
-const maxTargetRequestBytes = 16 * 1024
+const (
+	maxTargetRequestBytes      = 16 * 1024
+	maxBatchTargetRequestBytes = 64 * 1024
+	maxBatchTargets            = 100
+)
 
 type Handler struct {
 	App *app.Context
@@ -33,6 +37,50 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	path := strings.TrimRight(strings.TrimSpace(r.URL.Path), "/")
 	switch path {
+	case "/v0/management/token-recovery/query":
+		if r.Method != http.MethodPost {
+			response.MethodNotAllowed(w)
+			return
+		}
+		batchTargets, err := decodeBatchTargets(r)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		items := make([]batchItem, len(batchTargets))
+		for index, batchTarget := range batchTargets {
+			items[index].ClientKey = batchTarget.ClientKey
+			task, found, err := h.App.TokenRecoveryService.Get(r.Context(), batchTarget.Target)
+			if err != nil {
+				items[index].ErrorCode = tokenRecoveryItemErrorCode(err)
+				continue
+			}
+			if found {
+				items[index].Task = &task
+			}
+		}
+		response.JSON(w, http.StatusOK, map[string]any{"items": items})
+	case "/v0/management/token-recovery/manual/batch":
+		if r.Method != http.MethodPost {
+			response.MethodNotAllowed(w)
+			return
+		}
+		batchTargets, err := decodeBatchTargets(r)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		items := make([]batchItem, len(batchTargets))
+		for index, batchTarget := range batchTargets {
+			items[index].ClientKey = batchTarget.ClientKey
+			task, err := h.App.TokenRecoveryService.RequestManual(r.Context(), batchTarget.Target)
+			if err != nil {
+				items[index].ErrorCode = tokenRecoveryItemErrorCode(err)
+				continue
+			}
+			items[index].Task = &task
+		}
+		response.JSON(w, http.StatusOK, map[string]any{"items": items})
 	case "/v0/management/token-recovery/signals":
 		if r.Method != http.MethodPost {
 			response.MethodNotAllowed(w)
@@ -84,6 +132,102 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		response.MethodNotAllowed(w)
 	}
+}
+
+type batchTarget struct {
+	ClientKey string
+	Target    model.TokenRecoveryTarget
+}
+
+type batchItem struct {
+	ClientKey string                   `json:"clientKey"`
+	Task      *model.TokenRecoveryTask `json:"task"`
+	ErrorCode string                   `json:"errorCode,omitempty"`
+}
+
+func decodeBatchTargets(r *http.Request) ([]batchTarget, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBatchTargetRequestBytes+1))
+	if err != nil || len(body) > maxBatchTargetRequestBytes {
+		return nil, errors.New("invalid token recovery batch request")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	var rawRoot map[string]json.RawMessage
+	if err := decoder.Decode(&rawRoot); err != nil || rawRoot == nil {
+		return nil, errors.New("invalid token recovery batch request")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, errors.New("invalid token recovery batch request")
+	}
+	if len(rawRoot) != 1 {
+		return nil, errors.New("token recovery batch request contains an unsupported field")
+	}
+	rawTargets, ok := rawRoot["targets"]
+	if !ok {
+		return nil, errors.New("token recovery batch request requires targets")
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(rawTargets, &values); err != nil || values == nil || len(values) > maxBatchTargets {
+		return nil, errors.New("invalid token recovery batch targets")
+	}
+	targets := make([]batchTarget, len(values))
+	for index, value := range values {
+		target, err := decodeBatchTarget(value)
+		if err != nil {
+			return nil, err
+		}
+		targets[index] = target
+	}
+	return targets, nil
+}
+
+func decodeBatchTarget(value json.RawMessage) (batchTarget, error) {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil || raw == nil {
+		return batchTarget{}, errors.New("invalid token recovery batch target")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return batchTarget{}, errors.New("invalid token recovery batch target")
+	}
+	allowed := map[string]struct{}{
+		"clientKey": {}, "fileName": {}, "authIndex": {}, "accountEmail": {}, "provider": {}, "observedAtMs": {},
+	}
+	for key := range raw {
+		if _, ok := allowed[key]; !ok {
+			return batchTarget{}, errors.New("token recovery batch target contains an unsupported field")
+		}
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return batchTarget{}, errors.New("invalid token recovery batch target")
+	}
+	var decoded struct {
+		ClientKey    string `json:"clientKey"`
+		FileName     string `json:"fileName"`
+		AuthIndex    string `json:"authIndex"`
+		AccountEmail string `json:"accountEmail"`
+		Provider     string `json:"provider"`
+		ObservedAtMS int64  `json:"observedAtMs"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return batchTarget{}, errors.New("invalid token recovery batch target")
+	}
+	provider := strings.TrimSpace(decoded.Provider)
+	if provider == "" {
+		provider = "codex"
+	}
+	return batchTarget{
+		ClientKey: strings.TrimSpace(decoded.ClientKey),
+		Target: model.TokenRecoveryTarget{
+			FileName:     decoded.FileName,
+			AuthIndex:    decoded.AuthIndex,
+			AccountEmail: decoded.AccountEmail,
+			Provider:     provider,
+			ObservedAtMS: decoded.ObservedAtMS,
+		},
+	}, nil
 }
 
 func decodeTarget(r *http.Request) (model.TokenRecoveryTarget, error) {
@@ -146,5 +290,18 @@ func tokenRecoveryErrorStatus(err error) int {
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
+	}
+}
+
+func tokenRecoveryItemErrorCode(err error) string {
+	switch {
+	case errors.Is(err, tokenrecoveryrepo.ErrInvalidTarget):
+		return "invalid_target"
+	case errors.Is(err, tokenrecoverysvc.ErrRecoveryNotConfigured):
+		return "not_configured"
+	case errors.Is(err, tokenrecoverysvc.ErrRecoveryUnavailable):
+		return "recovery_unavailable"
+	default:
+		return "recovery_failed"
 	}
 }

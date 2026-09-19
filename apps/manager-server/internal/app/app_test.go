@@ -108,3 +108,19 @@ func TestNewRejectsInvalidPostV2CPAConnectionBeforeCreatingDataKey(t *testing.T)
 		})
 	}
 }
+
+func TestFromExistingWiresCredentialRuntimeService(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	appContext := FromExisting(config.Config{}, st, nil, 0, nil, nil, nil, "test-service")
+	if appContext.TokenRecoveryService == nil {
+		t.Fatal("TokenRecoveryService is nil")
+	}
+	if appContext.CredentialRuntimeService == nil {
+		t.Fatal("CredentialRuntimeService is nil")
+	}
+}

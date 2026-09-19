@@ -19,6 +19,7 @@ import (
 	codexinspectionsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/codexinspection"
 	collectorsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
+	credentialruntimesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialruntime"
 	dashboardsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/dashboard"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	modelpricesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/modelprice"
@@ -60,6 +61,7 @@ type Context struct {
 	DashboardService               *dashboardsvc.Service
 	CodexInspectionService         *codexinspectionsvc.Service
 	TokenRecoveryService           *tokenrecoverysvc.Service
+	CredentialRuntimeService       *credentialruntimesvc.Service
 	MonitoringService              *monitoringsvc.Service
 	QuotaSnapshotService           *quotasnapshotsvc.Service
 	ModelPriceService              *modelpricesvc.Service
@@ -155,15 +157,21 @@ func fromExisting(
 		TTL:            cfg.UsageImportSessionTTL,
 	}))
 	authFileMutationCoordinator := cpaauthfiles.NewMutationCoordinator()
+	authFiles := cpaauthfiles.New(nil)
 	tokenRecoveryService := tokenrecoverysvc.NewWithOptions(tokenrecoverysvc.Options{
 		Tasks:               st,
 		SetupResolver:       managerConfigService,
-		AuthFiles:           cpaauthfiles.New(nil),
+		AuthFiles:           authFiles,
 		MutationCoordinator: authFileMutationCoordinator,
 		Acquirer: tokenacquisition.New(tokenacquisition.Config{
 			BaseURL: cfg.TokenAcquisitionBaseURL,
 			APIKey:  cfg.TokenAcquisitionAPIKey,
 		}),
+	})
+	credentialRuntimeService := credentialruntimesvc.NewWithOptions(credentialruntimesvc.Options{
+		SetupResolver:  managerConfigService,
+		AuthFiles:      authFiles,
+		RecoveryLookup: tokenRecoveryService,
 	})
 	return &Context{
 		UpdateCheckService:   updatechecksvc.New(st, buildinfo.Version, buildinfo.SourceCommit, os.Getenv("CPAMP_UPDATE_CHECK_ENABLED") != "false"),
@@ -186,11 +194,12 @@ func fromExisting(
 				ReauthRecoveryNotifier:      tokenRecoveryService,
 			},
 		),
-		TokenRecoveryService: tokenRecoveryService,
-		MonitoringService:    monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
-		QuotaSnapshotService: quotasnapshotsvc.New(st),
-		ModelPriceService:    modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
-		APIKeyAliasService:   apikeyaliassvc.New(st),
+		TokenRecoveryService:     tokenRecoveryService,
+		CredentialRuntimeService: credentialRuntimeService,
+		MonitoringService:        monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
+		QuotaSnapshotService:     quotasnapshotsvc.New(st),
+		ModelPriceService:        modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
+		APIKeyAliasService:       apikeyaliassvc.New(st),
 		AccountActionService: accountactionsvc.NewWithMutationCoordinator(
 			st,
 			managerConfigService,

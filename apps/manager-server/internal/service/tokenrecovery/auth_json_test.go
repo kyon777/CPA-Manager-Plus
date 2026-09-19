@@ -164,3 +164,41 @@ func TestMergeAuthJSONSynchronizesNestedCodexAccountIDAliases(t *testing.T) {
 		t.Fatalf("new nested account id aliases = %s", text)
 	}
 }
+
+func TestReadProxyURLSelectsArrayRecord(t *testing.T) {
+	raw := []byte(`[
+  {"auth_index":"1","email":"a@example.com","proxy_url":"http://a.example:8080"},
+  {"auth_index":"2","email":"b@example.com","proxy-url":"socks5://b.example:1080"}
+]`)
+
+	got, err := ReadProxyURL(raw, Locator{AuthIndex: "2", AccountEmail: "b@example.com"})
+	if err != nil {
+		t.Fatalf("ReadProxyURL() error = %v", err)
+	}
+	if got != "socks5://b.example:1080" {
+		t.Fatalf("ReadProxyURL() = %q, want socks5 proxy from selected record", got)
+	}
+}
+
+func TestReadProxyURLReadsSingleObjectWithoutLocator(t *testing.T) {
+	got, err := ReadProxyURL(
+		[]byte(`{"email":"a@example.com","proxyUrl":"https://proxy.example:8443"}`),
+		Locator{},
+	)
+	if err != nil {
+		t.Fatalf("ReadProxyURL() error = %v", err)
+	}
+	if got != "https://proxy.example:8443" {
+		t.Fatalf("ReadProxyURL() = %q, want single-object proxy", got)
+	}
+}
+
+func TestReadProxyURLRejectsUnlocatedArray(t *testing.T) {
+	_, err := ReadProxyURL(
+		[]byte(`[{"email":"a@example.com"},{"email":"b@example.com"}]`),
+		Locator{},
+	)
+	if !errors.Is(err, ErrCredentialAmbiguous) {
+		t.Fatalf("ReadProxyURL() error = %v, want ErrCredentialAmbiguous", err)
+	}
+}

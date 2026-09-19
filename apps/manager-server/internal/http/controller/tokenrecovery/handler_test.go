@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	tokenrecoverysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenrecovery"
@@ -84,6 +86,127 @@ func TestHandlerRejectsOversizedTargetBodyEvenWhenJSONPrefixIsValid(t *testing.T
 	handler.Handle(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("oversized target status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHandlerBatchManualIsolatesInvalidTarget(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/manual/batch", bytes.NewBufferString(`{
+  "targets":[
+    {"clientKey":"valid","fileName":"a.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex"},
+    {"clientKey":"invalid","fileName":"b.json","accountEmail":"other@example.com","provider":"not-codex"}
+  ]
+}`))
+	request.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Items []struct {
+			ClientKey string `json:"clientKey"`
+			Task      *struct {
+				Status string `json:"status"`
+			} `json:"task"`
+			ErrorCode string `json:"errorCode"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("response items = %#v", response.Items)
+	}
+	if response.Items[0].ClientKey != "valid" || response.Items[0].Task == nil || response.Items[0].Task.Status != "manual_queued" || response.Items[0].ErrorCode != "" {
+		t.Fatalf("valid batch item = %#v", response.Items[0])
+	}
+	if response.Items[1].ClientKey != "invalid" || response.Items[1].Task != nil || response.Items[1].ErrorCode != "invalid_target" {
+		t.Fatalf("invalid batch item = %#v", response.Items[1])
+	}
+}
+
+func TestHandlerBatchQueryReturnsExistingAndNullTask(t *testing.T) {
+	handler := newTestHandler(t)
+	_, err := handler.App.TokenRecoveryService.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
+		FileName: "a.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/query", bytes.NewBufferString(`{
+  "targets":[
+    {"clientKey":"existing","fileName":"a.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex"},
+    {"clientKey":"missing","fileName":"b.json","authIndex":"9","accountEmail":"missing@example.com","provider":"codex"}
+  ]
+}`))
+	request.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Items []struct {
+			ClientKey string          `json:"clientKey"`
+			Task      json.RawMessage `json:"task"`
+			ErrorCode string          `json:"errorCode"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("response items = %#v", response.Items)
+	}
+	if response.Items[0].ClientKey != "existing" || string(response.Items[0].Task) == "null" || response.Items[0].ErrorCode != "" {
+		t.Fatalf("existing query item = %#v", response.Items[0])
+	}
+	if response.Items[1].ClientKey != "missing" || string(response.Items[1].Task) != "null" || response.Items[1].ErrorCode != "" {
+		t.Fatalf("missing query item = %#v", response.Items[1])
+	}
+}
+
+func TestHandlerBatchRejectsExtraFieldsAndMoreThanOneHundredTargets(t *testing.T) {
+	handler := newTestHandler(t)
+	extraField := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/query", bytes.NewBufferString(`{"targets":[],"accountId":"must-not-be-accepted"}`))
+	extraField.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
+	extraFieldRecorder := httptest.NewRecorder()
+	handler.Handle(extraFieldRecorder, extraField)
+	if extraFieldRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("extra root field status = %d body=%s", extraFieldRecorder.Code, extraFieldRecorder.Body.String())
+	}
+	nestedExtraField := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/query", bytes.NewBufferString(`{"targets":[{"clientKey":"row-a","fileName":"a.json","accountEmail":"person@example.com","provider":"codex","accountId":"must-not-be-accepted"}]}`))
+	nestedExtraField.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
+	nestedExtraFieldRecorder := httptest.NewRecorder()
+	handler.Handle(nestedExtraFieldRecorder, nestedExtraField)
+	if nestedExtraFieldRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("extra target field status = %d body=%s", nestedExtraFieldRecorder.Code, nestedExtraFieldRecorder.Body.String())
+	}
+
+	targets := make([]map[string]string, 101)
+	for index := range targets {
+		targets[index] = map[string]string{
+			"clientKey":    fmt.Sprintf("row-%d", index),
+			"fileName":     "a.json",
+			"accountEmail": "person@example.com",
+			"provider":     "codex",
+		}
+	}
+	body, err := json.Marshal(map[string]any{"targets": targets})
+	if err != nil {
+		t.Fatalf("marshal targets: %v", err)
+	}
+	overLimit := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/manual/batch", bytes.NewReader(body))
+	overLimit.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
+	overLimitRecorder := httptest.NewRecorder()
+	handler.Handle(overLimitRecorder, overLimit)
+	if overLimitRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit status = %d body=%s", overLimitRecorder.Code, overLimitRecorder.Body.String())
 	}
 }
 

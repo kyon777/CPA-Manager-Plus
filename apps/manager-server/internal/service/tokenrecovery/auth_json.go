@@ -66,6 +66,18 @@ func ReadCredential(raw []byte, locator Locator) (Credential, error) {
 	return doc.credential, nil
 }
 
+// ReadProxyURL returns the proxy configured on the selected credential record
+// without applying the HTTP-only transport validation used by TokenAcquisition.
+// A physical file containing one object can be read without a locator; an array
+// always needs a locator because its record identity would otherwise be unsafe.
+func ReadProxyURL(raw []byte, locator Locator) (string, error) {
+	doc, err := parseAuthDocumentForRead(raw, locator)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(firstNonEmptyField(doc.record, proxyFieldNames...)), nil
+}
+
 // MergeAuthJSON returns a copy of the original root JSON with only the target
 // token fields changed. All unrecognized fields are retained verbatim at the
 // JSON-value level, including note, priority, proxy settings and metadata.
@@ -145,15 +157,9 @@ func parseAuthDocument(raw []byte, locator Locator) (authDocument, error) {
 		return authDocument{}, ErrCredentialNotFound
 	}
 
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var root any
-	if err := decoder.Decode(&root); err != nil {
-		return authDocument{}, ErrCredentialInvalid
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return authDocument{}, ErrCredentialInvalid
+	root, err := decodeAuthDocumentRoot(raw)
+	if err != nil {
+		return authDocument{}, err
 	}
 
 	record, err := locateRecord(root, locator)
@@ -176,6 +182,41 @@ func parseAuthDocument(raw []byte, locator Locator) (authDocument, error) {
 			HTTPProxy: extractHTTPProxy(record),
 		},
 	}, nil
+}
+
+func parseAuthDocumentForRead(raw []byte, locator Locator) (authDocument, error) {
+	locator.AuthIndex = strings.TrimSpace(locator.AuthIndex)
+	locator.AccountEmail = normalizeEmail(locator.AccountEmail)
+	if locator.AuthIndex != "" || locator.AccountEmail != "" {
+		return parseAuthDocument(raw, locator)
+	}
+
+	root, err := decodeAuthDocumentRoot(raw)
+	if err != nil {
+		return authDocument{}, err
+	}
+	record, ok := root.(map[string]any)
+	if ok {
+		return authDocument{root: root, record: record}, nil
+	}
+	if _, ok := root.([]any); ok {
+		return authDocument{}, ErrCredentialAmbiguous
+	}
+	return authDocument{}, ErrCredentialInvalid
+}
+
+func decodeAuthDocumentRoot(raw []byte) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var root any
+	if err := decoder.Decode(&root); err != nil {
+		return nil, ErrCredentialInvalid
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, ErrCredentialInvalid
+	}
+	return root, nil
 }
 
 func locateRecord(root any, locator Locator) (map[string]any, error) {

@@ -15,7 +15,11 @@ import type { ApiClientRequestScope } from '@/services/api/client';
 import { useNotificationStore } from '@/stores';
 import { copyToClipboard } from '@/utils/clipboard';
 import { normalizeCodexMemberSnapshot } from '@/utils/authFileCredentialIdentity';
-import { isCodexReauthReconciliationError, type CodexReauthTarget } from './codexReauthModel';
+import {
+  buildCodexTokenRecoveryTarget,
+  isCodexReauthReconciliationError,
+  type CodexReauthTarget,
+} from './codexReauthModel';
 import styles from './CodexReauthDialog.module.scss';
 
 type CodexReauthStatus =
@@ -85,32 +89,6 @@ const getErrorMessage = (error: unknown): string => {
 const getErrorStatus = (error: unknown): number | undefined => {
   if (!isRecord(error)) return undefined;
   return typeof error.status === 'number' ? error.status : undefined;
-};
-
-const normalizeRecoveryEmail = (value: unknown): string => {
-  if (typeof value !== 'string') return '';
-  const normalized = value.trim();
-  return normalized.includes('@') ? normalized : '';
-};
-
-const buildTokenRecoveryTarget = (parts: {
-  account?: string;
-  accountSnapshot?: string | null;
-  authIndex?: string | number | null;
-  fileName?: string;
-}): TokenRecoveryTargetRequest | null => {
-  const fileName = parts.fileName?.trim() || '';
-  const authIndex =
-    parts.authIndex === null || parts.authIndex === undefined ? '' : String(parts.authIndex).trim();
-  const accountEmail =
-    normalizeRecoveryEmail(parts.accountSnapshot) || normalizeRecoveryEmail(parts.account);
-  if (!fileName || (!authIndex && !accountEmail)) return null;
-  return {
-    fileName,
-    ...(authIndex ? { authIndex } : {}),
-    ...(accountEmail ? { accountEmail } : {}),
-    provider: 'codex',
-  };
 };
 
 export function CodexReauthDialog({
@@ -199,7 +177,7 @@ export function CodexReauthDialog({
 
   const tokenRecoveryTarget = useMemo(
     () =>
-      buildTokenRecoveryTarget({
+      buildCodexTokenRecoveryTarget({
         account: target?.account,
         accountSnapshot: target?.accountSnapshot,
         authIndex: target?.authIndex,
