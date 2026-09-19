@@ -100,6 +100,7 @@ import {
 } from '@/features/oauth/codexReauthModel';
 import { runCredentialVisibilityRetry } from '@/features/accounts/model/accountCredentialVisibilityRetry';
 import {
+  buildPageAccountBannedRows,
   buildCredentialRuntimeMetadataTargets,
   buildPageRecoveryCandidates,
   formatRecoveryState,
@@ -8000,6 +8001,47 @@ export function AccountsPage() {
           ) : null}
           {!hasSelection && !isSelectionMode ? (
             <Button
+              variant="danger"
+              size="sm"
+              onClick={() =>
+                batchDelete(pageAccountBannedFiles, {
+                  title: t('accounts.batch_delete_banned_title', {
+                    count: pageAccountBannedRows.length,
+                  }),
+                  message: (
+                    <AccountsBatchDeletePreview
+                      summary={t('accounts.batch_delete_banned_summary', {
+                        rows: pageAccountBannedRows.length,
+                        files: pageAccountBannedFileNames.length,
+                      })}
+                      warning={t('accounts.batch_delete_banned_warning')}
+                      fileNames={pageAccountBannedFileNames.slice(0, 6).map(getDisplayFileName)}
+                      moreLabel={
+                        pageAccountBannedFileNames.length > 6
+                          ? t('accounts.batch_delete_preview_more', {
+                              count: pageAccountBannedFileNames.length - 6,
+                            })
+                          : undefined
+                      }
+                    />
+                  ),
+                  confirmText: t('common.delete'),
+                })
+              }
+              disabled={disableControls || pageAccountBannedRows.length === 0}
+              title={t('accounts.batch_delete_banned_page', {
+                count: pageAccountBannedRows.length,
+              })}
+              aria-label={t('accounts.batch_delete_banned_page', {
+                count: pageAccountBannedRows.length,
+              })}
+            >
+              <IconTrash2 size={15} />
+              {t('accounts.batch_delete_banned_page', { count: pageAccountBannedRows.length })}
+            </Button>
+          ) : null}
+          {!hasSelection && !isSelectionMode ? (
+            <Button
               variant="secondary"
               size="sm"
               onClick={() => refreshQuotaRows(refreshTargets)}
@@ -8660,6 +8702,14 @@ export function AccountsPage() {
   const pageRecoveryCandidates = buildPageRecoveryCandidates(
     pageRows,
     pageRecoveryHealthBySelectionKey
+  );
+  const pageAccountBannedRows = buildPageAccountBannedRows(
+    pageRows,
+    credentialRuntimeItemsByClientKey
+  );
+  const pageAccountBannedFiles = pageAccountBannedRows.map((row) => row.raw);
+  const pageAccountBannedFileNames = Array.from(
+    new Set(pageAccountBannedFiles.map((file) => file.name).filter(Boolean))
   );
 
   const queuePageTokenRecovery = useCallback(

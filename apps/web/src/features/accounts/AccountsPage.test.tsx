@@ -9606,6 +9606,64 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.applyCredentialRuntimeBatchTasks).toHaveBeenCalledWith(responseItems);
   });
 
+  it('offers deletion for only current-page credentials with account_banned recovery errors', async () => {
+    const bannedFile = {
+      ...makeCodexFile('banned.json', 'auth-banned', 'banned@example.com'),
+      status: 'error',
+      statusMessage: 'account_banned',
+      errorStatus: 401,
+      statusCode: 401,
+    } as AuthFileItem;
+    const healthyFile = makeCodexFile('healthy.json', 'auth-healthy', 'healthy@example.com');
+    const bannedKey = getAuthFileSelectionKey(bannedFile);
+    mocks.files = [bannedFile, healthyFile];
+    mocks.credentialRuntimeItemsByClientKey = new Map([
+      [
+        bannedKey,
+        {
+          clientKey: bannedKey,
+          recoveryTask: {
+            id: 21,
+            fileName: bannedFile.name,
+            authIndex: 'auth-banned',
+            accountEmail: 'banned@example.com',
+            provider: 'codex',
+            status: 'manual_failed_manual_only',
+            mode: 'manual',
+            lastErrorCode: 'account_banned',
+            lastErrorMessage: '账号已被封禁或停用',
+          },
+        },
+      ],
+    ]);
+
+    const renderer = await renderAccountsPage();
+    const button = findButtonByText(renderer, 'accounts.batch_delete_banned_page:1');
+
+    expect(button.props.variant).toBe('danger');
+    expect(button.props.disabled).toBe(false);
+    await act(async () => {
+      button.props.onClick();
+    });
+
+    expect(mocks.batchDelete).toHaveBeenCalledTimes(1);
+    expect(mocks.batchDelete.mock.calls[0]?.[0]).toEqual([bannedFile]);
+    const options = mocks.batchDelete.mock.calls[0]?.[1] as
+      | { confirmText?: string; message?: unknown }
+      | undefined;
+    expect(options?.confirmText).toBe('common.delete');
+    expect(isValidElement(options?.message)).toBe(true);
+  });
+
+  it('disables current-page banned deletion when no eligible credential exists', async () => {
+    const renderer = await renderAccountsPage();
+    const button = findButtonByText(renderer, 'accounts.batch_delete_banned_page:0');
+
+    expect(button.props.variant).toBe('danger');
+    expect(button.props.disabled).toBe(true);
+    expect(mocks.batchDelete).not.toHaveBeenCalled();
+  });
+
   it('shows a safe recovery failure reason after a pending batch task becomes terminal', async () => {
     const file = {
       ...mocks.files[0],
