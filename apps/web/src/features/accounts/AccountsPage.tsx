@@ -8948,7 +8948,7 @@ export function AccountsPage() {
               const runtime = credentialRuntimeItemsByClientKey.get(row.selectionKey);
               const accountProxyURL = runtime?.proxyUrl?.trim() || row.proxyUrl?.trim() || '';
               const accountProxyURLLabel = accountProxyURL
-                ? `${t('auth_files.proxy_url')}: ${accountProxyURL}`
+                ? `${t('auth_files.proxy_url_label')}: ${accountProxyURL}`
                 : '';
               const recoveryPresentation = formatRecoveryState(runtime?.recoveryTask);
               return (
@@ -9499,7 +9499,7 @@ export function AccountsPage() {
                 : '';
               const accountProxyURL = runtime?.proxyUrl?.trim() || row.proxyUrl?.trim() || '';
               const accountProxyURLLabel = accountProxyURL
-                ? `${t('auth_files.proxy_url')}: ${accountProxyURL}`
+                ? `${t('auth_files.proxy_url_label')}: ${accountProxyURL}`
                 : '';
               const recoveryPresentation = formatRecoveryState(runtime?.recoveryTask);
               return (

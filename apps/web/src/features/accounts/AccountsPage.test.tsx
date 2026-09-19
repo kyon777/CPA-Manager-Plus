@@ -9525,10 +9525,10 @@ describe('AccountsPage replacement flows', () => {
 
     expect(annotations.children.indexOf(note)).toBeLessThan(annotations.children.indexOf(proxy));
     expect(readText(proxy)).toBe(
-      'auth_files.proxy_url: http://proxy-user:proxy-pass@proxy.example:8080'
+      'auth_files.proxy_url_label: http://proxy-user:proxy-pass@proxy.example:8080'
     );
     expect(proxy.props.title).toBe(
-      'auth_files.proxy_url: http://proxy-user:proxy-pass@proxy.example:8080'
+      'auth_files.proxy_url_label: http://proxy-user:proxy-pass@proxy.example:8080'
     );
   });
 
@@ -9552,8 +9552,8 @@ describe('AccountsPage replacement flows', () => {
     const renderer = await renderAccountsPage();
     const proxy = renderer.root.findByProps({ 'data-account-list-proxy': selectionKey });
 
-    expect(readText(proxy)).toBe('auth_files.proxy_url: socks5://runtime-proxy.example:1080');
-    expect(proxy.props.title).toBe('auth_files.proxy_url: socks5://runtime-proxy.example:1080');
+    expect(readText(proxy)).toBe('auth_files.proxy_url_label: socks5://runtime-proxy.example:1080');
+    expect(proxy.props.title).toBe('auth_files.proxy_url_label: socks5://runtime-proxy.example:1080');
   });
 
   it('queues only current-page Codex reauth candidates in one batch request', async () => {

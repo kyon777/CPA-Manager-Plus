@@ -199,4 +199,26 @@ describe('accounts workspace wiring', () => {
     expect(locale.accounts.priority_edit).toBe(priorityEdit);
     expect(locale.accounts.view_mode_switcher).toBe(viewModeSwitcher);
   });
+
+  it.each([en, ru, zhCN, zhTW])('keeps account recovery messages readable in every locale', (locale) => {
+    const recovery = locale.accounts as Record<string, unknown>;
+    const keys = [
+      'batch_recovery_page',
+      'recovery_auto_processing',
+      'recovery_manual_processing',
+      'recovery_succeeded',
+      'recovery_failed_reason',
+      'recovery_failed_generic',
+      'batch_recovery_result',
+      'batch_recovery_unavailable',
+    ];
+
+    for (const key of keys) {
+      expect(recovery[key], key).toBeTypeOf('string');
+      expect(String(recovery[key]), key).not.toContain('?');
+    }
+    expect(String(recovery.batch_recovery_page)).toContain('{{count}}');
+    expect(String(recovery.recovery_failed_reason)).toContain('{{reason}}');
+    expect(String(recovery.batch_recovery_result)).toContain('{{count}}');
+  });
 });
