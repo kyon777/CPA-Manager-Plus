@@ -1,4 +1,5 @@
 import type { AuthFileItem } from '@/types';
+import type { TokenRecoveryTargetRequest } from '@/services/api';
 import {
   readAuthFileStatusAccountId,
   readAuthFileStatusCodexMember,
@@ -39,6 +40,13 @@ export type CodexReauthTarget = {
   accountSnapshot?: string | null;
 };
 
+export type CodexTokenRecoveryTargetParts = {
+  account?: string | null;
+  accountSnapshot?: string | null;
+  authIndex?: string | number | null;
+  fileName?: string | null;
+};
+
 const readStringField = (source: Record<string, unknown>, keys: string[]): string => {
   for (const key of keys) {
     const value = source[key];
@@ -46,6 +54,31 @@ const readStringField = (source: Record<string, unknown>, keys: string[]): strin
     if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   }
   return '';
+};
+
+const normalizeRecoveryEmail = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  return normalized.includes('@') ? normalized : '';
+};
+
+// buildCodexTokenRecoveryTarget centralizes the only browser-to-manager
+// recovery locator. It deliberately carries no account ID, proxy, or token.
+export const buildCodexTokenRecoveryTarget = (
+  parts: CodexTokenRecoveryTargetParts
+): TokenRecoveryTargetRequest | null => {
+  const fileName = parts.fileName?.trim() || '';
+  const authIndex =
+    parts.authIndex === null || parts.authIndex === undefined ? '' : String(parts.authIndex).trim();
+  const accountEmail =
+    normalizeRecoveryEmail(parts.accountSnapshot) || normalizeRecoveryEmail(parts.account);
+  if (!fileName || (!authIndex && !accountEmail)) return null;
+  return {
+    fileName,
+    ...(authIndex ? { authIndex } : {}),
+    ...(accountEmail ? { accountEmail } : {}),
+    provider: 'codex',
+  };
 };
 
 export const createCodexReauthTargetFromAuthFile = (file: AuthFileItem): CodexReauthTarget => {
