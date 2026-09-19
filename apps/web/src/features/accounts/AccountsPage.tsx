@@ -1243,6 +1243,16 @@ export function AccountsPage() {
     () => ({ apiBase, managementKey }),
     [apiBase, managementKey]
   );
+  const managerRequestScope = useMemo(
+    () =>
+      featureAvailability.managerServiceBase
+        ? {
+            apiBase: featureAvailability.managerServiceBase,
+            managementKey,
+          }
+        : undefined,
+    [featureAvailability.managerServiceBase, managementKey]
+  );
   const managerStorageAvailable =
     !featureAvailability.checking &&
     Boolean(featureAvailability.managerServiceBase) &&
@@ -3533,6 +3543,42 @@ export function AccountsPage() {
     t,
   ]);
 
+  const handleServerTokenRecoverySuccess = useCallback(async () => {
+    const fileName = codexReauthTarget?.fileName?.trim() ?? '';
+    if (!fileName) throw new Error(t('notification.refresh_failed'));
+
+    // TokenAcquisition may rotate the Codex ChatGPT account id. Manager Server
+    // already validates the email before the Core write, so do not reconcile
+    // this completion against the old account id in the browser.
+    invalidateCodexCredentialEvidenceForSourceFiles([fileName]);
+    const reloadedFiles = await reloadInspectionCredentialArtifacts({
+      requireSuccessfulReload: true,
+      loadCredentialsLast: true,
+    });
+    if (!reloadedFiles) throw new Error(t('notification.refresh_failed'));
+
+    const targetAuthIndex = normalizeAuthIndex(codexReauthTarget?.authIndex);
+    const recoveredFile = reloadedFiles.find(
+      (file) =>
+        file.name === fileName &&
+        (!targetAuthIndex ||
+          normalizeAuthIndex(file['auth_index'] ?? file.authIndex) === targetAuthIndex)
+    );
+    publishAccountCredentialMutationRevision({
+      connectionFingerprint,
+      provider: 'codex',
+      kind: 'reauth',
+      ...(recoveredFile
+        ? { credentialIdentity: getAuthFileSelectionKey(recoveredFile) }
+        : {}),
+    });
+  }, [
+    codexReauthTarget,
+    connectionFingerprint,
+    invalidateCodexCredentialEvidenceForSourceFiles,
+    reloadInspectionCredentialArtifacts,
+    t,
+  ]);
   const handleReauthAccount = useCallback(
     (file: AuthFileItem) => {
       const action = resolveAccountReauthAction(file);
@@ -10155,11 +10201,13 @@ export function AccountsPage() {
         open={Boolean(codexReauthTarget)}
         target={codexReauthTarget}
         requestScope={authFilesRequestScope}
+        managerRequestScope={managerRequestScope}
         onClose={() => {
           codexReauthBaselineRef.current = null;
           setCodexReauthTarget(null);
         }}
         onSuccess={handleCodexReauthSuccess}
+        onServerRecoverySuccess={handleServerTokenRecoverySuccess}
       />
     </div>
   );

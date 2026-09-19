@@ -4,15 +4,18 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { IconCheck, IconCopy, IconExternalLink, IconRefreshCw } from '@/components/ui/icons';
-import { oauthApi } from '@/services/api';
+import {
+  oauthApi,
+  usageServiceApi,
+  type TokenRecoveryStatus,
+  type TokenRecoveryTargetRequest,
+  type TokenRecoveryTask,
+} from '@/services/api';
 import type { ApiClientRequestScope } from '@/services/api/client';
 import { useNotificationStore } from '@/stores';
 import { copyToClipboard } from '@/utils/clipboard';
 import { normalizeCodexMemberSnapshot } from '@/utils/authFileCredentialIdentity';
-import {
-  isCodexReauthReconciliationError,
-  type CodexReauthTarget,
-} from './codexReauthModel';
+import { isCodexReauthReconciliationError, type CodexReauthTarget } from './codexReauthModel';
 import styles from './CodexReauthDialog.module.scss';
 
 type CodexReauthStatus =
@@ -29,17 +32,34 @@ type CodexReauthDialogProps = {
   open: boolean;
   target: CodexReauthTarget | null;
   requestScope?: ApiClientRequestScope;
+  managerRequestScope?: ApiClientRequestScope;
   onClose: () => void;
   onSuccess?: () => void | Promise<void>;
+  onServerRecoverySuccess?: () => void | Promise<void>;
 };
 
 const POLL_INTERVAL_MS = 3000;
+const TOKEN_RECOVERY_POLL_INTERVAL_MS = 2000;
+
+const TOKEN_RECOVERY_PENDING_STATUSES = new Set<TokenRecoveryStatus>([
+  'auto_queued',
+  'auto_running',
+  'manual_queued',
+  'manual_running',
+]);
+
+const TOKEN_RECOVERY_MANUAL_ONLY_FAILURE_STATUSES = new Set<TokenRecoveryStatus>([
+  'auto_failed_manual_only',
+  'manual_failed_manual_only',
+]);
 
 type CodexReauthDialogContext = {
   open: boolean;
   targetKey: string;
   apiBase: string;
   managementKey: string;
+  managerApiBase: string;
+  managerManagementKey: string;
 };
 
 const isSameDialogContext = (
@@ -49,7 +69,9 @@ const isSameDialogContext = (
   left.open === right.open &&
   left.targetKey === right.targetKey &&
   left.apiBase === right.apiBase &&
-  left.managementKey === right.managementKey;
+  left.managementKey === right.managementKey &&
+  left.managerApiBase === right.managerApiBase &&
+  left.managerManagementKey === right.managerManagementKey;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object';
@@ -65,12 +87,40 @@ const getErrorStatus = (error: unknown): number | undefined => {
   return typeof error.status === 'number' ? error.status : undefined;
 };
 
+const normalizeRecoveryEmail = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  return normalized.includes('@') ? normalized : '';
+};
+
+const buildTokenRecoveryTarget = (parts: {
+  account?: string;
+  accountSnapshot?: string | null;
+  authIndex?: string | number | null;
+  fileName?: string;
+}): TokenRecoveryTargetRequest | null => {
+  const fileName = parts.fileName?.trim() || '';
+  const authIndex =
+    parts.authIndex === null || parts.authIndex === undefined ? '' : String(parts.authIndex).trim();
+  const accountEmail =
+    normalizeRecoveryEmail(parts.accountSnapshot) || normalizeRecoveryEmail(parts.account);
+  if (!fileName || (!authIndex && !accountEmail)) return null;
+  return {
+    fileName,
+    ...(authIndex ? { authIndex } : {}),
+    ...(accountEmail ? { accountEmail } : {}),
+    provider: 'codex',
+  };
+};
+
 export function CodexReauthDialog({
   open,
   target,
   requestScope,
+  managerRequestScope,
   onClose,
   onSuccess,
+  onServerRecoverySuccess,
 }: CodexReauthDialogProps) {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
@@ -83,10 +133,17 @@ export function CodexReauthDialog({
   const [callbackError, setCallbackError] = useState('');
   const [copiedTarget, setCopiedTarget] = useState<'account' | 'link' | null>(null);
   const [linkRefreshed, setLinkRefreshed] = useState(false);
+  const [tokenRecoveryTask, setTokenRecoveryTask] = useState<TokenRecoveryTask | null>(null);
+  const [tokenRecoveryLoading, setTokenRecoveryLoading] = useState(false);
+  const [tokenRecoveryError, setTokenRecoveryError] = useState('');
   const pollingTimerRef = useRef<number | null>(null);
+  const tokenRecoveryTimerRef = useRef<number | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
   const successHandledRef = useRef(false);
+  const tokenRecoverySuccessHandledRef = useRef('');
+  const tokenRecoveryShouldNotifySuccessRef = useRef(false);
   const operationGenerationRef = useRef(0);
+  const tokenRecoveryGenerationRef = useRef(0);
   const oauthStateRef = useRef('');
 
   const targetKey = useMemo(
@@ -109,8 +166,17 @@ export function CodexReauthDialog({
       targetKey,
       apiBase: requestScope?.apiBase ?? '',
       managementKey: requestScope?.managementKey ?? '',
+      managerApiBase: managerRequestScope?.apiBase ?? '',
+      managerManagementKey: managerRequestScope?.managementKey ?? '',
     }),
-    [open, requestScope?.apiBase, requestScope?.managementKey, targetKey]
+    [
+      managerRequestScope?.apiBase,
+      managerRequestScope?.managementKey,
+      open,
+      requestScope?.apiBase,
+      requestScope?.managementKey,
+      targetKey,
+    ]
   );
   const activeDialogContextRef = useRef(dialogContext);
   useLayoutEffect(() => {
@@ -124,10 +190,47 @@ export function CodexReauthDialog({
     []
   );
 
+  const isCurrentTokenRecoveryOperation = useCallback(
+    (generation: number, operationContext: CodexReauthDialogContext) =>
+      tokenRecoveryGenerationRef.current === generation &&
+      isSameDialogContext(activeDialogContextRef.current, operationContext),
+    []
+  );
+
+  const tokenRecoveryTarget = useMemo(
+    () =>
+      buildTokenRecoveryTarget({
+        account: target?.account,
+        accountSnapshot: target?.accountSnapshot,
+        authIndex: target?.authIndex,
+        fileName: target?.fileName,
+      }),
+    [target?.account, target?.accountSnapshot, target?.authIndex, target?.fileName]
+  );
+  const tokenRecoveryTargetKey = useMemo(
+    () =>
+      tokenRecoveryTarget
+        ? [
+            tokenRecoveryTarget.fileName,
+            tokenRecoveryTarget.authIndex ?? '',
+            tokenRecoveryTarget.accountEmail ?? '',
+            tokenRecoveryTarget.provider,
+          ].join('\u0000')
+        : '',
+    [tokenRecoveryTarget]
+  );
+
   const clearPolling = useCallback(() => {
     if (pollingTimerRef.current !== null) {
       window.clearInterval(pollingTimerRef.current);
       pollingTimerRef.current = null;
+    }
+  }, []);
+
+  const clearTokenRecoveryPolling = useCallback(() => {
+    if (tokenRecoveryTimerRef.current !== null) {
+      window.clearTimeout(tokenRecoveryTimerRef.current);
+      tokenRecoveryTimerRef.current = null;
     }
   }, []);
 
@@ -150,6 +253,166 @@ export function CodexReauthDialog({
     },
     [clearFeedbackTimer]
   );
+
+  const handleTokenRecoverySuccess = useCallback(
+    async (
+      task: TokenRecoveryTask,
+      generation: number,
+      operationContext: CodexReauthDialogContext
+    ) => {
+      if (
+        tokenRecoveryGenerationRef.current !== generation ||
+        !isCurrentTokenRecoveryOperation(generation, operationContext)
+      ) {
+        return;
+      }
+      const completionKey = `${task.id}:${task.completedAtMs ?? task.updatedAtMs ?? 0}`;
+      if (tokenRecoverySuccessHandledRef.current === completionKey) return;
+      tokenRecoverySuccessHandledRef.current = completionKey;
+      try {
+        await (onServerRecoverySuccess ?? onSuccess)?.();
+        if (
+          tokenRecoveryGenerationRef.current !== generation ||
+          !isCurrentTokenRecoveryOperation(generation, operationContext)
+        ) {
+          return;
+        }
+        showNotification(t('codex_reauth.server_recovery_success'), 'success');
+      } catch (err: unknown) {
+        if (
+          tokenRecoveryGenerationRef.current !== generation ||
+          !isCurrentTokenRecoveryOperation(generation, operationContext)
+        ) {
+          return;
+        }
+        const message = getErrorMessage(err) || t('notification.refresh_failed');
+        showNotification(`${t('codex_reauth.server_recovery_success')}: ${message}`, 'warning');
+      }
+    },
+    [isCurrentTokenRecoveryOperation, onServerRecoverySuccess, onSuccess, showNotification, t]
+  );
+
+  const pollTokenRecovery = useCallback(
+    async (
+      generation: number,
+      operationContext: CodexReauthDialogContext,
+      recoveryTarget: TokenRecoveryTargetRequest
+    ): Promise<void> => {
+      if (
+        tokenRecoveryGenerationRef.current !== generation ||
+        !isCurrentTokenRecoveryOperation(generation, operationContext)
+      ) {
+        return;
+      }
+      try {
+        const response = await usageServiceApi.getTokenRecovery(
+          operationContext.managerApiBase,
+          operationContext.managerManagementKey,
+          recoveryTarget
+        );
+        if (
+          tokenRecoveryGenerationRef.current !== generation ||
+          !isCurrentTokenRecoveryOperation(generation, operationContext)
+        ) {
+          return;
+        }
+        const task = response?.task ?? null;
+        setTokenRecoveryTask(task);
+        setTokenRecoveryLoading(false);
+        setTokenRecoveryError('');
+        if (task?.status === 'succeeded') {
+          clearTokenRecoveryPolling();
+          if (tokenRecoveryShouldNotifySuccessRef.current) {
+            await handleTokenRecoverySuccess(task, generation, operationContext);
+          }
+          return;
+        }
+        if (task && TOKEN_RECOVERY_PENDING_STATUSES.has(task.status)) {
+          tokenRecoveryShouldNotifySuccessRef.current = true;
+          clearTokenRecoveryPolling();
+          tokenRecoveryTimerRef.current = window.setTimeout(() => {
+            tokenRecoveryTimerRef.current = null;
+            void pollTokenRecovery(generation, operationContext, recoveryTarget);
+          }, TOKEN_RECOVERY_POLL_INTERVAL_MS);
+        }
+      } catch (err: unknown) {
+        if (
+          tokenRecoveryGenerationRef.current !== generation ||
+          !isCurrentTokenRecoveryOperation(generation, operationContext)
+        ) {
+          return;
+        }
+        setTokenRecoveryLoading(false);
+        setTokenRecoveryError(getErrorMessage(err) || t('codex_reauth.server_recovery_error'));
+        clearTokenRecoveryPolling();
+      }
+    },
+    [clearTokenRecoveryPolling, handleTokenRecoverySuccess, isCurrentTokenRecoveryOperation, t]
+  );
+
+  const requestManualTokenRecovery = useCallback(async () => {
+    if (
+      !tokenRecoveryTarget ||
+      !managerRequestScope?.apiBase ||
+      tokenRecoveryLoading ||
+      (tokenRecoveryTask && TOKEN_RECOVERY_PENDING_STATUSES.has(tokenRecoveryTask.status))
+    ) {
+      return;
+    }
+    const generation = tokenRecoveryGenerationRef.current;
+    const operationContext = activeDialogContextRef.current;
+    setTokenRecoveryLoading(true);
+    setTokenRecoveryError('');
+    tokenRecoverySuccessHandledRef.current = '';
+    tokenRecoveryShouldNotifySuccessRef.current = true;
+    try {
+      const response = await usageServiceApi.requestTokenRecoveryManual(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey,
+        tokenRecoveryTarget
+      );
+      if (
+        tokenRecoveryGenerationRef.current !== generation ||
+        !isCurrentTokenRecoveryOperation(generation, operationContext)
+      ) {
+        return;
+      }
+      const task = response?.task ?? null;
+      setTokenRecoveryTask(task);
+      setTokenRecoveryLoading(false);
+      if (task?.status === 'succeeded') {
+        tokenRecoveryShouldNotifySuccessRef.current = true;
+        await handleTokenRecoverySuccess(task, generation, operationContext);
+      } else if (task && TOKEN_RECOVERY_PENDING_STATUSES.has(task.status)) {
+        tokenRecoveryShouldNotifySuccessRef.current = true;
+        clearTokenRecoveryPolling();
+        tokenRecoveryTimerRef.current = window.setTimeout(() => {
+          tokenRecoveryTimerRef.current = null;
+          void pollTokenRecovery(generation, operationContext, tokenRecoveryTarget);
+        }, TOKEN_RECOVERY_POLL_INTERVAL_MS);
+      }
+    } catch (err: unknown) {
+      if (
+        tokenRecoveryGenerationRef.current !== generation ||
+        !isCurrentTokenRecoveryOperation(generation, operationContext)
+      ) {
+        return;
+      }
+      setTokenRecoveryLoading(false);
+      setTokenRecoveryError(getErrorMessage(err) || t('codex_reauth.server_recovery_error'));
+    }
+  }, [
+    clearTokenRecoveryPolling,
+    handleTokenRecoverySuccess,
+    isCurrentTokenRecoveryOperation,
+    managerRequestScope?.apiBase,
+    managerRequestScope?.managementKey,
+    pollTokenRecovery,
+    t,
+    tokenRecoveryLoading,
+    tokenRecoveryTarget,
+    tokenRecoveryTask,
+  ]);
 
   const markSuccess = useCallback(
     async (operationGeneration: number, operationContext: CodexReauthDialogContext) => {
@@ -334,12 +597,52 @@ export function CodexReauthDialog({
     targetKey,
   ]);
 
+  useEffect(() => {
+    tokenRecoveryGenerationRef.current += 1;
+    const generation = tokenRecoveryGenerationRef.current;
+    const operationContext = activeDialogContextRef.current;
+    clearTokenRecoveryPolling();
+    setTokenRecoveryTask(null);
+    setTokenRecoveryLoading(false);
+    setTokenRecoveryError('');
+    tokenRecoverySuccessHandledRef.current = '';
+    tokenRecoveryShouldNotifySuccessRef.current = false;
+
+    if (
+      !open ||
+      !tokenRecoveryTarget ||
+      !managerRequestScope?.apiBase ||
+      !operationContext.managerApiBase
+    ) {
+      return () => {
+        tokenRecoveryGenerationRef.current += 1;
+        clearTokenRecoveryPolling();
+      };
+    }
+
+    void pollTokenRecovery(generation, operationContext, tokenRecoveryTarget);
+    return () => {
+      tokenRecoveryGenerationRef.current += 1;
+      clearTokenRecoveryPolling();
+    };
+  }, [
+    clearTokenRecoveryPolling,
+    managerRequestScope?.apiBase,
+    managerRequestScope?.managementKey,
+    open,
+    pollTokenRecovery,
+    tokenRecoveryTarget,
+    tokenRecoveryTargetKey,
+  ]);
+
   useEffect(
     () => () => {
       clearPolling();
+      tokenRecoveryGenerationRef.current += 1;
+      clearTokenRecoveryPolling();
       clearFeedbackTimer();
     },
-    [clearFeedbackTimer, clearPolling]
+    [clearFeedbackTimer, clearPolling, clearTokenRecoveryPolling]
   );
 
   const copyText = useCallback(
@@ -420,6 +723,40 @@ export function CodexReauthDialog({
       showNotification(`${t('codex_reauth.error')} ${message}`.trim(), 'error');
     }
   }, [callbackUrl, handleAuthStatus, isCurrentOperation, requestScope, showNotification, t]);
+
+  const tokenRecoveryPending = Boolean(
+    tokenRecoveryTask && TOKEN_RECOVERY_PENDING_STATUSES.has(tokenRecoveryTask.status)
+  );
+  const tokenRecoveryFailedManualOnly = Boolean(
+    tokenRecoveryTask && TOKEN_RECOVERY_MANUAL_ONLY_FAILURE_STATUSES.has(tokenRecoveryTask.status)
+  );
+  const tokenRecoveryStatusNode = (() => {
+    if (tokenRecoveryError) {
+      return <div className={`${styles.status} ${styles.statusError}`}>{tokenRecoveryError}</div>;
+    }
+    if (tokenRecoveryTask?.status === 'succeeded') {
+      return (
+        <div className={`${styles.status} ${styles.statusSuccess}`}>
+          {t('codex_reauth.server_recovery_success')}
+        </div>
+      );
+    }
+    if (tokenRecoveryPending) {
+      return (
+        <div className={`${styles.status} ${styles.statusWaiting}`}>
+          {t('codex_reauth.server_recovery_processing')}
+        </div>
+      );
+    }
+    if (tokenRecoveryFailedManualOnly) {
+      return (
+        <div className={`${styles.status} ${styles.statusError}`}>
+          {t('codex_reauth.server_recovery_failed_manual')}
+        </div>
+      );
+    }
+    return null;
+  })();
 
   const statusNode = (() => {
     if (status === 'loading') {
@@ -552,6 +889,31 @@ export function CodexReauthDialog({
             </Button>
           </div>
         </div>
+
+        {managerRequestScope?.apiBase && tokenRecoveryTarget ? (
+          <div className={styles.recoveryPanel}>
+            <div className={styles.recoveryHeader}>
+              <div>
+                <div className={styles.recoveryTitle}>
+                  {t('codex_reauth.server_recovery_title')}
+                </div>
+                <div className={styles.recoveryHint}>{t('codex_reauth.server_recovery_hint')}</div>
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => void requestManualTokenRecovery()}
+                loading={tokenRecoveryLoading}
+                disabled={tokenRecoveryLoading || tokenRecoveryPending}
+              >
+                {!tokenRecoveryLoading ? <IconRefreshCw size={14} /> : null}
+                {t('codex_reauth.server_recovery_action')}
+              </Button>
+            </div>
+            {tokenRecoveryStatusNode}
+          </div>
+        ) : null}
 
         <div className={styles.callbackSection}>
           <Input

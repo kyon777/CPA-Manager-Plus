@@ -4183,7 +4183,14 @@
     "identity_ambiguous": "OAuth completed, but multiple credentials match the original account ID. No credential was selected automatically.",
     "identity_unconfirmed": "OAuth completed, but the original credential update could not be confirmed yet. Check the refreshed credential list for an identity change.",
     "same_account_hint": "Use the target account to complete OAuth login. CPA saves Codex credentials by the logged-in account; the same account usually overwrites the matching credential.",
-    "rerun_hint": "Re-login is complete. Run the inspection again to refresh the account status."
+    "rerun_hint": "Re-login is complete. Run the inspection again to refresh the account status.",
+    "server_recovery_title": "Server token recovery",
+    "server_recovery_hint": "Manager Server can refresh this credential without exposing tokens in the browser.",
+    "server_recovery_action": "Recover on server",
+    "server_recovery_processing": "Refreshing the credential on the server...",
+    "server_recovery_success": "Server token recovery succeeded",
+    "server_recovery_failed_manual": "Automatic recovery failed. You can retry manually.",
+    "server_recovery_error": "Server token recovery is temporarily unavailable."
   },
   "plugin_management": {
     "title": "Plugin Management",

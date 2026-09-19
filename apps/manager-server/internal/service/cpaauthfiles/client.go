@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,6 +35,8 @@ var ErrStatusMutationScopeAmbiguous = errors.New("CPA auth file status mutation 
 var ErrDeleteMutationScopeAmbiguous = errors.New("CPA auth file delete mutation scope is ambiguous")
 
 var ErrResponseTooLarge = errors.New("CPA response too large")
+
+var ErrAuthFileUploadRejected = errors.New("CPA auth file upload was rejected")
 
 const cpaPluginVirtualMutationConflict = "plugin virtual auth cannot be modified directly; edit or delete the source auth file"
 
@@ -201,6 +204,106 @@ func (c *Client) Download(ctx context.Context, baseURL string, managementKey str
 		)
 	}
 	return body, nil
+}
+
+// Upload replaces a physical CPA Core auth file with the supplied in-memory
+// bytes. The caller controls the original physical name; this method never
+// derives a runtime credential ID or writes a new filename.
+func (c *Client) Upload(ctx context.Context, baseURL string, managementKey string, fileName string, contents []byte) error {
+	if strings.TrimSpace(fileName) == "" {
+		return fmt.Errorf("%w: upload filename is empty", ErrAuthFileNotFound)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", fileName)
+	if err != nil {
+		return fmt.Errorf("create auth-file upload form: %w", err)
+	}
+	if _, err := part.Write(contents); err != nil {
+		return fmt.Errorf("write auth-file upload form: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close auth-file upload form: %w", err)
+	}
+
+	base := cpa.NormalizeBaseURL(baseURL)
+	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+authFilesPath, &body)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+managementKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("POST %s: HTTP %d", authFilesPath, res.StatusCode)
+	}
+	if err := validateAuthFileUploadResponse(res.Body); err != nil {
+		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+	}
+	return nil
+}
+
+// validateAuthFileUploadResponse accepts the several success shapes emitted by
+// CPA Core (some versions return only uploaded/files), while failing closed on
+// explicit business-level rejection even when the HTTP status is 2xx. Error
+// details are intentionally not copied into the returned error because they
+// can contain credential-adjacent data.
+func validateAuthFileUploadResponse(body io.Reader) error {
+	if body == nil {
+		return nil
+	}
+	limited := &io.LimitedReader{R: body, N: maxActionResponseSize + 1}
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return ErrAuthFileUploadRejected
+	}
+	if limited.N == 0 {
+		return ErrResponseTooLarge
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var payload any
+	if err := decoder.Decode(&payload); err != nil {
+		return ErrAuthFileUploadRejected
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return ErrAuthFileUploadRejected
+	}
+	record, ok := payload.(map[string]any)
+	if !ok {
+		return ErrAuthFileUploadRejected
+	}
+	if success, ok := record["success"].(bool); ok && !success {
+		return ErrAuthFileUploadRejected
+	}
+	if accepted, ok := record["ok"].(bool); ok && !accepted {
+		return ErrAuthFileUploadRejected
+	}
+	for _, key := range []string{"failed", "error"} {
+		if value, exists := record[key]; exists && hasActionFailureValue(value) {
+			return ErrAuthFileUploadRejected
+		}
+	}
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprint(record["status"])))
+	if status == "error" || status == "failed" || status == "partial" {
+		return ErrAuthFileUploadRejected
+	}
+	if uploaded, ok := record["uploaded"].(json.Number); ok && uploaded == "0" {
+		if _, hasFiles := record["files"]; !hasFiles {
+			return ErrAuthFileUploadRejected
+		}
+	}
+	return nil
 }
 
 func (c *Client) Fetch(ctx context.Context, baseURL string, managementKey string) ([]File, error) {

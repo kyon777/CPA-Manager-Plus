@@ -118,6 +118,41 @@
   }
 }
 
+.recoveryPanel {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+  padding: $spacing-md;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 24%, var(--border-subtle));
+  border-radius: $radius-md;
+  background: color-mix(in srgb, var(--primary-color) 4%, var(--surface-primary));
+}
+
+.recoveryHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-md;
+
+  @include mobile {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.recoveryTitle {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.recoveryHint {
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .status {
   padding: $spacing-sm $spacing-md;
   border-radius: $radius-md;

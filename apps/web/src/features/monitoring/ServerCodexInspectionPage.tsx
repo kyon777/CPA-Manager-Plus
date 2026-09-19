@@ -802,6 +802,16 @@ export function ServerCodexInspectionPage({
     () => ({ apiBase, managementKey }),
     [apiBase, managementKey]
   );
+  const managerRequestScope = useMemo(
+    () =>
+      featureAvailability.managerServiceBase
+        ? {
+            apiBase: featureAvailability.managerServiceBase,
+            managementKey,
+          }
+        : undefined,
+    [featureAvailability.managerServiceBase, managementKey]
+  );
   const managerConnectionIdentity = useMemo<object>(
     () => ({ scopeKey: managerConnectionScopeKey }),
     [managerConnectionScopeKey]
@@ -1699,6 +1709,19 @@ export function ServerCodexInspectionPage({
     [executeServerActions, managerConnectionIdentity, showConfirmation, t]
   );
 
+  const handleServerTokenRecoverySuccess = useCallback(async () => {
+    const connectionContext = managerConnectionIdentity;
+    if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+    await refreshRuns({ silent: true });
+    if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+
+    // The server-side recovery accepts email evidence, not the old Workspace
+    // id. Reload Accounts without passing the stale dialog target through its
+    // OAuth identity reconciliation path.
+    await onCredentialsChanged?.();
+    if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+    showNotification(t('codex_reauth.rerun_hint'), 'success');
+  }, [managerConnectionIdentity, onCredentialsChanged, refreshRuns, showNotification, t]);
   const handleCodexReauthSuccess = useCallback(async () => {
     const connectionContext = managerConnectionIdentity;
     if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
@@ -2462,8 +2485,10 @@ export function ServerCodexInspectionPage({
         open={Boolean(codexReauthTarget)}
         target={codexReauthTarget}
         requestScope={authFilesRequestScope}
+        managerRequestScope={managerRequestScope}
         onClose={() => setCodexReauthTarget(null)}
         onSuccess={handleCodexReauthSuccess}
+        onServerRecoverySuccess={handleServerTokenRecoverySuccess}
       />
     </div>
   );

@@ -386,6 +386,44 @@ export interface CodexInspectionActionOverride {
   action: 'delete';
 }
 
+export type TokenRecoveryStatus =
+  | 'auto_queued'
+  | 'auto_running'
+  | 'succeeded'
+  | 'auto_failed_manual_only'
+  | 'manual_queued'
+  | 'manual_running'
+  | 'manual_failed_manual_only'
+  | string;
+
+export interface TokenRecoveryTargetRequest {
+  fileName: string;
+  authIndex?: string;
+  accountEmail?: string;
+  provider: 'codex';
+  observedAtMs?: number;
+}
+
+export interface TokenRecoveryTask {
+  id: number;
+  fileName: string;
+  authIndex?: string;
+  accountEmail?: string;
+  provider: string;
+  status: TokenRecoveryStatus;
+  mode: 'auto' | 'manual' | string;
+  lastErrorCode?: string;
+  lastSignalAtMs?: number;
+  startedAtMs?: number;
+  completedAtMs?: number;
+  createdAtMs?: number;
+  updatedAtMs?: number;
+}
+
+export interface TokenRecoveryTaskResponse {
+  task: TokenRecoveryTask | null;
+}
+
 export interface ModelPricesResponse {
   prices: Record<string, ModelPrice>;
 }
@@ -1936,6 +1974,19 @@ const buildUrl = (base: string, path: string): string => {
 const authHeaders = (managementKey?: string) =>
   managementKey ? { Authorization: `Bearer ${managementKey}` } : undefined;
 
+const tokenRecoveryTargetPayload = (target: TokenRecoveryTargetRequest) => ({
+  fileName: target.fileName,
+  ...(target.authIndex ? { authIndex: target.authIndex } : {}),
+  ...(target.accountEmail ? { accountEmail: target.accountEmail } : {}),
+  provider: 'codex' as const,
+  ...(typeof target.observedAtMs === 'number' && target.observedAtMs > 0
+    ? { observedAtMs: target.observedAtMs }
+    : {}),
+});
+
+const tokenRecoveryTargetParams = (target: TokenRecoveryTargetRequest) =>
+  tokenRecoveryTargetPayload(target);
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object';
 
@@ -2752,6 +2803,79 @@ export const usageServiceApi = {
         undefined,
         {
           timeout: CODEX_INSPECTION_RUN_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  getTokenRecovery: async (
+    base: string,
+    managementKey: string | undefined,
+    target: TokenRecoveryTargetRequest
+  ): Promise<TokenRecoveryTaskResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { task: null };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<TokenRecoveryTaskResponse>(
+        buildUrl(base, '/v0/management/token-recovery'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          params: tokenRecoveryTargetParams(target),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  signalTokenRecovery: async (
+    base: string,
+    managementKey: string | undefined,
+    target: TokenRecoveryTargetRequest
+  ): Promise<TokenRecoveryTaskResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { task: null };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<TokenRecoveryTaskResponse>(
+        buildUrl(base, '/v0/management/token-recovery/signals'),
+        tokenRecoveryTargetPayload(target),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  requestTokenRecoveryManual: async (
+    base: string,
+    managementKey: string | undefined,
+    target: TokenRecoveryTargetRequest
+  ): Promise<TokenRecoveryTaskResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        task: {
+          id: 0,
+          ...tokenRecoveryTargetPayload(target),
+          status: 'succeeded',
+          mode: 'manual',
+        },
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<TokenRecoveryTaskResponse>(
+        buildUrl(base, '/v0/management/token-recovery/manual'),
+        tokenRecoveryTargetPayload(target),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
         }
       );

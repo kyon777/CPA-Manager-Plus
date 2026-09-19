@@ -709,6 +709,26 @@ func Migrate(db *sql.DB) error {
 			created_at_ms integer not null,
 			updated_at_ms integer not null
 		)`,
+		`create table if not exists token_recovery_tasks (
+			id integer primary key autoincrement,
+			identity_key text not null unique,
+			file_name text not null,
+			auth_index text not null default '',
+			account_email text not null default '',
+			provider text not null,
+			status text not null,
+			mode text not null,
+			last_error_code text,
+			last_signal_at_ms integer not null,
+			started_at_ms integer,
+			completed_at_ms integer,
+			created_at_ms integer not null,
+			updated_at_ms integer not null
+		)`,
+		`create index if not exists idx_token_recovery_tasks_claim
+			on token_recovery_tasks(status, created_at_ms, id)`,
+		`create index if not exists idx_token_recovery_tasks_updated
+			on token_recovery_tasks(updated_at_ms desc, id desc)`,
 		`create table if not exists codex_inspection_runs (
 			id integer primary key autoincrement,
 			trigger_type text not null,

@@ -17,6 +17,7 @@ const defaultConfigName = "config.json"
 const defaultSecretFile = "/run/secrets/cpa_management_key"
 const defaultAdminSecretFile = "/run/secrets/cpa_admin_key"
 const defaultDataKeySecretFile = "/run/secrets/cpa_data_key"
+const defaultTokenAcquisitionSecretFile = "/run/secrets/token_acquisition_api_key"
 
 const (
 	DefaultUsageImportChunkBytes     int64 = 4 * 1024 * 1024
@@ -34,6 +35,8 @@ type Config struct {
 	AdminKey                           string
 	DataKey                            string
 	DataKeyPath                        string
+	TokenAcquisitionBaseURL            string
+	TokenAcquisitionAPIKey             string
 	CollectorMode                      string
 	Queue                              string
 	PopSide                            string
@@ -147,6 +150,8 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		AdminKey:                           readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
 		DataKey:                            readSecret("CPA_MANAGER_DATA_KEY", "CPA_MANAGER_DATA_KEY_FILE", dataKeyFile),
 		DataKeyPath:                        env("CPA_MANAGER_DATA_KEY_PATH", dataKeyPath),
+		TokenAcquisitionBaseURL:            env("TOKEN_ACQUISITION_BASE_URL", "https://401.kyon888.xyz"),
+		TokenAcquisitionAPIKey:             readSecret("TOKEN_ACQUISITION_API_KEY", "TOKEN_ACQUISITION_API_KEY_FILE", defaultTokenAcquisitionSecretFile),
 		CollectorMode:                      normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
 		Queue:                              env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
 		PopSide:                            env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
