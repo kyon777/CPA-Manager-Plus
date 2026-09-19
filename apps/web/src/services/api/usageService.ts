@@ -413,6 +413,7 @@ export interface TokenRecoveryTask {
   status: TokenRecoveryStatus;
   mode: 'auto' | 'manual' | string;
   lastErrorCode?: string;
+  lastErrorMessage?: string;
   lastSignalAtMs?: number;
   startedAtMs?: number;
   completedAtMs?: number;

@@ -1297,7 +1297,31 @@
 
 .accountCardNote {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountCardAnnotations {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
+  min-width: 0;
+
+  .accountCardNote {
+    flex: 0 1 42%;
+  }
+}
+
+.accountCardProxyURL {
+  display: block;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--accounts-muted);

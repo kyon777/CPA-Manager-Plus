@@ -4190,6 +4190,7 @@
     "server_recovery_processing": "Refreshing the credential on the server...",
     "server_recovery_success": "Server token recovery succeeded",
     "server_recovery_failed_manual": "Automatic recovery failed. You can retry manually.",
+    "server_recovery_failed_manual_with_reason": "Automatic recovery failed: {{reason}}. You can retry manually.",
     "server_recovery_error": "Server token recovery is temporarily unavailable."
   },
   "plugin_management": {
@@ -4639,12 +4640,12 @@
       "Does not record new issues when disabled",
       "Existing pending issues can still be processed"
     ],
-    "serverErrorPriorityDemotion_title": "Lower Priority on 502/503",
-    "serverErrorPriorityDemotion_summary": "Each newly stored HTTP 502 or 503 request lowers the matching credential's current priority by 1, never below 0.",
-    "serverErrorPriorityDemotion_toggle": "Enable HTTP 502/503 priority demotion",
-    "serverErrorPriorityDemotion_description": "This policy handles only newly stored real request-monitoring events. It re-verifies the matching JSON credential, then lowers its current priority by 1.",
+    "serverErrorPriorityDemotion_title": "Lower Priority on 502/503 or Rate-limit 429",
+    "serverErrorPriorityDemotion_summary": "Each newly stored HTTP 502, 503, or HTTP 429 whose response detail is Rate limit exceeded lowers the matching credential's current priority by 1, never below 0.",
+    "serverErrorPriorityDemotion_toggle": "Enable 502/503 and rate-limit 429 priority demotion",
+    "serverErrorPriorityDemotion_description": "This policy handles only newly stored real request-monitoring events. HTTP 429 triggers only for {\"detail\":\"Rate limit exceeded\"}; it re-verifies the matching JSON credential, then lowers its current priority by 1.",
     "serverErrorPriorityDemotion_behavior": [
-      "Handles only new, unique HTTP 502 or 503 request events; page refreshes and historical reads do not lower priority again",
+      "Handles only new, unique HTTP 502, 503, or HTTP 429 events with {\"detail\":\"Rate limit exceeded\"}; page refreshes and historical reads do not lower priority again",
       "Re-reads and verifies the matching JSON credential before lowering its current priority by 1",
       "Skips priority 0, ambiguous identities, and non-integer priority values without changing another credential"
     ],

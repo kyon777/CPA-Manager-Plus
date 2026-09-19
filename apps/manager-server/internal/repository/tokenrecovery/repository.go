@@ -23,7 +23,7 @@ type Repository interface {
 	GetByID(context.Context, int64) (model.TokenRecoveryTask, bool, error)
 	ClaimNextQueued(context.Context) (model.TokenRecoveryTask, bool, error)
 	Complete(context.Context, int64) (model.TokenRecoveryTask, error)
-	Fail(context.Context, int64, string) (model.TokenRecoveryTask, error)
+	Fail(context.Context, int64, string, string) (model.TokenRecoveryTask, error)
 	FailRunningOnStartup(context.Context) (int64, error)
 }
 
@@ -73,7 +73,7 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 
 	if existing.Status == model.TokenRecoveryStatusSucceeded && hasObservedAt && seenAt > existing.CompletedAtMS {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
-			status = ?, mode = ?, last_error_code = null,
+			status = ?, mode = ?, last_error_code = null, last_error_message = null,
 			account_email = case when account_email = '' and ? != '' then ? else account_email end,
 			last_signal_at_ms = ?,
 			started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
@@ -141,7 +141,7 @@ func (r *repository) RequestManual(ctx context.Context, target model.TokenRecove
 			normalized.AccountEmail, normalized.AccountEmail, seenAt, seenAt, now, existing.ID)
 	} else {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
-			status = ?, mode = ?, last_error_code = null,
+			status = ?, mode = ?, last_error_code = null, last_error_message = null,
 			account_email = case when account_email = '' and ? != '' then ? else account_email end,
 			last_signal_at_ms = ?,
 			started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
@@ -234,7 +234,7 @@ func (r *repository) Complete(ctx context.Context, id int64) (model.TokenRecover
 	}
 	now := time.Now().UnixMilli()
 	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
-		status = ?, last_error_code = null, completed_at_ms = ?, updated_at_ms = ?
+		status = ?, last_error_code = null, last_error_message = null, completed_at_ms = ?, updated_at_ms = ?
 		where id = ? and status in (?, ?)`, model.TokenRecoveryStatusSucceeded, now, now, id,
 		model.TokenRecoveryStatusAutoRunning, model.TokenRecoveryStatusManualRunning)
 	if err != nil {
@@ -251,19 +251,19 @@ func (r *repository) Complete(ctx context.Context, id int64) (model.TokenRecover
 	return item, err
 }
 
-func (r *repository) Fail(ctx context.Context, id int64, errorCode string) (model.TokenRecoveryTask, error) {
+func (r *repository) Fail(ctx context.Context, id int64, errorCode string, errorMessage string) (model.TokenRecoveryTask, error) {
 	if id <= 0 {
 		return model.TokenRecoveryTask{}, ErrTaskNotFound
 	}
 	now := time.Now().UnixMilli()
 	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
 		status = case mode when ? then ? else ? end,
-		last_error_code = ?, completed_at_ms = ?, updated_at_ms = ?
+		last_error_code = ?, last_error_message = ?, completed_at_ms = ?, updated_at_ms = ?
 		where id = ? and status in (?, ?)`,
 		model.TokenRecoveryModeManual,
 		model.TokenRecoveryStatusManualFailedManualOnly,
 		model.TokenRecoveryStatusAutoFailedManualOnly,
-		sanitizeErrorCode(errorCode), now, now, id,
+		sanitizeErrorCode(errorCode), sanitizeErrorMessage(errorMessage), now, now, id,
 		model.TokenRecoveryStatusAutoRunning, model.TokenRecoveryStatusManualRunning)
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
@@ -283,7 +283,7 @@ func (r *repository) FailRunningOnStartup(ctx context.Context) (int64, error) {
 	now := time.Now().UnixMilli()
 	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
 		status = case mode when ? then ? else ? end,
-		last_error_code = 'interrupted', completed_at_ms = ?, updated_at_ms = ?
+		last_error_code = 'interrupted', last_error_message = null, completed_at_ms = ?, updated_at_ms = ?
 		where status in (?, ?)`,
 		model.TokenRecoveryModeManual,
 		model.TokenRecoveryStatusManualFailedManualOnly,
@@ -312,7 +312,7 @@ type rowQueryer interface {
 }
 
 const selectTasks = `select id, file_name, auth_index, account_email, provider, status, mode,
-	coalesce(last_error_code, ''), last_signal_at_ms, coalesce(started_at_ms, 0), coalesce(completed_at_ms, 0), created_at_ms, updated_at_ms
+	coalesce(last_error_code, ''), coalesce(last_error_message, ''), last_signal_at_ms, coalesce(started_at_ms, 0), coalesce(completed_at_ms, 0), created_at_ms, updated_at_ms
 	from token_recovery_tasks`
 
 func getByIdentityKey(ctx context.Context, q rowQueryer, identityKey string) (model.TokenRecoveryTask, bool, error) {
@@ -330,13 +330,26 @@ func getByIdentityKey(ctx context.Context, q rowQueryer, identityKey string) (mo
 // physical credential even when one signal source only knows the auth index
 // while another also has an email snapshot. auth_index is the stable locator
 // when present; email is still retained and checked by the recovery service
-// before any write. Email-only targets remain keyed by email.
+// before any write. A prior email-only task is also found when an auth index
+// later becomes available for the same file and provider.
 func getCompatibleTask(ctx context.Context, q rowQueryer, target model.TokenRecoveryTarget, identityKey string) (model.TokenRecoveryTask, bool, error) {
 	item, found, err := getByIdentityKey(ctx, q, identityKey)
-	if err != nil || found || target.AuthIndex == "" {
+	if err != nil || found {
 		return item, found, err
 	}
-	item, err = scanTask(q.QueryRowContext(ctx, selectTasks+` where lower(file_name) = lower(?) and auth_index = ? and provider = ? order by id asc limit 1`, target.FileName, target.AuthIndex, target.Provider))
+	if target.AuthIndex != "" {
+		item, err = scanTask(q.QueryRowContext(ctx, selectTasks+` where lower(file_name) = lower(?) and auth_index = ? and provider = ? order by id asc limit 1`, target.FileName, target.AuthIndex, target.Provider))
+		if !errors.Is(err, sql.ErrNoRows) {
+			if err != nil {
+				return model.TokenRecoveryTask{}, false, err
+			}
+			return item, true, nil
+		}
+	}
+	if target.AuthIndex == "" || target.AccountEmail == "" {
+		return model.TokenRecoveryTask{}, false, nil
+	}
+	item, err = scanTask(q.QueryRowContext(ctx, selectTasks+` where lower(file_name) = lower(?) and auth_index = '' and lower(account_email) = lower(?) and provider = ? order by id asc limit 1`, target.FileName, target.AccountEmail, target.Provider))
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.TokenRecoveryTask{}, false, nil
 	}
@@ -354,7 +367,7 @@ func scanTask(row interface{ Scan(...any) error }) (model.TokenRecoveryTask, err
 	var item model.TokenRecoveryTask
 	err := row.Scan(
 		&item.ID, &item.FileName, &item.AuthIndex, &item.AccountEmail, &item.Provider, &item.Status, &item.Mode,
-		&item.LastErrorCode, &item.LastSignalAtMS, &item.StartedAtMS, &item.CompletedAtMS, &item.CreatedAtMS, &item.UpdatedAtMS,
+		&item.LastErrorCode, &item.LastErrorMessage, &item.LastSignalAtMS, &item.StartedAtMS, &item.CompletedAtMS, &item.CreatedAtMS, &item.UpdatedAtMS,
 	)
 	return item, err
 }
@@ -397,4 +410,24 @@ func sanitizeErrorCode(value string) string {
 		return "recovery_failed"
 	}
 	return builder.String()
+}
+
+func sanitizeErrorMessage(value string) string {
+	var builder strings.Builder
+	pendingSpace := false
+	for _, r := range strings.TrimSpace(value) {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			pendingSpace = builder.Len() > 0
+			continue
+		}
+		if pendingSpace {
+			builder.WriteByte(' ')
+			pendingSpace = false
+		}
+		builder.WriteRune(r)
+		if builder.Len() >= 384 {
+			break
+		}
+	}
+	return strings.TrimSpace(builder.String())
 }

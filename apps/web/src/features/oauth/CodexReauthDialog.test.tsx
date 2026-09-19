@@ -136,6 +136,7 @@ describe('CodexReauthDialog connection lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.intervalCallback = null;
+    mocks.translate.mockImplementation((key: string) => key);
     vi.stubGlobal('window', {
       setTimeout: (callback: () => void, delay?: number) =>
         globalThis.setTimeout(callback, delay) as unknown as number,
@@ -814,6 +815,44 @@ describe('CodexReauthDialog connection lifecycle', () => {
     expect(JSON.stringify(mocks.requestTokenRecoveryManual.mock.calls[0]?.[2])).not.toContain(
       'acct-1'
     );
+
+    act(() => renderer.unmount());
+  });
+
+  it('shows the structured TokenAcquisition failure reason for manual retry', async () => {
+    mocks.translate.mockImplementation((key: string, options?: { reason?: string }) =>
+      options?.reason ? `${key}: ${options.reason}` : key
+    );
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.getTokenRecovery.mockResolvedValue({
+      task: {
+        id: 9,
+        fileName: 'codex.json',
+        authIndex: 'auth-1',
+        accountEmail: 'alice@example.com',
+        provider: 'codex',
+        status: 'auto_failed_manual_only',
+        mode: 'auto',
+        lastErrorCode: 'token_acquisition_failed',
+        lastErrorMessage: 'mfa_failed: 二次验证失败',
+      },
+    });
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          managerRequestScope={MANAGER_REQUEST_SCOPE}
+          onClose={vi.fn()}
+        />
+      );
+    });
+    await flushEffects();
+
+    expect(textContent(renderer.root)).toContain('mfa_failed: 二次验证失败');
 
     act(() => renderer.unmount());
   });

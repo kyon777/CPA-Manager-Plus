@@ -156,3 +156,67 @@ func TestAcquireReturnsConflictWithoutRetryingPOST(t *testing.T) {
 		t.Fatalf("posts = %d, want 1", posts.Load())
 	}
 }
+
+func TestAcquireExposesStructuredJobFailureReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tokens":
+			_ = json.NewEncoder(w).Encode(map[string]any{"batch_id": "batch-failed"})
+		case "/v1/batches/batch-failed":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"done": true,
+				"jobs": []any{map[string]any{
+					"email":  "person@example.com",
+					"status": "error",
+					"error": map[string]any{
+						"code":    "mfa_failed",
+						"message": "二次验证失败",
+					},
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	_, err := New(Config{
+		BaseURL: server.URL, APIKey: "test-admin-key", HTTPClient: server.Client(), PollInterval: time.Millisecond, Timeout: time.Second,
+	}).Acquire(context.Background(), Request{Email: "person@example.com"})
+	if !errors.Is(err, ErrJobFailed) {
+		t.Fatalf("Acquire() error = %v, want ErrJobFailed", err)
+	}
+	if got, want := FailureReason(err), "mfa_failed: 二次验证失败"; got != want {
+		t.Fatalf("FailureReason() = %q, want %q", got, want)
+	}
+}
+
+func TestAcquireExposesStructuredHTTPFailureReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"detail":{"code":"invalid_proxy","message":"代理不可用"}}`))
+	}))
+	defer server.Close()
+
+	_, err := New(Config{
+		BaseURL: server.URL, APIKey: "test-admin-key", HTTPClient: server.Client(), Timeout: time.Second,
+	}).Acquire(context.Background(), Request{Email: "person@example.com"})
+	if !errors.Is(err, ErrRequestFailed) {
+		t.Fatalf("Acquire() error = %v, want ErrRequestFailed", err)
+	}
+	if got, want := FailureReason(err), "invalid_proxy: 代理不可用"; got != want {
+		t.Fatalf("FailureReason() = %q, want %q", got, want)
+	}
+}
+
+func TestFailureReasonDoesNotExposeSensitiveStructuredMessage(t *testing.T) {
+	err := newExternalFailure(ErrJobFailed, apiErrorDetail{
+		Code: "invalid_proxy",
+		Message: "proxy login failed: http://proxy-user:proxy-password@proxy.example:8080; " +
+			"Authorization: Bearer test.secret.value; access_token=at-test-secret",
+	})
+
+	if got, want := FailureReason(err), "invalid_proxy"; got != want {
+		t.Fatalf("FailureReason() = %q, want %q", got, want)
+	}
+}

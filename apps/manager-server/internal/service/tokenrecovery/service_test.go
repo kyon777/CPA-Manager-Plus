@@ -2,6 +2,7 @@ package tokenrecovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -111,6 +112,56 @@ func TestServiceAutomaticFailureDoesNotPostAgainUntilManualRequest(t *testing.T)
 	waitForTaskStatus(t, ctx, service, manual.ID, model.TokenRecoveryStatusSucceeded)
 	if acquirer.callCount() != 2 {
 		t.Fatalf("manual retry calls = %d, want 2", acquirer.callCount())
+	}
+}
+
+func TestServiceStoresStructuredTokenAcquisitionFailureReason(t *testing.T) {
+	core := newRecoveryCore(t, []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old","refresh_token":"old","id_token":"old"}`))
+	tokenService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") != "test-admin-key" {
+			t.Fatalf("TokenAcquisition API key = %q", r.Header.Get("X-Api-Key"))
+		}
+		switch r.URL.Path {
+		case "/v1/tokens":
+			_ = json.NewEncoder(w).Encode(map[string]any{"batch_id": "batch-failed"})
+		case "/v1/batches/batch-failed":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"done": true,
+				"jobs": []any{map[string]any{
+					"email":  "person@example.com",
+					"status": "error",
+					"error": map[string]any{
+						"code":    "mfa_failed",
+						"message": "二次验证失败",
+					},
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer tokenService.Close()
+
+	acquirer := tokenacquisition.New(tokenacquisition.Config{
+		BaseURL:      tokenService.URL,
+		APIKey:       "test-admin-key",
+		HTTPClient:   tokenService.Client(),
+		PollInterval: time.Millisecond,
+		Timeout:      time.Second,
+	})
+	service, ctx, cancel := newRecoveryService(t, core.server.URL, cpaauthfiles.NewMutationCoordinator(), acquirer)
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	failed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusAutoFailedManualOnly)
+	if failed.LastErrorCode != "token_acquisition_failed" || failed.LastErrorMessage != "mfa_failed: 二次验证失败" {
+		t.Fatalf("failed task = %#v", failed)
 	}
 }
 

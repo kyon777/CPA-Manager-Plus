@@ -31,7 +31,7 @@ type TaskStore interface {
 	GetTokenRecoveryByID(context.Context, int64) (store.TokenRecoveryTask, bool, error)
 	ClaimNextTokenRecovery(context.Context) (store.TokenRecoveryTask, bool, error)
 	CompleteTokenRecovery(context.Context, int64) (store.TokenRecoveryTask, error)
-	FailTokenRecovery(context.Context, int64, string) (store.TokenRecoveryTask, error)
+	FailTokenRecovery(context.Context, int64, string, string) (store.TokenRecoveryTask, error)
 	FailRunningTokenRecoveriesOnStartup(context.Context) (int64, error)
 }
 
@@ -169,7 +169,7 @@ func (s *Service) process(ctx context.Context, task model.TokenRecoveryTask) {
 		// second external POST if shutdown interrupted a request or upload.
 		return
 	}
-	_, _ = s.tasks.FailTokenRecovery(ctx, task.ID, recoveryFailureCode(err))
+	_, _ = s.tasks.FailTokenRecovery(ctx, task.ID, recoveryFailureCode(err), recoveryFailureMessage(err))
 }
 
 func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) error {
@@ -309,4 +309,8 @@ func recoveryFailureCode(err error) string {
 	default:
 		return "recovery_failed"
 	}
+}
+
+func recoveryFailureMessage(err error) string {
+	return tokenacquisition.FailureReason(err)
 }

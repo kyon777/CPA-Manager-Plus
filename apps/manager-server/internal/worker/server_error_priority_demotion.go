@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,9 +23,11 @@ const (
 )
 
 // ServerErrorPriorityDemotionWorker lowers a credential's current priority by
-// one for each newly persisted HTTP 502 or 503 request-monitoring event. The
-// collector only forwards inserted event hashes, so a historical event is never
-// replayed by a page refresh or process restart.
+// one for each newly persisted HTTP 502 or 503 request-monitoring event, plus
+// HTTP 429 only when its raw response body explicitly reports
+// {"detail":"Rate limit exceeded"}. The collector only forwards inserted
+// event hashes, so a historical event is never replayed by a page refresh or
+// process restart.
 type ServerErrorPriorityDemotionWorker struct {
 	client            *http.Client
 	authFileMutations *cpaauthfiles.MutationCoordinator
@@ -161,7 +164,7 @@ func serverErrorPriorityDemotionCandidateFromEvent(
 	baseURL string,
 	managementKey string,
 ) (serverErrorPriorityDemotionCandidate, bool) {
-	if !event.Failed || (event.FailStatusCode != http.StatusBadGateway && event.FailStatusCode != http.StatusServiceUnavailable) {
+	if !isServerErrorPriorityDemotionEvent(event) {
 		return serverErrorPriorityDemotionCandidate{}, false
 	}
 	fileName := strings.TrimSpace(event.AuthFileSnapshot)
@@ -190,6 +193,33 @@ func serverErrorPriorityDemotionCandidateFromEvent(
 		return serverErrorPriorityDemotionCandidate{}, false
 	}
 	return candidate, true
+}
+
+func isServerErrorPriorityDemotionEvent(event usage.Event) bool {
+	if !event.Failed {
+		return false
+	}
+	switch event.FailStatusCode {
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		return true
+	case http.StatusTooManyRequests:
+		return isQualifiedRateLimit429(event.FailBody)
+	default:
+		return false
+	}
+}
+
+// isQualifiedRateLimit429 deliberately requires the raw local-only response
+// body. A generic 429 can mean many different things; only the precise
+// TokenAcquisition rate-limit response is eligible for priority demotion.
+func isQualifiedRateLimit429(failBody string) bool {
+	var response struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(failBody)), &response); err != nil {
+		return false
+	}
+	return response.Detail == "Rate limit exceeded"
 }
 
 func (candidate serverErrorPriorityDemotionCandidate) identity() (cpaauthfiles.Identity, error) {

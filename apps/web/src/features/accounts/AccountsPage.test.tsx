@@ -9486,6 +9486,29 @@ describe('AccountsPage replacement flows', () => {
     expect(note.props.title).toBe('accounts.note_placeholder_empty: Production Codex Pool');
   });
 
+  it('renders the credential proxy URL to the right of its note in the list identity', async () => {
+    const file = {
+      ...mocks.files[0],
+      note: 'Production Codex Pool',
+      proxy_url: 'http://proxy-user:proxy-pass@proxy.example:8080',
+    };
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+
+    const renderer = await renderAccountsPage();
+    const annotations = renderer.root.findByProps({ 'data-account-list-annotations': selectionKey });
+    const note = renderer.root.findByProps({ 'data-account-list-note': selectionKey });
+    const proxy = renderer.root.findByProps({ 'data-account-list-proxy': selectionKey });
+
+    expect(annotations.children.indexOf(note)).toBeLessThan(annotations.children.indexOf(proxy));
+    expect(readText(proxy)).toBe(
+      'auth_files.proxy_url: http://proxy-user:proxy-pass@proxy.example:8080'
+    );
+    expect(proxy.props.title).toBe(
+      'auth_files.proxy_url: http://proxy-user:proxy-pass@proxy.example:8080'
+    );
+  });
+
   it('renders historical usage alongside the quota trigger', async () => {
     const file = mocks.files[0];
     const selectionKey = getAuthFileSelectionKey(file);
