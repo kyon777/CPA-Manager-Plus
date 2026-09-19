@@ -205,6 +205,27 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	}
 }
 
+func TestLoadReadsTokenAcquisitionSecretFile(t *testing.T) {
+	clearConfigEnv(t)
+	secretPath := filepath.Join(t.TempDir(), "token-acquisition-api-key")
+	if err := os.WriteFile(secretPath, []byte("server-only-test-key\n"), 0o600); err != nil {
+		t.Fatalf("write token acquisition secret: %v", err)
+	}
+	t.Setenv("TOKEN_ACQUISITION_API_KEY_FILE", secretPath)
+	t.Setenv("TOKEN_ACQUISITION_BASE_URL", "https://tokens.example.test")
+
+	cfg, err := LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("LoadWithoutCreatingDefault() error = %v", err)
+	}
+	if cfg.TokenAcquisitionAPIKey != "server-only-test-key" {
+		t.Fatalf("TokenAcquisitionAPIKey = %q", cfg.TokenAcquisitionAPIKey)
+	}
+	if cfg.TokenAcquisitionBaseURL != "https://tokens.example.test" {
+		t.Fatalf("TokenAcquisitionBaseURL = %q", cfg.TokenAcquisitionBaseURL)
+	}
+}
+
 func TestNormalizeCollectorMode(t *testing.T) {
 	cases := []struct {
 		input string
@@ -236,6 +257,9 @@ func clearConfigEnv(t *testing.T) {
 		"CPA_UPSTREAM_URL",
 		"CPA_MANAGEMENT_KEY",
 		"CPA_MANAGEMENT_KEY_FILE",
+		"TOKEN_ACQUISITION_BASE_URL",
+		"TOKEN_ACQUISITION_API_KEY",
+		"TOKEN_ACQUISITION_API_KEY_FILE",
 		"USAGE_COLLECTOR_MODE",
 		"USAGE_RESP_QUEUE",
 		"USAGE_RESP_POP_SIDE",
