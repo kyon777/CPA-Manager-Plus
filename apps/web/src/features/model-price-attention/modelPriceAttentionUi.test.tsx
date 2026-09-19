@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TFunction } from 'i18next';
 import { MonitoringActionBar } from '@/features/monitoring/components/MonitoringActionBar';
 import { UsageMetricsCard } from '@/features/dashboard/components/UsageMetricsCard';
-import { UsageSummaryCardView } from '@/features/usage-analytics/components/UsageSummaryCards';
+import { UsageSummaryCardView, UsageSummaryGrid } from '@/features/usage-analytics/components/UsageSummaryCards';
 import * as attentionHook from './useModelPriceAttention';
 import enLocale from '@/i18n/locales/en.json';
 import zhCNLocale from '@/i18n/locales/zh-CN.json';
@@ -216,31 +216,11 @@ describe('ModelPriceAttention UI Integration', () => {
     });
   });
 
-  describe('Usage Analytics UsageSummaryCardView', () => {
-    it('does not render attention link for cost card when pending = 0', () => {
-      mockAttentionState.pendingCount = 0;
-      mockAttentionState.hasAttention = false;
+  describe('Usage Analytics UsageSummaryCards', () => {
+    const findInlineAttentionLinks = (root: ReactTestRenderer['root']) =>
+      root.findAll((n) => n.type === 'a' && n.props['data-testid'] === 'inline-model-price-attention-link');
 
-      let renderer: ReactTestRenderer;
-      act(() => {
-        renderer = create(
-          <MemoryRouter>
-            <UsageSummaryCardView
-              icon="cost"
-              label="预估成本"
-              value="$12.34"
-              accent="amber"
-              meta=""
-            />
-          </MemoryRouter>
-        );
-      });
-
-      const root = renderer!.root;
-      expect(root.findAllByProps({ 'data-testid': 'inline-model-price-attention-link' })).toHaveLength(0);
-    });
-
-    it('renders attention link inside cost card header when pending > 0', () => {
+    it('Case A: cost icon alone no longer triggers attention when pending > 0', () => {
       mockAttentionState.pendingModels = ['gpt-6-preview'];
       mockAttentionState.pendingCount = 1;
       mockAttentionState.hasAttention = true;
@@ -261,8 +241,103 @@ describe('ModelPriceAttention UI Integration', () => {
       });
 
       const root = renderer!.root;
+      expect(findInlineAttentionLinks(root)).toHaveLength(0);
+    });
+
+    it('Case B: explicit showModelPriceAttention triggers attention when pending > 0', () => {
+      mockAttentionState.pendingModels = ['gpt-6-preview'];
+      mockAttentionState.pendingCount = 1;
+      mockAttentionState.hasAttention = true;
+
+      let renderer: ReactTestRenderer;
+      act(() => {
+        renderer = create(
+          <MemoryRouter>
+            <UsageSummaryCardView
+              icon="cost"
+              showModelPriceAttention
+              label="预估成本"
+              value="$12.34"
+              accent="amber"
+              meta=""
+            />
+          </MemoryRouter>
+        );
+      });
+
+      const root = renderer!.root;
+      const links = findInlineAttentionLinks(root);
+      expect(links).toHaveLength(1);
       const link = root.findByProps({ 'data-testid': 'inline-model-price-attention-link' });
       expect(link.props.to).toBe('/model-prices?filter=missing');
+    });
+
+    it('Case C: only one attention link rendered even if grid has multiple cost cards', () => {
+      mockAttentionState.pendingModels = ['gpt-6-preview'];
+      mockAttentionState.pendingCount = 1;
+      mockAttentionState.hasAttention = true;
+
+      let renderer: ReactTestRenderer;
+      act(() => {
+        renderer = create(
+          <MemoryRouter>
+            <UsageSummaryGrid
+              cards={[
+                {
+                  icon: 'cost',
+                  label: '最高成本占比',
+                  value: '45.0%',
+                  accent: 'amber',
+                  meta: 'gpt-5.5',
+                },
+                {
+                  icon: 'cost',
+                  label: '预估成本',
+                  value: '$12.34',
+                  accent: 'amber',
+                  meta: '',
+                  showModelPriceAttention: true,
+                },
+              ]}
+            />
+          </MemoryRouter>
+        );
+      });
+
+      const root = renderer!.root;
+      const links = findInlineAttentionLinks(root);
+      expect(links).toHaveLength(1);
+      const link = root.findByProps({ 'data-testid': 'inline-model-price-attention-link' });
+      expect(link.props.to).toBe('/model-prices?filter=missing');
+    });
+
+    it('Case D: compact/shared component does not trigger attention without showModelPriceAttention', () => {
+      mockAttentionState.pendingModels = ['gpt-6-preview'];
+      mockAttentionState.pendingCount = 1;
+      mockAttentionState.hasAttention = true;
+
+      let renderer: ReactTestRenderer;
+      act(() => {
+        renderer = create(
+          <MemoryRouter>
+            <UsageSummaryGrid
+              density="compact"
+              cards={[
+                {
+                  icon: 'cost',
+                  label: '总成本',
+                  value: '$12.34',
+                  accent: 'amber',
+                  meta: '',
+                },
+              ]}
+            />
+          </MemoryRouter>
+        );
+      });
+
+      const root = renderer!.root;
+      expect(findInlineAttentionLinks(root)).toHaveLength(0);
     });
   });
 

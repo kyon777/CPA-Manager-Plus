@@ -476,7 +476,7 @@ export const buildAccountQuotaSnapshotQueryAccounts = (
   );
   return rows.flatMap((row) => {
     const target = targets.get(row.selectionKey);
-    if (!target || !['codex', 'claude', 'antigravity', 'kimi', 'xai'].includes(row.provider)) {
+    if (!target || !['codex', 'claude', 'antigravity', 'kimi', 'xai', 'devin'].includes(row.provider)) {
       return [];
     }
     return [
@@ -934,7 +934,8 @@ const snapshotDefinition = (
     options.provider === 'claude' ||
     options.provider === 'antigravity' ||
     options.provider === 'kimi' ||
-    options.provider === 'xai'
+    options.provider === 'xai' ||
+    options.provider === 'devin'
       ? options.provider
       : 'summary';
   const resetAtMs = snapshot.cycle_end_ms ?? null;

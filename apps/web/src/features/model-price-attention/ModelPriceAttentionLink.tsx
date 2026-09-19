@@ -30,9 +30,8 @@ export function ModelPriceAttentionLink({
     return null;
   }
 
-  const shortLabel = resolveShortLabel(t);
-
   if (variant === 'action-bar') {
+    const shortLabel = resolveShortLabel(t);
     const hasAttention = attention.hasAttention;
     const to = hasAttention ? '/model-prices?filter=missing' : '/model-prices';
     const title = hasAttention
@@ -74,7 +73,7 @@ export function ModelPriceAttentionLink({
       onClick={onClick}
       data-testid="inline-model-price-attention-link"
     >
-      <span>{shortLabel}</span>
+      <IconDollarSign size={14} />
       <ModelPriceAttentionDot />
     </Link>
   );

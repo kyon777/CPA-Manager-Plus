@@ -191,3 +191,153 @@ func TestIsLongContextInputBoundary(t *testing.T) {
 		t.Fatal("272001 input tokens should use long-context pricing")
 	}
 }
+
+func TestNormalizeRawParsesRequestMetadataFields(t *testing.T) {
+	raw := []byte(`{
+		"timestamp":"2026-08-12T00:00:00Z",
+		"model":"gpt-4o",
+		"response_model":"gpt-4o-mini",
+		"session_id":"sess-12345",
+		"parent_session_id":"parent-67890",
+		"access_token_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"generate":true,
+		"stream":false
+	}`)
+	event, err := NormalizeRaw(raw)
+	if err != nil {
+		t.Fatalf("NormalizeRaw failed: %v", err)
+	}
+	if event.ResponseModel != "gpt-4o-mini" {
+		t.Errorf("ResponseModel = %q, want %q", event.ResponseModel, "gpt-4o-mini")
+	}
+	if event.SessionID != "sess-12345" {
+		t.Errorf("SessionID = %q, want %q", event.SessionID, "sess-12345")
+	}
+	if event.ParentSessionID != "parent-67890" {
+		t.Errorf("ParentSessionID = %q, want %q", event.ParentSessionID, "parent-67890")
+	}
+	if event.AccessTokenSHA256 != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+		t.Errorf("AccessTokenSHA256 = %q", event.AccessTokenSHA256)
+	}
+	if event.Generate == nil || *event.Generate != true {
+		t.Errorf("Generate = %v, want true", event.Generate)
+	}
+	if event.Stream == nil || *event.Stream != false {
+		t.Errorf("Stream = %v, want false", event.Stream)
+	}
+
+	payload := BuildPayload([]Event{event})
+	api := payload.APIs[event.Endpoint]
+	if api == nil || api.Models[event.Model] == nil || len(api.Models[event.Model].Details) != 1 {
+		t.Fatalf("BuildPayload did not generate detail: %+v", payload)
+	}
+	detail := api.Models[event.Model].Details[0]
+	if detail.ResponseModel != "gpt-4o-mini" ||
+		detail.SessionID != "sess-12345" ||
+		detail.ParentSessionID != "parent-67890" ||
+		detail.AccessTokenSHA256 != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ||
+		detail.Generate == nil || *detail.Generate != true ||
+		detail.Stream == nil || *detail.Stream != false {
+		t.Fatalf("BuildPayload did not preserve request metadata: %+v", detail)
+	}
+}
+
+func TestNormalizeRawLegacyPayloadLeavesMetadataFieldsNil(t *testing.T) {
+	raw := []byte(`{
+		"timestamp":"2026-08-12T00:00:00Z",
+		"model":"gpt-4o"
+	}`)
+	event, err := NormalizeRaw(raw)
+	if err != nil {
+		t.Fatalf("NormalizeRaw failed: %v", err)
+	}
+	if event.ResponseModel != "" {
+		t.Errorf("ResponseModel = %q, want empty", event.ResponseModel)
+	}
+	if event.SessionID != "" || event.ParentSessionID != "" || event.AccessTokenSHA256 != "" {
+		t.Errorf("session fields not empty: %+v", event)
+	}
+	if event.Generate != nil {
+		t.Errorf("Generate = %v, want nil for legacy payload", event.Generate)
+	}
+	if event.Stream != nil {
+		t.Errorf("Stream = %v, want nil for legacy payload", event.Stream)
+	}
+}
+
+func TestNormalizeRawRequestMetadataDoesNotAffectEventHash(t *testing.T) {
+	baseRaw := []byte(`{
+		"timestamp":"2026-08-12T00:00:00Z",
+		"model":"gpt-4o",
+		"tokens":10
+	}`)
+	withMetaRaw := []byte(`{
+		"timestamp":"2026-08-12T00:00:00Z",
+		"model":"gpt-4o",
+		"tokens":10,
+		"response_model":"gpt-4o-mini",
+		"session_id":"sess-999",
+		"parent_session_id":"parent-888",
+		"access_token_sha256":"hash-777",
+		"generate":false,
+		"stream":true
+	}`)
+
+	evBase, err := NormalizeRaw(baseRaw)
+	if err != nil {
+		t.Fatalf("NormalizeRaw base: %v", err)
+	}
+	evMeta, err := NormalizeRaw(withMetaRaw)
+	if err != nil {
+		t.Fatalf("NormalizeRaw withMeta: %v", err)
+	}
+
+	if evBase.EventHash != evMeta.EventHash {
+		t.Fatalf("EventHash mismatch: base=%q meta=%q; metadata must not alter event hash", evBase.EventHash, evMeta.EventHash)
+	}
+}
+
+func TestReadOptionalBool(t *testing.T) {
+	tests := []struct {
+		input any
+		want  *bool
+	}{
+		{nil, nil},
+		{true, ptrBool(true)},
+		{false, ptrBool(false)},
+		{"true", ptrBool(true)},
+		{"True", ptrBool(true)},
+		{"TRUE", ptrBool(true)},
+		{"false", ptrBool(false)},
+		{"False", ptrBool(false)},
+		{"FALSE", ptrBool(false)},
+		{"1", ptrBool(true)},
+		{"0", ptrBool(false)},
+		{1, ptrBool(true)},
+		{0, ptrBool(false)},
+		{int64(1), ptrBool(true)},
+		{int64(0), ptrBool(false)},
+		{float64(1), ptrBool(true)},
+		{float64(0), ptrBool(false)},
+		{"invalid", nil},
+		{42, nil},
+	}
+
+	for _, tc := range tests {
+		raw := map[string]any{"val": tc.input}
+		got := readOptionalBool(raw, "val")
+		if tc.want == nil {
+			if got != nil {
+				t.Errorf("readOptionalBool(%v) = %v, want nil", tc.input, *got)
+			}
+		} else {
+			if got == nil || *got != *tc.want {
+				t.Errorf("readOptionalBool(%v) = %v, want %v", tc.input, got, *tc.want)
+			}
+		}
+	}
+}
+
+func ptrBool(b bool) *bool {
+	return &b
+}

@@ -1922,6 +1922,12 @@ export interface MonitoringAnalyticsEventRow {
   auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   resolved_model?: string;
+  response_model?: string;
+  session_id?: string;
+  parent_session_id?: string;
+  access_token_sha256?: string;
+  generate?: boolean;
+  stream?: boolean;
   reasoning_effort?: string;
   service_tier?: string;
   executor_type?: string;

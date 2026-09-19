@@ -289,6 +289,12 @@ func Migrate(db *sql.DB) error {
 			header_trace_id text,
 			fail_body text,
 			raw_json text,
+			response_model text,
+			session_id text,
+			parent_session_id text,
+			access_token_sha256 text,
+			generate integer,
+			stream integer,
 			created_at_ms integer not null
 		)`,
 		`create table if not exists usage_rollup_checkpoints (
@@ -2953,6 +2959,12 @@ func ensureUsageEventSnapshotColumns(db *sql.DB) error {
 		{name: "header_error_code", definition: "text"},
 		{name: "header_trace_id", definition: "text"},
 		{name: "fail_body", definition: "text"},
+		{name: "response_model", definition: "text"},
+		{name: "session_id", definition: "text"},
+		{name: "parent_session_id", definition: "text"},
+		{name: "access_token_sha256", definition: "text"},
+		{name: "generate", definition: "integer"},
+		{name: "stream", definition: "integer"},
 	}
 	for _, column := range columns {
 		if _, ok := existing[column.name]; ok {

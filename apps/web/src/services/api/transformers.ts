@@ -379,7 +379,12 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
 
 const normalizeOauthExcluded = (payload: unknown): Record<string, string[]> | undefined => {
   if (!isRecord(payload)) return undefined;
-  const source = payload['oauth-excluded-models'] ?? payload.items ?? payload;
+  // An explicit null wrapper means no exclusions, not a bare provider map.
+  const source = Object.prototype.hasOwnProperty.call(payload, 'oauth-excluded-models')
+    ? payload['oauth-excluded-models']
+    : Object.prototype.hasOwnProperty.call(payload, 'items')
+      ? payload.items
+      : payload;
   if (!isRecord(source)) return undefined;
   const map: Record<string, string[]> = {};
   Object.entries(source).forEach(([provider, models]) => {

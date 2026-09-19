@@ -15,6 +15,113 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
+func TestStoreCompatModelPricesAcceptsNumericConfiguredFlagStorage(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "model-prices.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.SaveModelPrices(context.Background(), map[string]ModelPrice{
+		"legacy-model": {
+			Prompt: 1, Completion: 2, Cache: 0.5, CacheRead: 0.25, CacheCreation: 1.5,
+			PromptConfigured: true, CompletionConfigured: true, CacheReadConfigured: true, CacheCreationConfigured: true,
+			ContextTiers: []ModelPriceContextTier{
+				{ThresholdTokens: 32_000, Prompt: 3, Completion: 4, CacheRead: 1, PromptConfigured: true, CompletionConfigured: true, CacheReadConfigured: true},
+			},
+			ServiceTiers: []ModelPriceServiceTier{
+				{Mode: "fast", ServiceTier: "priority", Prompt: 3, Completion: 4, CacheRead: 1, PromptConfigured: true, CompletionConfigured: true, CacheReadConfigured: true},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save model prices: %v", err)
+	}
+
+	if _, err := db.db.Exec(`update model_prices set cache_read_configured = 12.5 where model = 'legacy-model'`); err != nil {
+		t.Fatalf("seed base REAL configured flag: %v", err)
+	}
+	if _, err := db.db.Exec(`update model_price_context_tiers set cache_read_configured = 6.25 where model = 'legacy-model'`); err != nil {
+		t.Fatalf("seed context tier REAL configured flag: %v", err)
+	}
+	if _, err := db.db.Exec(`update model_price_service_tiers set cache_read_configured = 1.84375 where model = 'legacy-model'`); err != nil {
+		t.Fatalf("seed service tier REAL configured flag: %v", err)
+	}
+
+	for name, query := range map[string]string{
+		"base":         `select typeof(cache_read_configured) from model_prices where model = 'legacy-model'`,
+		"context tier": `select typeof(cache_read_configured) from model_price_context_tiers where model = 'legacy-model'`,
+		"service tier": `select typeof(cache_read_configured) from model_price_service_tiers where model = 'legacy-model'`,
+	} {
+		var storageType string
+		if err := db.db.QueryRow(query).Scan(&storageType); err != nil {
+			t.Fatalf("read %s configured flag storage type: %v", name, err)
+		}
+		if storageType != "real" {
+			t.Fatalf("%s configured flag storage type = %q, want real", name, storageType)
+		}
+	}
+
+	prices, err := db.LoadModelPrices(context.Background())
+	if err != nil {
+		t.Fatalf("load model prices with REAL configured flags: %v", err)
+	}
+	price := prices["legacy-model"]
+	if !price.CacheReadConfigured {
+		t.Fatalf("base REAL configured flag should be true: %#v", price)
+	}
+	if len(price.ContextTiers) != 1 || !price.ContextTiers[0].CacheReadConfigured {
+		t.Fatalf("context tier REAL configured flag should be true: %#v", price.ContextTiers)
+	}
+	if len(price.ServiceTiers) != 1 || !price.ServiceTiers[0].CacheReadConfigured {
+		t.Fatalf("service tier REAL configured flag should be true: %#v", price.ServiceTiers)
+	}
+}
+
+func TestStoreCompatModelPricesRejectsInvalidConfiguredFlagStorage(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       any
+		storageType string
+	}{
+		{name: "text", value: "NaN", storageType: "text"},
+		{name: "blob", value: []byte("12.5"), storageType: "blob"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := Open(filepath.Join(t.TempDir(), "model-prices.sqlite"))
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+
+			if err := db.SaveModelPrices(context.Background(), map[string]ModelPrice{
+				"corrupt-model": {
+					Prompt: 1, Completion: 2, CacheRead: 0.25,
+					PromptConfigured: true, CompletionConfigured: true, CacheReadConfigured: true,
+				},
+			}); err != nil {
+				t.Fatalf("save model prices: %v", err)
+			}
+			if _, err := db.db.Exec(`update model_prices set cache_read_configured = ? where model = 'corrupt-model'`, tt.value); err != nil {
+				t.Fatalf("seed invalid configured flag: %v", err)
+			}
+
+			var storageType string
+			if err := db.db.QueryRow(`select typeof(cache_read_configured) from model_prices where model = 'corrupt-model'`).Scan(&storageType); err != nil {
+				t.Fatalf("read configured flag storage type: %v", err)
+			}
+			if storageType != tt.storageType {
+				t.Fatalf("configured flag storage type = %q, want %q", storageType, tt.storageType)
+			}
+
+			if _, err := db.LoadModelPrices(context.Background()); err == nil {
+				t.Fatalf("expected load error for %s configured flag storage", tt.storageType)
+			}
+		})
+	}
+}
+
 func TestStoreCompatMigratesLegacyCodexInspectionOwnershipIdentity(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ownership.sqlite")
 	raw, err := sql.Open("sqlite", dbPath)

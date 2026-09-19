@@ -836,6 +836,12 @@ type EventRow struct {
 	AnalyticsModel         string                        `json:"analytics_model,omitempty"`
 	RequestedModel         string                        `json:"requested_model,omitempty"`
 	ResolvedModel          string                        `json:"resolved_model,omitempty"`
+	ResponseModel          string                        `json:"response_model,omitempty"`
+	SessionID              string                        `json:"session_id,omitempty"`
+	ParentSessionID        string                        `json:"parent_session_id,omitempty"`
+	AccessTokenSHA256      string                        `json:"access_token_sha256,omitempty"`
+	Generate               *bool                         `json:"generate,omitempty"`
+	Stream                 *bool                         `json:"stream,omitempty"`
 	Endpoint               string                        `json:"endpoint"`
 	Method                 string                        `json:"method"`
 	Path                   string                        `json:"path"`
@@ -3556,6 +3562,12 @@ func buildEvents(page store.EventsPage, totalCount int64) *EventsResponse {
 			AnalyticsModel:         item.AnalyticsModel,
 			RequestedModel:         item.RequestedModel,
 			ResolvedModel:          item.ResolvedModel,
+			ResponseModel:          item.ResponseModel,
+			SessionID:              item.SessionID,
+			ParentSessionID:        item.ParentSessionID,
+			AccessTokenSHA256:      item.AccessTokenSHA256,
+			Generate:               item.Generate,
+			Stream:                 item.Stream,
 			Endpoint:               item.Endpoint,
 			Method:                 item.Method,
 			Path:                   item.Path,

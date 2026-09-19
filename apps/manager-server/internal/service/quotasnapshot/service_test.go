@@ -5331,3 +5331,226 @@ func queryQuotaLifecycleWindows(t *testing.T, service *Service, includeInactive 
 	}
 	return windows
 }
+
+func TestDevinQuotaSnapshotLifecycle(t *testing.T) {
+	var (
+		baseMS         = int64(1_780_000_000_000)
+		dailyDuration  = int64(86400)
+		weeklyDuration = int64(604800)
+	)
+	service := newQuotaSnapshotTestService(t, baseMS+2*3600*1000)
+	devinAccount := AccountTarget{
+		AuthFileSnapshot:     "devin.json",
+		AuthProviderSnapshot: "devin",
+		AuthIndex:            "auth-devin-1",
+		AccountSnapshot:      "devin-user@example.com",
+	}
+
+	dailyEndMS := baseMS + dailyDuration*1000
+	weeklyEndMS := baseMS + weeklyDuration*1000
+	dailyUsed1 := 20.0
+	weeklyUsed1 := 40.0
+	obs1AtMS := baseMS + 3600*1000
+
+	// 1. Initial write with Devin Daily and Weekly windows under complete observation
+	entry1 := WriteEntry{
+		RowKey:   "row-devin",
+		Provider: "devin",
+		Account:  devinAccount,
+		Observation: &ObservationInput{
+			Source:              "api_query",
+			SourceObservationID: "devin-obs-1",
+			ObservedAtMS:        obs1AtMS,
+			InventoryScopeKey:   "devin:quota-windows",
+			InventoryMode:       "complete",
+		},
+		Windows: []WindowInput{
+			{
+				ProviderWindowID: "devin:daily",
+				WindowKind:       "daily",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs1AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &baseMS,
+				CycleEndMS:       &dailyEndMS,
+				DurationSeconds:  &dailyDuration,
+				UsedPercent:      &dailyUsed1,
+			},
+			{
+				ProviderWindowID: "devin:weekly",
+				WindowKind:       "weekly",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs1AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &baseMS,
+				CycleEndMS:       &weeklyEndMS,
+				DurationSeconds:  &weeklyDuration,
+				UsedPercent:      &weeklyUsed1,
+			},
+		},
+	}
+
+	writeRes1, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{entry1}})
+	if err != nil {
+		t.Fatalf("devin snapshot write 1 failed: %v", err)
+	}
+	if len(writeRes1.Items) != 1 || writeRes1.Items[0].InsertedCount != 2 {
+		t.Fatalf("unexpected write 1 result: %+v", writeRes1)
+	}
+
+	// Query after first observation
+	queryRes1, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{
+			{
+				RowKey:   "row-devin",
+				Provider: "devin",
+				Account:  devinAccount,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("devin snapshot query 1 failed: %v", err)
+	}
+	if len(queryRes1.Items) != 1 || len(queryRes1.Items[0].Windows) != 2 {
+		t.Fatalf("unexpected query 1 windows count: %#v", queryRes1.Items)
+	}
+
+	windows1 := make(map[string]Window)
+	for _, w := range queryRes1.Items[0].Windows {
+		windows1[w.ProviderWindowID] = w
+	}
+
+	daily1, ok := windows1["devin:daily"]
+	if !ok {
+		t.Fatalf("devin:daily window missing in query 1")
+	}
+	if daily1.WindowMode != "fixed" || daily1.WindowKind != "daily" || daily1.DurationSeconds == nil || *daily1.DurationSeconds != dailyDuration {
+		t.Fatalf("devin:daily window properties invalid: %#v", daily1)
+	}
+	if daily1.CurrentCycle == nil || daily1.CurrentCycle.ActualStartMS != baseMS || daily1.CurrentCycle.ScheduledEndMS == nil || *daily1.CurrentCycle.ScheduledEndMS != dailyEndMS {
+		t.Fatalf("devin:daily current cycle 1 invalid: %#v", daily1.CurrentCycle)
+	}
+	if daily1.PreviousCycle != nil {
+		t.Fatalf("devin:daily previous cycle 1 should be nil, got: %#v", daily1.PreviousCycle)
+	}
+
+	weekly1, ok := windows1["devin:weekly"]
+	if !ok {
+		t.Fatalf("devin:weekly window missing in query 1")
+	}
+	if weekly1.WindowMode != "fixed" || weekly1.WindowKind != "weekly" || weekly1.DurationSeconds == nil || *weekly1.DurationSeconds != weeklyDuration {
+		t.Fatalf("devin:weekly window properties invalid: %#v", weekly1)
+	}
+	if weekly1.CurrentCycle == nil || weekly1.CurrentCycle.ActualStartMS != baseMS || weekly1.CurrentCycle.ScheduledEndMS == nil || *weekly1.CurrentCycle.ScheduledEndMS != weeklyEndMS {
+		t.Fatalf("devin:weekly current cycle 1 invalid: %#v", weekly1.CurrentCycle)
+	}
+	if weekly1.PreviousCycle != nil {
+		t.Fatalf("devin:weekly previous cycle 1 should be nil, got: %#v", weekly1.PreviousCycle)
+	}
+
+	// 2. Second observation: daily cycle rollover
+	secondDailyStartMS := dailyEndMS
+	secondDailyEndMS := secondDailyStartMS + dailyDuration*1000
+	obs2AtMS := secondDailyStartMS + 1800*1000
+	service.now = func() time.Time { return time.UnixMilli(obs2AtMS) }
+
+	dailyUsed2 := 5.0
+	weeklyUsed2 := 45.0
+
+	entry2 := WriteEntry{
+		RowKey:   "row-devin",
+		Provider: "devin",
+		Account:  devinAccount,
+		Observation: &ObservationInput{
+			Source:              "api_query",
+			SourceObservationID: "devin-obs-2",
+			ObservedAtMS:        obs2AtMS,
+			InventoryScopeKey:   "devin:quota-windows",
+			InventoryMode:       "complete",
+		},
+		Windows: []WindowInput{
+			{
+				ProviderWindowID: "devin:daily",
+				WindowKind:       "daily",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs2AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &secondDailyStartMS,
+				CycleEndMS:       &secondDailyEndMS,
+				DurationSeconds:  &dailyDuration,
+				UsedPercent:      &dailyUsed2,
+			},
+			{
+				ProviderWindowID: "devin:weekly",
+				WindowKind:       "weekly",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs2AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &baseMS,
+				CycleEndMS:       &weeklyEndMS,
+				DurationSeconds:  &weeklyDuration,
+				UsedPercent:      &weeklyUsed2,
+			},
+		},
+	}
+
+	writeRes2, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{entry2}})
+	if err != nil {
+		t.Fatalf("devin snapshot write 2 failed: %v", err)
+	}
+	if len(writeRes2.Items) != 1 || writeRes2.Items[0].InsertedCount != 2 {
+		t.Fatalf("unexpected write 2 result: %+v", writeRes2)
+	}
+
+	// Query after cycle rollover
+	queryRes2, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{
+			{
+				RowKey:   "row-devin",
+				Provider: "devin",
+				Account:  devinAccount,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("devin snapshot query 2 failed: %v", err)
+	}
+
+	windows2 := make(map[string]Window)
+	for _, w := range queryRes2.Items[0].Windows {
+		windows2[w.ProviderWindowID] = w
+	}
+
+	daily2 := windows2["devin:daily"]
+	if daily2.CurrentCycle == nil || daily2.CurrentCycle.ActualStartMS != secondDailyStartMS || daily2.CurrentCycle.ScheduledEndMS == nil || *daily2.CurrentCycle.ScheduledEndMS != secondDailyEndMS {
+		t.Fatalf("devin:daily new current cycle invalid: %#v", daily2.CurrentCycle)
+	}
+	if daily2.PreviousCycle == nil {
+		t.Fatalf("devin:daily expected previous cycle after rollover, got nil")
+	}
+	if daily2.PreviousCycle.ActualStartMS != baseMS || daily2.PreviousCycle.ActualEndMS == nil || *daily2.PreviousCycle.ActualEndMS != dailyEndMS {
+		t.Fatalf("devin:daily previous cycle boundaries invalid: %#v", daily2.PreviousCycle)
+	}
+	if daily2.PreviousCycle.EndReason != "scheduled" {
+		t.Fatalf("devin:daily previous cycle end reason = %q, want scheduled", daily2.PreviousCycle.EndReason)
+	}
+	if daily2.PreviousCycle.DurationSeconds == nil || *daily2.PreviousCycle.DurationSeconds != dailyDuration {
+		t.Fatalf("devin:daily previous cycle duration invalid: %#v", daily2.PreviousCycle.DurationSeconds)
+	}
+
+	weekly2 := windows2["devin:weekly"]
+	if weekly2.CurrentCycle == nil || weekly2.CurrentCycle.ActualStartMS != baseMS || weekly2.CurrentCycle.ScheduledEndMS == nil || *weekly2.CurrentCycle.ScheduledEndMS != weeklyEndMS {
+		t.Fatalf("devin:weekly current cycle should remain active: %#v", weekly2.CurrentCycle)
+	}
+	if weekly2.PreviousCycle != nil {
+		t.Fatalf("devin:weekly previous cycle should still be nil: %#v", weekly2.PreviousCycle)
+	}
+}

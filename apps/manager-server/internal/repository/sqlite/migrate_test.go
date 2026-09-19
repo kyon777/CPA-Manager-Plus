@@ -3647,7 +3647,13 @@ func TestEnsureUsageEventSnapshotColumnsOnlyMigratesSchema(t *testing.T) {
 		!columns["normalized_total_input_tokens"] ||
 		!columns["client_ip"] ||
 		!columns["x_forwarded_for"] ||
-		!columns["user_agent"] {
+		!columns["user_agent"] ||
+		!columns["response_model"] ||
+		!columns["session_id"] ||
+		!columns["parent_session_id"] ||
+		!columns["access_token_sha256"] ||
+		!columns["generate"] ||
+		!columns["stream"] {
 		t.Fatalf("usage event schema columns = %#v", columns)
 	}
 	assertTableCount(t, db, "usage_account_model_rollups", 1)
@@ -3658,6 +3664,17 @@ func TestEnsureUsageEventSnapshotColumnsOnlyMigratesSchema(t *testing.T) {
 	}
 	if normalizedTotal.Valid {
 		t.Fatalf("schema migration unexpectedly backfilled normalized total: %d", normalizedTotal.Int64)
+	}
+	var generateCol sql.NullInt64
+	var streamCol sql.NullInt64
+	if err := db.QueryRow(`select generate, stream from usage_events where id = 1`).Scan(&generateCol, &streamCol); err != nil {
+		t.Fatalf("read migrated generate/stream columns: %v", err)
+	}
+	if generateCol.Valid {
+		t.Fatalf("legacy usage event unexpectedly backfilled generate: %d (want NULL)", generateCol.Int64)
+	}
+	if streamCol.Valid {
+		t.Fatalf("legacy usage event unexpectedly backfilled stream: %d (want NULL)", streamCol.Int64)
 	}
 }
 

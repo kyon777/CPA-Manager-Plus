@@ -43,8 +43,18 @@
       <img src="img/usage-analytics-zh.png" alt="CPA 按模型和账号拆解用量与成本" width="420">
     </td>
     <td align="center">
-      <strong>凭证管理</strong><br>
-      <img src="img/credential-zh.png" alt="CPA 凭证管理列表、可用状态、用量、配额和操作" width="420">
+      <strong>凭证列表</strong><br>
+      <img src="img/credential-table-zh.png" alt="CPA 凭证列表、可用状态、用量、配额和操作" width="420">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>凭证卡片</strong><br>
+      <img src="img/credential-card-zh.png" alt="CPA 凭证卡片、健康状态、用量、配额和操作" width="420">
+    </td>
+    <td align="center">
+      <strong>凭证详情</strong><br>
+      <img src="img/credential-detail-zh.png" alt="CPA 凭证详情、可用状态、配额、状态和请求活动" width="420">
     </td>
   </tr>
   <tr>
@@ -54,7 +64,7 @@
     </td>
     <td align="center">
       <strong>凭证配额</strong><br>
-      <img src="img/credential-quota-zh.png" alt="CPA 凭证配额用量、当前窗口和预测" width="420">
+      <img src="img/credential-quota-zh.png" alt="CPA 凭证配额窗口、用量、预测和重置证据" width="420">
     </td>
   </tr>
 </table>
@@ -75,7 +85,7 @@ CPA / CLIProxyAPI 可以在 `:8317` 直接托管官方 Management Center，也�
 
 ### CPA 网关管理
 
-- 管理 CPA Provider 配置，包括 Gemini、Codex、Claude、Vertex、xAI 和 OpenAI-compatible Provider。
+- 管理 CPA Provider 配置，包括 Gemini、Codex、Claude、Vertex、xAI、Devin 和 OpenAI-compatible Provider。
 - 维护认证文件、OAuth 登录、API Key、模型别名、优先级、插件、日志和系统配置。
 - 导入官方 Sub2API OpenAI OAuth 导出，并把多账号拆分为独立的 CPA Codex 认证文件。
 

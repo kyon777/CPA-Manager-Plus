@@ -6,6 +6,7 @@ import { Drawer } from '@/components/ui/Drawer';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
+import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { ProviderStatusBar } from '@/components/providers/ProviderStatusBar';
 import {
   ANTIGRAVITY_CONFIG,
@@ -4955,6 +4956,68 @@ describe('AccountsPage replacement flows', () => {
     );
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
+
+  it.each(['table', 'grid'])(
+    'keeps a single row status toggle scoped in %s layout',
+    async (layout) => {
+      mocks.location = { pathname: '/accounts', search: `?layout=${layout}` };
+      const pending = createDeferred<undefined>();
+      mocks.batchSetStatus.mockReturnValueOnce(pending.promise);
+      const renderer = await renderAccountsPage();
+      mocks.loadFiles.mockClear();
+      mocks.deselectAll.mockClear();
+      const statusToggle = () =>
+        renderer.root
+          .findAllByType(ToggleSwitch)
+          .find((node) => node.props.ariaLabel === 'auth_files.status_toggle_label')!;
+
+      await act(async () => {
+        statusToggle().props.onChange(false);
+      });
+
+      expect(mocks.batchSetStatus).toHaveBeenCalledExactlyOnceWith(
+        [getAuthFilePatchTarget(mocks.files[0])],
+        false
+      );
+      expect(statusToggle().props.disabled).toBe(true);
+      await act(async () => {
+        pending.resolve(undefined);
+      });
+
+      expect(mocks.loadFiles).not.toHaveBeenCalled();
+      expect(mocks.deselectAll).toHaveBeenCalledTimes(1);
+      expect(statusToggle().props.disabled).toBe(false);
+    }
+  );
+
+  it.each([true, false])(
+    'keeps the full reload for a multi-row status action with enabled=%s',
+    async (enabled) => {
+      mocks.files = [
+        makeCodexFile('first.json', 'auth-1', 'first@example.com'),
+        makeCodexFile('second.json', 'auth-2', 'second@example.com'),
+      ];
+      mocks.selectedFiles = new Set(mocks.files.map(getAuthFileSelectionKey));
+      mocks.selectionCount = 2;
+      const renderer = await renderAccountsPage();
+      mocks.loadFiles.mockClear();
+      mocks.deselectAll.mockClear();
+
+      await act(async () => {
+        await findButtonByText(
+          renderer,
+          enabled ? 'accounts.enable' : 'accounts.disable'
+        ).props.onClick();
+      });
+
+      expect(mocks.batchSetStatus).toHaveBeenCalledExactlyOnceWith(
+        mocks.files.map(getAuthFilePatchTarget),
+        enabled
+      );
+      expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+      expect(mocks.deselectAll).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('patches Codex websockets through auth-index aware batch fields', async () => {
     mocks.selectedFiles = new Set(['codex.json\u0000auth-1']);

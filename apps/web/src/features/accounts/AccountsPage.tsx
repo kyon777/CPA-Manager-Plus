@@ -50,6 +50,7 @@ import {
   CLAUDE_CONFIG,
   CODEX_CONFIG,
   CODEX_SUMMARY_CONFIG,
+  DEVIN_CONFIG,
   KIMI_CONFIG,
   XAI_CONFIG,
   buildObservedCodexQuotaState,
@@ -326,7 +327,13 @@ import {
   type UsageHeaderSnapshot,
   type UsageHeaderSnapshotsResponse,
 } from '@/services/api';
-import type { AuthFileItem, CodexQuotaState, XaiQuotaState } from '@/types';
+import type {
+  AuthFileItem,
+  CodexQuotaState,
+  DevinQuotaData,
+  DevinQuotaState,
+  XaiQuotaState,
+} from '@/types';
 import {
   fetchCodexResetCredits,
   type CodexResetCreditsData,
@@ -1312,6 +1319,7 @@ export function AccountsPage() {
     batchSetStatus,
     batchPatchFields,
     batchDelete,
+    reconcileAuthFileSource,
   } = useAuthFilesData({
     connectionFingerprint,
     requestScope: authFilesRequestScope,
@@ -1346,6 +1354,7 @@ export function AccountsPage() {
   const antigravityQuota = useQuotaStore((state) => state.antigravityQuota);
   const claudeQuota = useQuotaStore((state) => state.claudeQuota);
   const codexQuota = useQuotaStore((state) => state.codexQuota);
+  const devinQuota = useQuotaStore((state) => state.devinQuota);
   const kimiQuota = useQuotaStore((state) => state.kimiQuota);
   const xaiQuota = useQuotaStore((state) => state.xaiQuota);
   const baseQuotaStores = useMemo(
@@ -1353,14 +1362,16 @@ export function AccountsPage() {
       antigravityQuota,
       claudeQuota,
       codexQuota,
+      devinQuota,
       kimiQuota,
       xaiQuota,
     }),
-    [antigravityQuota, claudeQuota, codexQuota, kimiQuota, xaiQuota]
+    [antigravityQuota, claudeQuota, codexQuota, devinQuota, kimiQuota, xaiQuota]
   );
   const setAntigravityQuota = useQuotaStore((state) => state.setAntigravityQuota);
   const setClaudeQuota = useQuotaStore((state) => state.setClaudeQuota);
   const setCodexQuota = useQuotaStore((state) => state.setCodexQuota);
+  const setDevinQuota = useQuotaStore((state) => state.setDevinQuota);
   const setKimiQuota = useQuotaStore((state) => state.setKimiQuota);
   const setXaiQuota = useQuotaStore((state) => state.setXaiQuota);
 
@@ -3025,6 +3036,9 @@ export function AccountsPage() {
         case XAI_CONFIG.type:
           prune(XAI_CONFIG, setXaiQuota);
           break;
+        case DEVIN_CONFIG.type:
+          prune(DEVIN_CONFIG, setDevinQuota);
+          break;
         default:
           break;
       }
@@ -3037,6 +3051,7 @@ export function AccountsPage() {
       setClaudeQuota,
       setCredentialEvidenceBoundaries,
       setCodexQuota,
+      setDevinQuota,
       setKimiQuota,
       setXaiQuota,
     ]
@@ -3941,6 +3956,13 @@ export function AccountsPage() {
           }
           break;
         }
+        case DEVIN_CONFIG.type: {
+          const state = getCredentialScopedQuotaState(baseQuotaStores.devinQuota, row.raw);
+          if (state?.status === 'success' && state.windows.length > 0) {
+            fetchedAtMs = state.fetchedAtMs ?? state.observedAtMs ?? undefined;
+          }
+          break;
+        }
         default:
           return undefined;
       }
@@ -4527,9 +4549,7 @@ export function AccountsPage() {
     sourceMemberCount: selectedSourceMemberCount,
     connectionKey: connectionFingerprint,
     requestScope: authFilesRequestScope,
-    loadFiles: async () => {
-      await loadFiles();
-    },
+    reconcileSource: reconcileAuthFileSource,
     onSaved: handleConfigurationSaved,
   });
   const configurationDirty = configurationEditor.dirty;
@@ -6379,6 +6399,14 @@ export function AccountsPage() {
               getScopedQuotaState(XAI_CONFIG, baseQuotaStores.xaiQuota, row.raw)
             )
           );
+        case DEVIN_CONFIG.type:
+          return toAccountQuotaRefreshOutcome(
+            await refreshWithConfig<DevinQuotaState, DevinQuotaData>(
+              DEVIN_CONFIG,
+              setDevinQuota,
+              getScopedQuotaState(DEVIN_CONFIG, baseQuotaStores.devinQuota, row.raw)
+            )
+          );
         default:
           return { status: 'error', error: t('common.unknown_error') };
       }
@@ -6388,6 +6416,7 @@ export function AccountsPage() {
       setAntigravityQuota,
       setClaudeQuota,
       setCodexQuota,
+      setDevinQuota,
       setKimiQuota,
       setXaiQuota,
       t,
@@ -7149,7 +7178,7 @@ export function AccountsPage() {
       setStatusUpdating(true);
       try {
         await batchSetStatus(patchTargets, enabled);
-        await loadFiles();
+        if (patchTargets.length > 1) await loadFiles();
         deselectAll();
       } finally {
         setStatusUpdating(false);

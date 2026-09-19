@@ -60,6 +60,7 @@ export function UsageSummaryCardView({
   icon,
   label,
   meta,
+  showModelPriceAttention,
   tone,
   value,
   valueTitle,
@@ -91,7 +92,7 @@ export function UsageSummaryCardView({
         <span className={styles.usageSummaryLabel} title={resolvedLabel}>
           {label}
         </span>
-        {icon === 'cost' ? (
+        {showModelPriceAttention ? (
           <span className={styles.usageSummaryCardExtra}>
             <ModelPriceAttentionLink variant="inline" />
           </span>

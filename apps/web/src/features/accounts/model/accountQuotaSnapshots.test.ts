@@ -9,6 +9,7 @@ import type {
   AccountQuotaWindowDefinition,
 } from './accountQuotaWindowDefinitions';
 import {
+  buildAccountQuotaSnapshotQueryAccounts,
   buildAccountQuotaSnapshotWriteEntries,
   mergeCodexResetCreditsFromQuotaSnapshots,
   mergeAccountQuotaSnapshotWindows,
@@ -2198,5 +2199,210 @@ describe('account quota snapshots', () => {
 
     expect(merged?.rateLimitResetCreditsAvailableCount).toBe(1);
     expect(merged?.rateLimitResetCredits).toHaveLength(1);
+  });
+
+  describe('Devin snapshot pipeline contract', () => {
+    const observedAtMs = Date.parse('2026-09-15T14:00:00Z');
+    const dailyResetAtMs = Date.parse('2026-09-16T12:00:00Z');
+    const weeklyResetAtMs = Date.parse('2026-09-22T12:00:00Z');
+    const devinRow = {
+      selectionKey: 'devin.json\u0000d-1',
+      fileName: 'devin.json',
+      provider: 'devin',
+      authIndex: 'd-1',
+      accountLabel: 'devin-user@example.com',
+      raw: {
+        name: 'devin.json',
+        provider: 'devin',
+        type: 'devin',
+        auth_index: 'd-1',
+        account: 'devin-user@example.com',
+        token: 'secret-token-must-not-leak',
+        access_token: 'secret-access-token',
+        session_token: 'secret-session',
+      },
+    } as unknown as AccountRow;
+
+    it('builds secure query account entries for Devin', () => {
+      const queryAccounts = buildAccountQuotaSnapshotQueryAccounts([devinRow]);
+
+      expect(queryAccounts).toHaveLength(1);
+      expect(queryAccounts[0]).toMatchObject({
+        row_key: devinRow.selectionKey,
+        provider: 'devin',
+        account: {
+          auth_provider_snapshot: 'devin',
+          auth_file_snapshot: 'devin.json',
+          auth_index: 'd-1',
+          account_snapshot: 'devin-user@example.com',
+        },
+      });
+      const serialized = JSON.stringify(queryAccounts);
+      expect(serialized).not.toContain('secret-token-must-not-leak');
+      expect(serialized).not.toContain('secret-access-token');
+      expect(serialized).not.toContain('secret-session');
+    });
+
+    it('writes Devin fixed daily and weekly snapshot entries under complete observation and restores them', () => {
+      const dailyDisplay = buildAccountQuotaDisplayWindow({
+        key: 'devin:daily',
+        label: 'Daily limit',
+        kind: 'daily',
+        remainingPercent: 20,
+        usedPercent: 80,
+        resetLabel: '2026-09-15T12:00:00Z',
+        resetAtMs: dailyResetAtMs,
+        resetAccuracy: 'exact',
+        limitWindowSeconds: 24 * 3600,
+        source: 'devin',
+        modelScope: { kind: 'all', complete: true },
+        observedAtMs,
+        nowMs: observedAtMs,
+      });
+      const weeklyDisplay = buildAccountQuotaDisplayWindow({
+        key: 'devin:weekly',
+        label: 'Weekly limit',
+        kind: 'weekly',
+        remainingPercent: 75,
+        usedPercent: 25,
+        resetLabel: '2026-09-22T12:00:00Z',
+        resetAtMs: weeklyResetAtMs,
+        resetAccuracy: 'exact',
+        limitWindowSeconds: 168 * 3600,
+        source: 'devin',
+        modelScope: { kind: 'all', complete: true },
+        observedAtMs,
+        nowMs: observedAtMs,
+      });
+      const [dailyDef, weeklyDef] = buildAccountQuotaWindowDefinitions(
+        [dailyDisplay, weeklyDisplay],
+        observedAtMs
+      );
+
+      const observation = {
+        source: 'api_query' as const,
+        source_observation_id: 'devin-obs-1',
+        observed_at_ms: observedAtMs,
+        inventory_scope_key: 'devin:quota-windows',
+        inventory_mode: 'complete' as const,
+      };
+
+      const [entry] = buildAccountQuotaSnapshotWriteEntries(
+        [devinRow],
+        new Map([[devinRow.selectionKey, [dailyDef, weeklyDef]]]),
+        {
+          getObservation: () => observation,
+          nowMs: observedAtMs,
+        }
+      );
+
+      expect(entry).toBeDefined();
+      expect(entry.row_key).toBe(devinRow.selectionKey);
+      expect(entry.provider).toBe('devin');
+      expect(entry.observation).toEqual(observation);
+      expect(entry.windows).toHaveLength(2);
+
+      const dailyWindow = entry.windows.find((w) => w.provider_window_id === 'devin:daily');
+      expect(dailyWindow).toMatchObject({
+        provider_window_id: 'devin:daily',
+        window_kind: 'daily',
+        window_mode: 'fixed',
+        model_scope_kind: 'all',
+        source: 'api_query',
+        source_observation_id: 'devin-obs-1',
+        observed_at_ms: observedAtMs,
+        boundary_accuracy: 'exact',
+        cycle_start_ms: dailyResetAtMs - 24 * 3600 * 1000,
+        cycle_end_ms: dailyResetAtMs,
+        duration_seconds: 86400,
+        used_percent: 80,
+        remaining_percent: 20,
+      });
+
+      const weeklyWindow = entry.windows.find((w) => w.provider_window_id === 'devin:weekly');
+      expect(weeklyWindow).toMatchObject({
+        provider_window_id: 'devin:weekly',
+        window_kind: 'weekly',
+        window_mode: 'fixed',
+        model_scope_kind: 'all',
+        source: 'api_query',
+        source_observation_id: 'devin-obs-1',
+        observed_at_ms: observedAtMs,
+        boundary_accuracy: 'exact',
+        cycle_start_ms: weeklyResetAtMs - 168 * 3600 * 1000,
+        cycle_end_ms: weeklyResetAtMs,
+        duration_seconds: 604800,
+        used_percent: 25,
+        remaining_percent: 75,
+      });
+
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain('secret-token-must-not-leak');
+      expect(serialized).not.toContain('secret-access-token');
+
+      // Restore / merge verification
+      const dailySnapshot = makeSnapshot({
+        provider_window_id: 'devin:daily',
+        window_kind: 'daily',
+        window_mode: 'fixed',
+        model_scope_kind: 'all',
+        source: 'api_query',
+        observed_at_ms: observedAtMs + 1000,
+        boundary_accuracy: 'exact',
+        cycle_start_ms: dailyResetAtMs - 24 * 3600 * 1000,
+        cycle_end_ms: dailyResetAtMs,
+        duration_seconds: 86400,
+        used_percent: 85,
+        remaining_percent: 15,
+        field_sources: {
+          quota: { source: 'api_query', observed_at_ms: observedAtMs + 1000 },
+        },
+      });
+      const weeklySnapshot = makeSnapshot({
+        provider_window_id: 'devin:weekly',
+        window_kind: 'weekly',
+        window_mode: 'fixed',
+        model_scope_kind: 'all',
+        source: 'api_query',
+        observed_at_ms: observedAtMs + 1000,
+        boundary_accuracy: 'exact',
+        cycle_start_ms: weeklyResetAtMs - 168 * 3600 * 1000,
+        cycle_end_ms: weeklyResetAtMs,
+        duration_seconds: 604800,
+        used_percent: 30,
+        remaining_percent: 70,
+        field_sources: {
+          quota: { source: 'api_query', observed_at_ms: observedAtMs + 1000 },
+        },
+      });
+
+      const merged = mergeAccountQuotaSnapshotWindows(
+        [dailyDef, weeklyDef],
+        [dailySnapshot, weeklySnapshot],
+        { provider: 'devin' }
+      );
+
+      expect(merged).toHaveLength(2);
+      expect(merged[0]).toMatchObject({
+        providerWindowId: 'devin:daily',
+        windowMode: 'fixed',
+        cycleStartMs: dailyResetAtMs - 24 * 3600 * 1000,
+        cycleEndMs: dailyResetAtMs,
+        durationSeconds: 86400,
+        modelScope: { kind: 'all', complete: true },
+        usedPercent: 85,
+        remainingPercent: 15,
+      });
+      expect(merged[1]).toMatchObject({
+        providerWindowId: 'devin:weekly',
+        windowMode: 'fixed',
+        cycleStartMs: weeklyResetAtMs - 168 * 3600 * 1000,
+        cycleEndMs: weeklyResetAtMs,
+        durationSeconds: 604800,
+        modelScope: { kind: 'all', complete: true },
+        usedPercent: 30,
+        remainingPercent: 70,
+      });
+    });
   });
 });

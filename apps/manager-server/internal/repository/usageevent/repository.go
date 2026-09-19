@@ -411,8 +411,10 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 		normalized_uncached_input_tokens, normalized_total_input_tokens, normalized_cache_read_tokens, normalized_cache_creation_tokens, total_tokens,
 		latency_ms, ttft_ms, failed, fail_status_code, fail_summary,
 		response_metadata_json, header_quota_recover_at_ms, header_quota_used_percent, header_quota_plan_type, header_error_kind, header_error_code, header_trace_id,
-		fail_body, raw_json, created_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		fail_body, raw_json,
+		response_model, session_id, parent_session_id, access_token_sha256, generate, stream,
+		created_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return model.InsertResult{}, err
 	}
@@ -497,6 +499,12 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 			nullString(prep.traceID),
 			nullString(ev.FailBody),
 			nullString(prep.rawJSON),
+			nullString(ev.ResponseModel),
+			nullString(ev.SessionID),
+			nullString(ev.ParentSessionID),
+			nullString(ev.AccessTokenSHA256),
+			nullBool(ev.Generate),
+			nullBool(ev.Stream),
 			ev.CreatedAtMS,
 		)
 		if err != nil {
@@ -556,6 +564,8 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 		normalized_uncached_input_tokens, normalized_total_input_tokens, normalized_cache_read_tokens, normalized_cache_creation_tokens, total_tokens,
 		latency_ms, ttft_ms, failed, fail_status_code, fail_summary,
 		coalesce(response_metadata_json, ''), header_quota_recover_at_ms, header_quota_used_percent, coalesce(header_quota_plan_type, ''), coalesce(header_error_kind, ''), coalesce(header_error_code, ''), coalesce(header_trace_id, ''),
+		coalesce(response_model, ''), coalesce(session_id, ''), coalesce(parent_session_id, ''), coalesce(access_token_sha256, ''),
+		generate, stream,
 		coalesce(raw_json, ''), created_at_ms
 		from usage_events
 		order by timestamp_ms desc, id desc
@@ -570,6 +580,8 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 		var event model.UsageEvent
 		var requestID, provider, executorType, endpoint, method, path, clientIP, xForwardedFor, userAgent, authType, authIndex, source, sourceHash, apiKeyHash, accountSnapshot, authLabelSnapshot, authFileSnapshot, authProviderSnapshot, authAccountIDSnapshot, authProjectIDSnapshot, requestedModel, resolvedModel, reasoningEffort, serviceTier, requestServiceTier, responseServiceTier, cacheInputMode, failSummary sql.NullString
 		var responseMetadataJSON, quotaPlanType, errorKind, errorCode, traceID, rawJSON string
+		var responseModel, sessionID, parentSessionID, accessTokenSHA256 sql.NullString
+		var generateVal, streamVal sql.NullInt64
 		var authSnapshotAt sql.NullInt64
 		var latency, ttft sql.NullInt64
 		var failStatusCode sql.NullInt64
@@ -634,6 +646,12 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 			&errorKind,
 			&errorCode,
 			&traceID,
+			&responseModel,
+			&sessionID,
+			&parentSessionID,
+			&accessTokenSHA256,
+			&generateVal,
+			&streamVal,
 			&rawJSON,
 			&event.CreatedAtMS,
 		); err != nil {
@@ -662,6 +680,18 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 		event.AuthProjectIDSnapshot = authProjectIDSnapshot.String
 		event.RequestedModel = requestedModel.String
 		event.ResolvedModel = resolvedModel.String
+		event.ResponseModel = responseModel.String
+		event.SessionID = sessionID.String
+		event.ParentSessionID = parentSessionID.String
+		event.AccessTokenSHA256 = accessTokenSHA256.String
+		if generateVal.Valid {
+			v := generateVal.Int64 != 0
+			event.Generate = &v
+		}
+		if streamVal.Valid {
+			v := streamVal.Int64 != 0
+			event.Stream = &v
+		}
 		event.ReasoningEffort = reasoningEffort.String
 		event.ServiceTier = serviceTier.String
 		event.RequestServiceTier = requestServiceTier.String
@@ -761,6 +791,16 @@ func nullPositiveInt64(value int64) any {
 		return nil
 	}
 	return value
+}
+
+func nullBool(value *bool) any {
+	if value == nil {
+		return nil
+	}
+	if *value {
+		return 1
+	}
+	return 0
 }
 
 func responseHeaderDerivedForInsert(event model.UsageEvent) (string, int64, *float64, string, string, string, string) {

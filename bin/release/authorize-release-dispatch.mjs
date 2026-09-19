@@ -16,9 +16,13 @@ const isPositiveInteger = (value) => /^[1-9][0-9]*$/.test(String(value || ''));
 export const validateDryRunRecord = ({ run, releaseTag, releaseSha, repository }) => {
   const expectedTitle = `Build and Release · dry-run · ${releaseTag}`;
   const runAttempt = String(run?.run_attempt ?? '');
+  // GitHub may expose the configured `run-name` as `name` in the workflow-run
+  // REST payload. Accept only the exact static workflow name or the exact
+  // release-specific run title while keeping the rest of the identity strict.
+  const validRunName = run?.name === releaseWorkflowName || run?.name === expectedTitle;
   if (
     run?.path !== releaseWorkflowPath ||
-    run?.name !== releaseWorkflowName ||
+    !validRunName ||
     run?.display_title !== expectedTitle ||
     run?.event !== 'workflow_dispatch' ||
     run?.status !== 'completed' ||

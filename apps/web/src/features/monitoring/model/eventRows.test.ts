@@ -212,6 +212,27 @@ describe('buildEventRows', () => {
     expect(row.searchText).toContain('test-client/1.0');
   });
 
+  it('populates request metadata fields on row without leaking new tokens into searchText', () => {
+    const [row] = buildRows({
+      __responseModel: 'gpt-4o-mini',
+      session_id: 'secret-session-id-999',
+      parent_session_id: 'parent-secret-session-888',
+      access_token_sha256: 'sha256-secret-hash-777',
+      generate: true,
+      stream: false,
+    });
+
+    expect(row.responseModel).toBe('gpt-4o-mini');
+    expect(row.sessionId).toBe('secret-session-id-999');
+    expect(row.parentSessionId).toBe('parent-secret-session-888');
+    expect(row.accessTokenSha256).toBe('sha256-secret-hash-777');
+    expect(row.generate).toBe(true);
+    expect(row.stream).toBe(false);
+    expect(row.searchText).not.toContain('secret-session-id-999');
+    expect(row.searchText).not.toContain('parent-secret-session-888');
+    expect(row.searchText).not.toContain('sha256-secret-hash-777');
+  });
+
   it('keeps response header diagnostics searchable', () => {
     const [row] = buildRows({
       failed: true,

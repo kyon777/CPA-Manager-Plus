@@ -45,8 +45,18 @@ Operate providers, credentials, OAuth, plugins, and configuration while keeping 
       <img src="img/usage-analytics.png" alt="CPA usage and cost analytics by model and account" width="420">
     </td>
     <td align="center">
-      <strong>Credential Management</strong><br>
-      <img src="img/credential.png" alt="CPA credential management list with availability, usage, quota, and actions" width="420">
+      <strong>Credential List</strong><br>
+      <img src="img/credential-table.png" alt="CPA credential list with availability, usage, quota, and actions" width="420">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Credential Cards</strong><br>
+      <img src="img/credential-card.png" alt="CPA credential cards with health, usage, quota, and actions" width="420">
+    </td>
+    <td align="center">
+      <strong>Credential Detail</strong><br>
+      <img src="img/credential-detail.png" alt="CPA credential detail with availability, quota, status, and request activity" width="420">
     </td>
   </tr>
   <tr>
@@ -56,7 +66,7 @@ Operate providers, credentials, OAuth, plugins, and configuration while keeping 
     </td>
     <td align="center">
       <strong>Credential Quota</strong><br>
-      <img src="img/credential-quota.png" alt="CPA credential quota usage, current window, and forecast" width="420">
+      <img src="img/credential-quota.png" alt="CPA credential quota windows, usage, forecasts, and reset evidence" width="420">
     </td>
   </tr>
 </table>
@@ -77,7 +87,7 @@ See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/gui
 
 ### CPA Gateway Management
 
-- Manage CPA provider configurations, including Gemini, Codex, Claude, Vertex, xAI, and OpenAI-compatible providers.
+- Manage CPA provider configurations, including Gemini, Codex, Claude, Vertex, xAI, Devin, and OpenAI-compatible providers.
 - Maintain auth files, OAuth logins, API keys, model aliases, priorities, plugins, logs, and system settings.
 - Import official Sub2API OpenAI OAuth exports and split multiple accounts into separate CPA Codex auth files.
 

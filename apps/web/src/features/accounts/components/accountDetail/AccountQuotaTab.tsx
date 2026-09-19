@@ -211,6 +211,8 @@ export function AccountQuotaTab({
 
       {windowUsageError ? <div className={styles.errorBox}>{windowUsageError}</div> : null}
 
+
+
       {standardWindows.length > 0 || allWindows.length === 0 ? (
         <section className={styles.quotaSection} data-quota-window-group="standard">
           <div className={styles.quotaSectionHeading}>

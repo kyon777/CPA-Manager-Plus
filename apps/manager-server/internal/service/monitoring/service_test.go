@@ -59,11 +59,19 @@ func TestAnalyticsQueryGroupBoundsConcurrency(t *testing.T) {
 }
 
 func TestBuildEventsIncludesRequestMetadata(t *testing.T) {
+	genTrue := true
+	streamFalse := false
 	response := buildEvents(store.EventsPage{Items: []store.EventPageItem{{
-		EventHash:     "request-metadata",
-		ClientIP:      "192.0.2.10",
-		XForwardedFor: "203.0.113.5, 198.51.100.8",
-		UserAgent:     "test-client/1.0",
+		EventHash:          "request-metadata",
+		ClientIP:           "192.0.2.10",
+		XForwardedFor:      "203.0.113.5, 198.51.100.8",
+		UserAgent:          "test-client/1.0",
+		ResponseModel:      "gpt-4o-mini",
+		SessionID:          "sess-12345",
+		ParentSessionID:    "parent-sess-67890",
+		AccessTokenSHA256:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		Generate:           &genTrue,
+		Stream:             &streamFalse,
 	}}}, 1)
 	if response == nil || len(response.Items) != 1 {
 		t.Fatalf("events response = %#v", response)
@@ -71,6 +79,29 @@ func TestBuildEventsIncludesRequestMetadata(t *testing.T) {
 	item := response.Items[0]
 	if item.ClientIP != "192.0.2.10" || item.XForwardedFor != "203.0.113.5, 198.51.100.8" || item.UserAgent != "test-client/1.0" {
 		t.Fatalf("request metadata = client:%q forwarded:%q agent:%q", item.ClientIP, item.XForwardedFor, item.UserAgent)
+	}
+	if item.ResponseModel != "gpt-4o-mini" ||
+		item.SessionID != "sess-12345" ||
+		item.ParentSessionID != "parent-sess-67890" ||
+		item.AccessTokenSHA256 != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ||
+		item.Generate == nil || *item.Generate != true ||
+		item.Stream == nil || *item.Stream != false {
+		t.Fatalf("item metadata mismatch: %+v", item)
+	}
+
+	// Verify JSON serialization keeps *stream == false
+	marshaled, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	jsonStr := string(marshaled)
+	if !strings.Contains(jsonStr, `"response_model":"gpt-4o-mini"`) ||
+		!strings.Contains(jsonStr, `"session_id":"sess-12345"`) ||
+		!strings.Contains(jsonStr, `"parent_session_id":"parent-sess-67890"`) ||
+		!strings.Contains(jsonStr, `"access_token_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"`) ||
+		!strings.Contains(jsonStr, `"generate":true`) ||
+		!strings.Contains(jsonStr, `"stream":false`) {
+		t.Fatalf("marshaled json missing metadata fields: %s", jsonStr)
 	}
 }
 

@@ -26,6 +26,12 @@ type Event struct {
 	AnalyticsModel string `json:"analytics_model,omitempty"`
 	RequestedModel string `json:"requested_model,omitempty"`
 	ResolvedModel  string `json:"resolved_model,omitempty"`
+	ResponseModel  string `json:"response_model,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	AccessTokenSHA256 string `json:"access_token_sha256,omitempty"`
+	Generate       *bool  `json:"generate,omitempty"`
+	Stream         *bool  `json:"stream,omitempty"`
 	Endpoint       string `json:"endpoint,omitempty"`
 	Method         string `json:"method,omitempty"`
 	Path           string `json:"path,omitempty"`
@@ -144,6 +150,12 @@ type Detail struct {
 	TTFTMS                *int64                  `json:"ttft_ms,omitempty"`
 	RequestedModel        string                  `json:"requested_model,omitempty"`
 	ResolvedModel         string                  `json:"resolved_model,omitempty"`
+	ResponseModel         string                  `json:"response_model,omitempty"`
+	SessionID             string                  `json:"session_id,omitempty"`
+	ParentSessionID       string                  `json:"parent_session_id,omitempty"`
+	AccessTokenSHA256     string                  `json:"access_token_sha256,omitempty"`
+	Generate              *bool                   `json:"generate,omitempty"`
+	Stream                *bool                   `json:"stream,omitempty"`
 	ReasoningEffort       string                  `json:"reasoning_effort,omitempty"`
 	ServiceTier           string                  `json:"service_tier,omitempty"`
 	RequestServiceTier    string                  `json:"request_service_tier,omitempty"`
@@ -540,6 +552,12 @@ func NormalizeRaw(raw []byte) (Event, error) {
 	authIndex := readString(record, "auth_index", "authIndex", "AuthIndex")
 	requestedModel := readString(record, "alias", "requested_model", "requestedModel")
 	resolvedModel := readString(record, "resolved_model", "resolvedModel", "model", "model_name", "modelName")
+	responseModel := readString(record, "response_model", "responseModel")
+	sessionID := readString(record, "session_id", "sessionId")
+	parentSessionID := readString(record, "parent_session_id", "parentSessionId")
+	accessTokenSHA256 := readString(record, "access_token_sha256", "accessTokenSHA256", "accessTokenSha256")
+	generate := readOptionalBool(record, "generate", "Generate")
+	stream := readOptionalBool(record, "stream", "Stream")
 	model := requestedModel
 	if model == "" {
 		model = resolvedModel
@@ -579,6 +597,12 @@ func NormalizeRaw(raw []byte) (Event, error) {
 		AnalyticsModel:                usageidentity.AnalyticsModelForRequest(model, requestedModel),
 		RequestedModel:                requestedModel,
 		ResolvedModel:                 resolvedModel,
+		ResponseModel:                 responseModel,
+		SessionID:                     sessionID,
+		ParentSessionID:               parentSessionID,
+		AccessTokenSHA256:             accessTokenSHA256,
+		Generate:                      generate,
+		Stream:                        stream,
 		Endpoint:                      endpoint,
 		Method:                        method,
 		Path:                          path,
@@ -688,6 +712,12 @@ func BuildPayload(events []Event) Payload {
 			TTFTMS:                event.TTFTMS,
 			RequestedModel:        requestedModel,
 			ResolvedModel:         event.ResolvedModel,
+			ResponseModel:         event.ResponseModel,
+			SessionID:             event.SessionID,
+			ParentSessionID:       event.ParentSessionID,
+			AccessTokenSHA256:     event.AccessTokenSHA256,
+			Generate:              event.Generate,
+			Stream:                event.Stream,
 			ReasoningEffort:       event.ReasoningEffort,
 			ServiceTier:           event.ServiceTier,
 			RequestServiceTier:    event.RequestServiceTier,
@@ -808,6 +838,67 @@ func readFailFields(record map[string]any) (int64, string) {
 		body = readString(record, "fail_body", "failBody")
 	}
 	return statusCode, body
+}
+
+func readOptionalBool(record map[string]any, keys ...string) *bool {
+	raw := first(record, keys...)
+	if raw == nil {
+		return nil
+	}
+	switch value := raw.(type) {
+	case bool:
+		v := value
+		return &v
+	case string:
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "true" || trimmed == "1" {
+			v := true
+			return &v
+		}
+		if trimmed == "false" || trimmed == "0" {
+			v := false
+			return &v
+		}
+	case float64:
+		if value == 1 {
+			v := true
+			return &v
+		}
+		if value == 0 {
+			v := false
+			return &v
+		}
+	case int:
+		if value == 1 {
+			v := true
+			return &v
+		}
+		if value == 0 {
+			v := false
+			return &v
+		}
+	case int64:
+		if value == 1 {
+			v := true
+			return &v
+		}
+		if value == 0 {
+			v := false
+			return &v
+		}
+	case json.Number:
+		if n, err := value.Int64(); err == nil {
+			if n == 1 {
+				v := true
+				return &v
+			}
+			if n == 0 {
+				v := false
+				return &v
+			}
+		}
+	}
+	return nil
 }
 
 func readOptionalInt(record map[string]any, keys ...string) *int64 {
