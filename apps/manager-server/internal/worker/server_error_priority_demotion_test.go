@@ -111,7 +111,7 @@ func TestServerErrorPriorityDemotionWorkerDoesNotMakePriorityNegative(t *testing
 	}
 }
 
-func TestServerErrorPriorityDemotionCandidateOnlyAcceptsHTTP502And503(t *testing.T) {
+func TestServerErrorPriorityDemotionCandidateAccepts502503AndQualified429(t *testing.T) {
 	base := usage.Event{
 		Failed:           true,
 		AuthFileSnapshot: "codex-auth.json",
@@ -126,19 +126,34 @@ func TestServerErrorPriorityDemotionCandidateOnlyAcceptsHTTP502And503(t *testing
 			t.Fatalf("HTTP %d should produce a priority-demotion candidate", statusCode)
 		}
 	}
-	for _, statusCode := range []int{
-		http.StatusTooManyRequests,
-		499,
-		http.StatusInternalServerError,
-		http.StatusNotImplemented,
-		http.StatusGatewayTimeout,
-		http.StatusNetworkAuthenticationRequired,
-		600,
+
+	qualifiedRateLimit := base
+	qualifiedRateLimit.FailStatusCode = http.StatusTooManyRequests
+	qualifiedRateLimit.FailBody = ` { "detail" : "Rate limit exceeded" } `
+	if _, ok := serverErrorPriorityDemotionCandidateFromEvent(qualifiedRateLimit, "http://cpa", "management-key"); !ok {
+		t.Fatal("HTTP 429 with the TokenAcquisition rate-limit response must produce a priority-demotion candidate")
+	}
+
+	for _, testCase := range []struct {
+		name       string
+		statusCode int
+		failBody   string
+	}{
+		{name: "429 without body", statusCode: http.StatusTooManyRequests},
+		{name: "429 with a different detail", statusCode: http.StatusTooManyRequests, failBody: `{"detail":"Too many requests"}`},
+		{name: "429 with non-json body", statusCode: http.StatusTooManyRequests, failBody: "Rate limit exceeded"},
+		{name: "500 even with matching body", statusCode: http.StatusInternalServerError, failBody: `{"detail":"Rate limit exceeded"}`},
+		{name: "gateway timeout", statusCode: http.StatusGatewayTimeout},
+		{name: "network authentication required", statusCode: http.StatusNetworkAuthenticationRequired},
+		{name: "out of range", statusCode: 600},
 	} {
-		event := base
-		event.FailStatusCode = statusCode
-		if _, ok := serverErrorPriorityDemotionCandidateFromEvent(event, "http://cpa", "management-key"); ok {
-			t.Fatalf("HTTP %d must not produce a priority-demotion candidate", statusCode)
-		}
+		t.Run(testCase.name, func(t *testing.T) {
+			event := base
+			event.FailStatusCode = testCase.statusCode
+			event.FailBody = testCase.failBody
+			if _, ok := serverErrorPriorityDemotionCandidateFromEvent(event, "http://cpa", "management-key"); ok {
+				t.Fatalf("event %#v must not produce a priority-demotion candidate", event)
+			}
+		})
 	}
 }

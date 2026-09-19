@@ -31,11 +31,13 @@ func TestSignalAutomaticDeduplicatesAndFailureRequiresManualRetry(t *testing.T) 
 	if err != nil || !ok || claimed.Status != model.TokenRecoveryStatusAutoRunning {
 		t.Fatalf("ClaimNextQueued() = %#v, %t, %v", claimed, ok, err)
 	}
-	failed, err := repo.Fail(context.Background(), claimed.ID, "token_acquisition_failed")
+	failed, err := repo.Fail(context.Background(), claimed.ID, "token_acquisition_failed", "mfa_failed: 二次验证失败")
 	if err != nil {
 		t.Fatalf("Fail() error = %v", err)
 	}
-	if failed.Status != model.TokenRecoveryStatusAutoFailedManualOnly {
+	if failed.Status != model.TokenRecoveryStatusAutoFailedManualOnly ||
+		failed.LastErrorCode != "token_acquisition_failed" ||
+		failed.LastErrorMessage != "mfa_failed: 二次验证失败" {
 		t.Fatalf("failed task = %#v", failed)
 	}
 
@@ -50,7 +52,7 @@ func TestSignalAutomaticDeduplicatesAndFailureRequiresManualRetry(t *testing.T) 
 	if err != nil {
 		t.Fatalf("RequestManual() error = %v", err)
 	}
-	if manual.ID != first.ID || manual.Status != model.TokenRecoveryStatusManualQueued || manual.Mode != model.TokenRecoveryModeManual || manual.LastErrorCode != "" {
+	if manual.ID != first.ID || manual.Status != model.TokenRecoveryStatusManualQueued || manual.Mode != model.TokenRecoveryModeManual || manual.LastErrorCode != "" || manual.LastErrorMessage != "" {
 		t.Fatalf("manual retry = %#v", manual)
 	}
 }
@@ -99,6 +101,34 @@ func TestSignalAutomaticDeduplicatesSameAuthIndexWhenOneSourceLacksEmail(t *test
 	}
 	if withoutEmail.ID != withEmail.ID {
 		t.Fatalf("same auth index created duplicate tasks: %#v / %#v", withoutEmail, withEmail)
+	}
+}
+
+func TestGetFindsEmailOnlyTaskAfterAuthIndexBecomesAvailable(t *testing.T) {
+	repo := newTestRepository(t)
+	emailOnly := model.TokenRecoveryTarget{
+		FileName: "codex.json", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: 100,
+	}
+	first, err := repo.SignalAutomatic(context.Background(), emailOnly)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() email-only = %v", err)
+	}
+	claimed, ok, err := repo.ClaimNextQueued(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("ClaimNextQueued() = %#v, %t, %v", claimed, ok, err)
+	}
+	if _, err := repo.Fail(context.Background(), claimed.ID, "token_acquisition_failed", "mfa_failed: 二次验证失败"); err != nil {
+		t.Fatalf("Fail() = %v", err)
+	}
+
+	got, found, err := repo.Get(context.Background(), model.TokenRecoveryTarget{
+		FileName: "codex.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex",
+	})
+	if err != nil || !found {
+		t.Fatalf("Get() after auth index becomes available = %#v, %t, %v", got, found, err)
+	}
+	if got.ID != first.ID || got.LastErrorMessage != "mfa_failed: 二次验证失败" {
+		t.Fatalf("compatible task = %#v, want original failed task %#v", got, first)
 	}
 }
 

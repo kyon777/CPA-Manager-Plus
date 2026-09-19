@@ -165,7 +165,7 @@ func TestMigrateCreatesTokenRecoveryTaskSchema(t *testing.T) {
 	columns := migrationTableColumns(t, db, "token_recovery_tasks")
 	for _, column := range []string{
 		"id", "identity_key", "file_name", "auth_index", "account_email", "provider", "status", "mode",
-		"last_error_code", "last_signal_at_ms", "started_at_ms", "completed_at_ms", "created_at_ms", "updated_at_ms",
+		"last_error_code", "last_error_message", "last_signal_at_ms", "started_at_ms", "completed_at_ms", "created_at_ms", "updated_at_ms",
 	} {
 		if !columns[column] {
 			t.Fatalf("token recovery task columns = %#v, missing %s", columns, column)
@@ -179,6 +179,50 @@ func TestMigrateCreatesTokenRecoveryTaskSchema(t *testing.T) {
 		if count != 1 {
 			t.Fatalf("token recovery index %s count = %d, want 1", index, count)
 		}
+	}
+}
+
+func TestMigrateAddsTokenRecoveryTaskFailureMessageToLegacySchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token-recovery-task-upgrade.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open current sqlite: %v", err)
+	}
+	for _, statement := range []string{
+		`drop table token_recovery_tasks`,
+		`create table token_recovery_tasks (
+			id integer primary key autoincrement,
+			identity_key text not null unique,
+			file_name text not null,
+			auth_index text not null default '',
+			account_email text not null default '',
+			provider text not null,
+			status text not null,
+			mode text not null,
+			last_error_code text,
+			last_signal_at_ms integer not null,
+			started_at_ms integer,
+			completed_at_ms integer,
+			created_at_ms integer not null,
+			updated_at_ms integer not null
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			t.Fatalf("prepare legacy token-recovery schema: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy token-recovery schema: %v", err)
+	}
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("upgrade token-recovery schema: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if !migrationTableColumns(t, db, "token_recovery_tasks")["last_error_message"] {
+		t.Fatal("legacy token-recovery schema is missing last_error_message after migration")
 	}
 }
 

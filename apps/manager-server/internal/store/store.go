@@ -370,8 +370,8 @@ func (s *Store) CompleteTokenRecovery(ctx context.Context, id int64) (TokenRecov
 	return s.TokenRecoveries.Complete(ctx, id)
 }
 
-func (s *Store) FailTokenRecovery(ctx context.Context, id int64, errorCode string) (TokenRecoveryTask, error) {
-	return s.TokenRecoveries.Fail(ctx, id, errorCode)
+func (s *Store) FailTokenRecovery(ctx context.Context, id int64, errorCode string, errorMessage string) (TokenRecoveryTask, error) {
+	return s.TokenRecoveries.Fail(ctx, id, errorCode, errorMessage)
 }
 
 func (s *Store) FailRunningTokenRecoveriesOnStartup(ctx context.Context) (int64, error) {

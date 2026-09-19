@@ -24,19 +24,22 @@ type TokenRecoveryTarget struct {
 }
 
 // TokenRecoveryTask is the redacted durable task state allowed to leave the
-// Manager Server. ErrorCode is intentionally a short, non-sensitive category.
+// Manager Server. ErrorCode is intentionally a short, non-sensitive category;
+// LastErrorMessage is populated only from a bounded, structured external
+// TokenAcquisition failure reason.
 type TokenRecoveryTask struct {
-	ID             int64  `json:"id"`
-	FileName       string `json:"fileName"`
-	AuthIndex      string `json:"authIndex,omitempty"`
-	AccountEmail   string `json:"accountEmail,omitempty"`
-	Provider       string `json:"provider"`
-	Status         string `json:"status"`
-	Mode           string `json:"mode"`
-	LastErrorCode  string `json:"lastErrorCode,omitempty"`
-	LastSignalAtMS int64  `json:"lastSignalAtMs"`
-	StartedAtMS    int64  `json:"startedAtMs,omitempty"`
-	CompletedAtMS  int64  `json:"completedAtMs,omitempty"`
-	CreatedAtMS    int64  `json:"createdAtMs"`
-	UpdatedAtMS    int64  `json:"updatedAtMs"`
+	ID               int64  `json:"id"`
+	FileName         string `json:"fileName"`
+	AuthIndex        string `json:"authIndex,omitempty"`
+	AccountEmail     string `json:"accountEmail,omitempty"`
+	Provider         string `json:"provider"`
+	Status           string `json:"status"`
+	Mode             string `json:"mode"`
+	LastErrorCode    string `json:"lastErrorCode,omitempty"`
+	LastErrorMessage string `json:"lastErrorMessage,omitempty"`
+	LastSignalAtMS   int64  `json:"lastSignalAtMs"`
+	StartedAtMS      int64  `json:"startedAtMs,omitempty"`
+	CompletedAtMS    int64  `json:"completedAtMs,omitempty"`
+	CreatedAtMS      int64  `json:"createdAtMs"`
+	UpdatedAtMS      int64  `json:"updatedAtMs"`
 }

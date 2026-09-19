@@ -191,6 +191,7 @@ export interface AccountRow {
   authIndex: string;
   projectId: string;
   note?: string;
+  proxyUrl?: string;
   priority: number | null;
   createdAtMs: number | null;
   updatedAtMs: number | null;
@@ -279,6 +280,8 @@ const readProjectId = (file: AuthFileItem): string =>
   readString(
     file.projectId ?? file.project_id ?? file.geminiVirtualProject ?? file.gemini_virtual_project
   );
+
+const readProxyURL = (file: AuthFileItem): string => readString(file.proxy_url ?? file.proxyUrl);
 
 const readPlanType = (file: AuthFileItem): string | null => {
   return resolveAuthFilePlanType(file);
@@ -526,6 +529,7 @@ export const buildAccountRows = (
       authIndex,
       projectId: readProjectId(file),
       note: readString(file.note),
+      proxyUrl: readProxyURL(file),
       priority: readNumber(file.priority),
       createdAtMs: readAuthFileCreatedAtMs(file),
       updatedAtMs,

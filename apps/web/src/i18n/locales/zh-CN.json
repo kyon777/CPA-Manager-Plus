@@ -4188,6 +4188,7 @@
     "server_recovery_processing": "正在服务器内更新凭证…",
     "server_recovery_success": "服务器凭证更新成功",
     "server_recovery_failed_manual": "自动更新失败，可手动重试。",
+    "server_recovery_failed_manual_with_reason": "自动更新失败：{{reason}}。可手动重试。",
     "server_recovery_error": "服务器凭证更新暂时不可用。"
   },
   "plugin_management": {
@@ -4637,12 +4638,12 @@
       "未开启时不记录新异常",
       "已有的待处理异常仍可继续处理"
     ],
-    "serverErrorPriorityDemotion_title": "502/503降优先级",
-    "serverErrorPriorityDemotion_summary": "每个新入库的 HTTP 502 或 503 请求都会将匹配账号的当前优先级减 1，最低为 0。",
-    "serverErrorPriorityDemotion_toggle": "启用 HTTP 502/503 降优先级",
-    "serverErrorPriorityDemotion_description": "此策略只处理新入库的真实请求监控事件。它会重新确认匹配 JSON 账号，再将当前优先级减 1。",
+    "serverErrorPriorityDemotion_title": "502/503 / 限流429降优先级",
+    "serverErrorPriorityDemotion_summary": "每个新入库的 HTTP 502、503，或响应体 detail 为 Rate limit exceeded 的 HTTP 429 请求，都会将匹配账号的当前优先级减 1，最低为 0。",
+    "serverErrorPriorityDemotion_toggle": "启用 502/503 / 限流429 降优先级",
+    "serverErrorPriorityDemotion_description": "此策略只处理新入库的真实请求监控事件。HTTP 429 仅在响应体为 {\"detail\":\"Rate limit exceeded\"} 时触发；它会重新确认匹配 JSON 账号，再将当前优先级减 1。",
     "serverErrorPriorityDemotion_behavior": [
-      "仅处理新入库且唯一的 HTTP 502 或 503 请求事件；刷新页面或读取历史不会重复扣减",
+      "仅处理新入库且唯一的 HTTP 502、503，或响应体为 {\"detail\":\"Rate limit exceeded\"} 的 HTTP 429 请求事件；刷新页面或读取历史不会重复扣减",
       "先重新读取并验证匹配 JSON 账号，再按当前优先级减 1",
       "优先级已为 0、账号身份不明确或优先级不是整数时跳过，不会修改其他账号"
     ],

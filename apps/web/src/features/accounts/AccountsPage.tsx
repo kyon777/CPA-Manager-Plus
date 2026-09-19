@@ -9238,6 +9238,10 @@ export function AccountsPage() {
               const accountNoteLabel = accountNote
                 ? `${t('accounts.note_placeholder_empty')}: ${accountNote}`
                 : '';
+              const accountProxyURL = row.proxyUrl?.trim() ?? '';
+              const accountProxyURLLabel = accountProxyURL
+                ? `${t('auth_files.proxy_url')}: ${accountProxyURL}`
+                : '';
               return (
                 <article
                   key={row.selectionKey}
@@ -9310,14 +9314,30 @@ export function AccountsPage() {
                           </span>
                         ) : null}
                       </div>
-                      {accountNote ? (
-                        <span
-                          className={styles.accountCardNote}
-                          data-account-list-note={row.selectionKey}
-                          title={accountNoteLabel}
+                      {accountNote || accountProxyURL ? (
+                        <div
+                          className={styles.accountCardAnnotations}
+                          data-account-list-annotations={row.selectionKey}
                         >
-                          {accountNoteLabel}
-                        </span>
+                          {accountNote ? (
+                            <span
+                              className={styles.accountCardNote}
+                              data-account-list-note={row.selectionKey}
+                              title={accountNoteLabel}
+                            >
+                              {accountNoteLabel}
+                            </span>
+                          ) : null}
+                          {accountProxyURL ? (
+                            <span
+                              className={styles.accountCardProxyURL}
+                              data-account-list-proxy={row.selectionKey}
+                              title={accountProxyURLLabel}
+                            >
+                              {accountProxyURLLabel}
+                            </span>
+                          ) : null}
+                        </div>
                       ) : null}
                     </div>
                   </div>

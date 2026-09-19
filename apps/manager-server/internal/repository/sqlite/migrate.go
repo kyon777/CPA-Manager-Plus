@@ -719,6 +719,7 @@ func Migrate(db *sql.DB) error {
 			status text not null,
 			mode text not null,
 			last_error_code text,
+			last_error_message text,
 			last_signal_at_ms integer not null,
 			started_at_ms integer,
 			completed_at_ms integer,
@@ -968,6 +969,9 @@ func Migrate(db *sql.DB) error {
 	if err := ensureUsageEventSnapshotColumns(db); err != nil {
 		return err
 	}
+	if err := ensureTokenRecoveryTaskColumns(db); err != nil {
+		return err
+	}
 	if err := ensureCodexInspectionRunColumns(db); err != nil {
 		return err
 	}
@@ -1014,6 +1018,38 @@ func ensureLegacyQuotaSnapshotMigrationState(db *sql.DB) error {
 	) values (?, 'pending', 0, 0, 0, 0, 0)`, quotasnapshotrepo.LegacySnapshotMigrationName)
 	if err != nil {
 		return fmt.Errorf("initialize legacy quota snapshot migration state: %w", err)
+	}
+	return nil
+}
+
+func ensureTokenRecoveryTaskColumns(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(token_recovery_tasks)`)
+	if err != nil {
+		return err
+	}
+	existing := map[string]struct{}{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, ok := existing["last_error_message"]; ok {
+		return nil
+	}
+	if _, err := db.Exec(`alter table token_recovery_tasks add column last_error_message text`); err != nil {
+		return fmt.Errorf("add token_recovery_tasks.last_error_message: %w", err)
 	}
 	return nil
 }

@@ -14,12 +14,16 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
 	defaultPollInterval = 2 * time.Second
 	defaultTimeout      = 14*time.Minute + 30*time.Second
 	maxResponseBytes    = 1 << 20
+	maxFailureCodeBytes = 96
+	maxFailureTextBytes = 320
 )
 
 var (
@@ -46,6 +50,50 @@ type Result struct {
 	RefreshToken     string
 	IDToken          string
 	ChatGPTAccountID string
+}
+
+// ExternalFailure retains only the structured, user-actionable code/message
+// returned by TokenAcquisition. Its Error method deliberately returns the
+// underlying category only, so callers that log the error do not accidentally
+// log external response text, credentials, or proxy information.
+type ExternalFailure struct {
+	cause   error
+	code    string
+	message string
+}
+
+func (e *ExternalFailure) Error() string {
+	if e == nil || e.cause == nil {
+		return "token acquisition failed"
+	}
+	return e.cause.Error()
+}
+
+func (e *ExternalFailure) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// FailureReason returns a bounded, one-line reason that originated from a
+// structured TokenAcquisition response. It never returns an arbitrary raw
+// response body or a locally generated error string.
+func FailureReason(err error) string {
+	var failure *ExternalFailure
+	if !errors.As(err, &failure) || failure == nil {
+		return ""
+	}
+	code := sanitizeFailureCode(failure.code)
+	message := sanitizeFailureText(failure.message)
+	switch {
+	case code != "" && message != "":
+		return code + ": " + message
+	case message != "":
+		return message
+	default:
+		return code
+	}
 }
 
 type Acquirer interface {
@@ -161,7 +209,13 @@ type batchResponse struct {
 			IDToken          string `json:"id_token"`
 			ChatGPTAccountID string `json:"chatgpt_account_id"`
 		} `json:"result"`
+		Error *apiErrorDetail `json:"error"`
 	} `json:"jobs"`
+}
+
+type apiErrorDetail struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 func (c *Client) getBatch(ctx context.Context, batchID string) (batchResponse, error) {
@@ -203,14 +257,19 @@ func (c *Client) doJSON(ctx context.Context, method, path string, payload any, o
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusConflict {
-		return ErrConflict
-	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("%w: status %d", ErrRequestFailed, resp.StatusCode)
+		failureCause := fmt.Errorf("%w: status %d", ErrRequestFailed, resp.StatusCode)
+		if resp.StatusCode == http.StatusConflict {
+			failureCause = ErrConflict
+		}
+		responseBody, readErr := readResponseBody(resp.Body)
+		if readErr != nil {
+			return failureCause
+		}
+		return newExternalFailure(failureCause, parseAPIErrorDetail(responseBody))
 	}
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil || len(responseBody) > maxResponseBytes {
+	responseBody, err := readResponseBody(resp.Body)
+	if err != nil {
 		return ErrInvalidResult
 	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
@@ -234,7 +293,7 @@ func resultFromBatch(batch batchResponse, expectedEmail string) (Result, error) 
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(job.Status), "error") {
-			return Result{}, ErrJobFailed
+			return Result{}, newExternalFailure(ErrJobFailed, apiErrorDetailFromPointer(job.Error))
 		}
 		if !strings.EqualFold(strings.TrimSpace(job.Status), "ok") || job.Result == nil {
 			return Result{}, ErrInvalidResult
@@ -255,6 +314,127 @@ func resultFromBatch(batch batchResponse, expectedEmail string) (Result, error) 
 		return result, nil
 	}
 	return Result{}, ErrInvalidResult
+}
+
+func readResponseBody(body io.Reader) ([]byte, error) {
+	responseBody, err := io.ReadAll(io.LimitReader(body, maxResponseBytes+1))
+	if err != nil || len(responseBody) > maxResponseBytes {
+		return nil, ErrInvalidResult
+	}
+	return responseBody, nil
+}
+
+func parseAPIErrorDetail(body []byte) apiErrorDetail {
+	var envelope struct {
+		Detail json.RawMessage `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Detail) == 0 {
+		return apiErrorDetail{}
+	}
+	var detail apiErrorDetail
+	if err := json.Unmarshal(envelope.Detail, &detail); err == nil {
+		return detail
+	}
+	var message string
+	if err := json.Unmarshal(envelope.Detail, &message); err == nil {
+		return apiErrorDetail{Message: message}
+	}
+	return apiErrorDetail{}
+}
+
+func apiErrorDetailFromPointer(detail *apiErrorDetail) apiErrorDetail {
+	if detail == nil {
+		return apiErrorDetail{}
+	}
+	return *detail
+}
+
+func newExternalFailure(cause error, detail apiErrorDetail) error {
+	code := sanitizeFailureCode(detail.Code)
+	message := sanitizeFailureText(detail.Message)
+	if code == "" && message == "" {
+		return cause
+	}
+	return &ExternalFailure{cause: cause, code: code, message: message}
+}
+
+func sanitizeFailureCode(value string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
+		if unicode.IsLower(r) || unicode.IsDigit(r) || r == '_' || r == '-' {
+			if builder.Len()+utf8.RuneLen(r) > maxFailureCodeBytes {
+				break
+			}
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+func sanitizeFailureText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var builder strings.Builder
+	pendingSpace := false
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			pendingSpace = builder.Len() > 0
+			continue
+		}
+		if pendingSpace {
+			if builder.Len()+1 > maxFailureTextBytes {
+				break
+			}
+			builder.WriteByte(' ')
+			pendingSpace = false
+		}
+		if builder.Len()+utf8.RuneLen(r) > maxFailureTextBytes {
+			break
+		}
+		builder.WriteRune(r)
+	}
+	message := strings.TrimSpace(builder.String())
+	if hasSensitiveFailureText(message) {
+		// Keep the structured error code but suppress an unsafe message. This
+		// value is stored in SQLite and returned to the browser, so it must not
+		// become a second channel for tokens, cookies, API keys, or proxy
+		// credentials returned by an upstream implementation.
+		return ""
+	}
+	return message
+}
+
+func hasSensitiveFailureText(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"://",
+		"access_token",
+		"access-token",
+		"access token",
+		"refresh_token",
+		"refresh-token",
+		"refresh token",
+		"id_token",
+		"id-token",
+		"id token",
+		"api_key",
+		"api-key",
+		"api key",
+		"authorization",
+		"bearer ",
+		"cookie",
+		"password",
+		"secret",
+		"token=",
+		"token:",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func wait(ctx context.Context, duration time.Duration) error {

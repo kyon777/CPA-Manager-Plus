@@ -730,6 +730,7 @@ export function CodexReauthDialog({
   const tokenRecoveryFailedManualOnly = Boolean(
     tokenRecoveryTask && TOKEN_RECOVERY_MANUAL_ONLY_FAILURE_STATUSES.has(tokenRecoveryTask.status)
   );
+  const tokenRecoveryFailureReason = tokenRecoveryTask?.lastErrorMessage?.trim() ?? '';
   const tokenRecoveryStatusNode = (() => {
     if (tokenRecoveryError) {
       return <div className={`${styles.status} ${styles.statusError}`}>{tokenRecoveryError}</div>;
@@ -751,7 +752,11 @@ export function CodexReauthDialog({
     if (tokenRecoveryFailedManualOnly) {
       return (
         <div className={`${styles.status} ${styles.statusError}`}>
-          {t('codex_reauth.server_recovery_failed_manual')}
+          {tokenRecoveryFailureReason
+            ? t('codex_reauth.server_recovery_failed_manual_with_reason', {
+                reason: tokenRecoveryFailureReason,
+              })
+            : t('codex_reauth.server_recovery_failed_manual')}
         </div>
       );
     }
