@@ -76,13 +76,13 @@ export function AuthJsonPasteModal({
   onSave,
 }: AuthJsonPasteModalProps) {
   const { t } = useTranslation();
-  const [type, setType] = useState<AuthJsonInputType>('session');
+  const [type, setType] = useState<AuthJsonInputType>('cpa');
   const [fileName, setFileName] = useState(DEFAULT_FILE_NAME);
   const [jsonText, setJsonText] = useState('');
   const [error, setError] = useState('');
 
   const resetForm = () => {
-    setType('session');
+    setType('cpa');
     setFileName(DEFAULT_FILE_NAME);
     setJsonText('');
     setError('');

@@ -111,6 +111,13 @@ describe('AuthJsonPasteModal', () => {
     modal.renderer.unmount();
   });
 
+  it('defaults to CPA authentication JSON', () => {
+    const modal = mountModal(vi.fn().mockResolvedValue(undefined));
+    const select = modal.renderer.root.findByType(Select);
+    expect(select.props.value).toBe('cpa');
+    modal.renderer.unmount();
+  });
+
   it.each([
     'CON.json',
     'CON.codex.json',

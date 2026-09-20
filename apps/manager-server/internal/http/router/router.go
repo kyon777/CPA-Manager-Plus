@@ -17,6 +17,7 @@ import (
 	monitoringcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/monitoring"
 	panelcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/panel"
 	proxycontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/proxy"
+	proxyfiltercontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/proxyfilter"
 	quotacooldowncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/quotacooldown"
 	quotasnapshotcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/quotasnapshot"
 	setupcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/setup"
@@ -46,6 +47,7 @@ func New(appCtx *app.Context) http.Handler {
 	monitoringHandler := &monitoringcontroller.Handler{App: appCtx}
 	quotaSnapshotHandler := &quotasnapshotcontroller.Handler{App: appCtx}
 	proxyHandler := &proxycontroller.Handler{App: appCtx}
+	proxyFilterHandler := &proxyfiltercontroller.Handler{App: appCtx}
 	panelHandler := &panelcontroller.Handler{App: appCtx}
 
 	mux := http.NewServeMux()
@@ -58,6 +60,7 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/usage-service/config", middleware.WithCORS(appCtx.Config, managerConfigHandler.Handle))
 	mux.HandleFunc("/usage-service/account-processing-policy", middleware.WithCORS(appCtx.Config, automationHandler.Handle))
 	mux.HandleFunc("/usage-service/quota-cooldowns", middleware.WithCORS(appCtx.Config, quotaCooldownHandler.Handle))
+	mux.HandleFunc("/usage-service/proxy-filter", middleware.WithCORS(appCtx.Config, proxyFilterHandler.Handle))
 	mux.HandleFunc("/setup", middleware.WithCORS(appCtx.Config, setupHandler.Setup))
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
 	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, managerConfigHandler, proxyHandler))

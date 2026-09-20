@@ -1,0 +1,93 @@
+@use '../../../styles/variables' as *;
+@use '../../../styles/mixins' as *;
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.label {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.textarea,
+.resultTextarea {
+  width: 100%;
+  min-height: 190px;
+  resize: vertical;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: $spacing-sm $spacing-md;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+
+  &:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 15%, transparent);
+  }
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-md;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.loading {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.error {
+  border: 1px solid var(--danger-color);
+  border-radius: $radius-sm;
+  background: color-mix(in srgb, var(--danger-color) 9%, transparent);
+  color: var(--danger-color);
+  padding: $spacing-sm $spacing-md;
+  font-size: 13px;
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+  margin-top: $spacing-xs;
+  padding-top: $spacing-md;
+  border-top: 1px solid var(--border-color);
+}
+
+.resultHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-sm;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.resultTextarea {
+  min-height: 130px;
+}
+
+@include mobile {
+  .textarea {
+    min-height: 150px;
+  }
+}

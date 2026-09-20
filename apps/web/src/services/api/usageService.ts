@@ -276,6 +276,11 @@ export interface ManagerConfigResponse {
   cpaUsage?: CPAUsageConfig;
 }
 
+export interface ProxyFilterSettingsResponse {
+  urls: string[];
+  updatedAtMs?: number;
+}
+
 export interface CodexInspectionRun {
   id: number;
   triggerType: string;
@@ -2791,6 +2796,48 @@ export const usageServiceApi = {
       const response = await axios.put<ManagerConfigResponse>(
         buildUrl(base, '/usage-service/config'),
         { config },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  getProxyFilterSettings: async (
+    base: string,
+    managementKey?: string
+  ): Promise<ProxyFilterSettingsResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { urls: [] };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<ProxyFilterSettingsResponse>(
+        buildUrl(base, '/usage-service/proxy-filter'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  saveProxyFilterSettings: async (
+    base: string,
+    urls: string[],
+    managementKey?: string
+  ): Promise<ProxyFilterSettingsResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { urls: [...urls] };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.put<ProxyFilterSettingsResponse>(
+        buildUrl(base, '/usage-service/proxy-filter'),
+        { urls },
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),

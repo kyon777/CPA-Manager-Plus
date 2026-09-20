@@ -60,6 +60,7 @@ type AccountActionCandidateUpsert = model.AccountActionCandidateUpsert
 type TokenRecoveryTarget = model.TokenRecoveryTarget
 type TokenRecoveryTask = model.TokenRecoveryTask
 type AutomationSettings = model.AutomationSettings
+type ProxyFilterSettings = model.ProxyFilterSettings
 type DataMigrationState = datamigration.State
 type DataMigrationBatchResult = datamigration.BatchResult
 
@@ -248,6 +249,14 @@ func (s *Store) SaveAutomationSettings(ctx context.Context, settings AutomationS
 
 func (s *Store) LoadAutomationSettings(ctx context.Context) (AutomationSettings, bool, error) {
 	return s.Settings.LoadAutomationSettings(ctx)
+}
+
+func (s *Store) SaveProxyFilterSettings(ctx context.Context, settings ProxyFilterSettings) (ProxyFilterSettings, error) {
+	return s.Settings.SaveProxyFilterSettings(ctx, settings)
+}
+
+func (s *Store) LoadProxyFilterSettings(ctx context.Context) (ProxyFilterSettings, bool, error) {
+	return s.Settings.LoadProxyFilterSettings(ctx)
 }
 
 func (s *Store) SaveAdminCredential(ctx context.Context, credential AdminCredential) error {

@@ -31,6 +31,7 @@ import {
   IconEye,
   IconEyeOff,
   IconFileText,
+  IconFilter,
   IconKey,
   IconMoreVertical,
   IconModelCluster,
@@ -86,6 +87,7 @@ import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderS
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
 import { AuthJsonPasteModal } from '@/features/authFiles/components/AuthJsonPasteModal';
+import { ProxyFilterModal } from '@/features/accounts/components/ProxyFilterModal';
 import { OAuthExcludedCard } from '@/features/authFiles/components/OAuthExcludedCard';
 import {
   OAuthExcludedEditorModal,
@@ -1534,6 +1536,12 @@ export function AccountsPage() {
   );
   const oauthEditorConnectionFingerprintRef = useRef(connectionFingerprint);
   const [authJsonPasteOpen, setAuthJsonPasteOpen] = useState(false);
+  const [proxyFilterOpen, setProxyFilterOpen] = useState(false);
+  const [proxyFilterSessionID, setProxyFilterSessionID] = useState(0);
+  const [proxyFilterURLs, setProxyFilterURLs] = useState<string[]>([]);
+  const [proxyFilterLoading, setProxyFilterLoading] = useState(false);
+  const [proxyFilterSaving, setProxyFilterSaving] = useState(false);
+  const [proxyFilterError, setProxyFilterError] = useState('');
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const codexReauthBaselineRef = useRef<AccountDirectReauthBaseline | null>(null);
   const inspectionCodexReauthBaselineRef = useRef<{
@@ -1767,6 +1775,9 @@ export function AccountsPage() {
     setOauthExcludedEditorProvider(null);
     setOauthModelAliasEditorProvider(null);
     setAuthJsonPasteOpen(false);
+    setProxyFilterOpen(false);
+    setProxyFilterURLs([]);
+    setProxyFilterError('');
     setCodexReauthTarget(null);
     codexReauthBaselineRef.current = null;
     inspectionCodexReauthBaselineRef.current = null;
@@ -2444,6 +2455,66 @@ export function AccountsPage() {
       setAuthJsonPasteOpen(false);
     },
     [connectionFingerprint, savePastedAuthJson]
+  );
+
+  const openProxyFilter = useCallback(async () => {
+    if (!managerRequestScope) {
+      showNotification(t('accounts.proxy_filter_unavailable'), 'error');
+      return;
+    }
+    setProxyFilterSessionID((current) => current + 1);
+    setProxyFilterOpen(true);
+    setProxyFilterLoading(true);
+    setProxyFilterURLs([]);
+    setProxyFilterError('');
+    try {
+      const response = await usageServiceApi.getProxyFilterSettings(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey
+      );
+      setProxyFilterURLs(Array.isArray(response.urls) ? response.urls : []);
+    } catch (error) {
+      setProxyFilterError(
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : t('notification.load_failed')
+      );
+    } finally {
+      setProxyFilterLoading(false);
+    }
+  }, [managerRequestScope, showNotification, t]);
+
+  const saveProxyFilterURLs = useCallback(
+    async (urls: string[]): Promise<string[]> => {
+      if (!managerRequestScope) {
+        const message = t('accounts.proxy_filter_unavailable');
+        setProxyFilterError(message);
+        throw new Error(message);
+      }
+      setProxyFilterSaving(true);
+      setProxyFilterError('');
+      try {
+        const response = await usageServiceApi.saveProxyFilterSettings(
+          managerRequestScope.apiBase,
+          urls,
+          managerRequestScope.managementKey
+        );
+        const saved = Array.isArray(response.urls) ? response.urls : [];
+        setProxyFilterURLs(saved);
+        showNotification(t('accounts.proxy_filter_saved', { count: saved.length }), 'success');
+        return saved;
+      } catch (error) {
+        const message =
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : t('notification.save_failed');
+        setProxyFilterError(message);
+        throw error;
+      } finally {
+        setProxyFilterSaving(false);
+      }
+    },
+    [managerRequestScope, showNotification, t]
   );
 
   const credentialFileNameCounts = useMemo(
@@ -8012,6 +8083,20 @@ export function AccountsPage() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => void openProxyFilter()}
+              disabled={disableControls || !managerStorageAvailable}
+              title={
+                managerStorageAvailable ? undefined : t('accounts.proxy_filter_unavailable')
+              }
+            >
+              <IconFilter size={15} />
+              {t('accounts.proxy_filter_button')}
+            </Button>
+          ) : null}
+          {!hasSelection && !isSelectionMode ? (
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => void queuePageTokenRecovery(pageRecoveryCandidates)}
               disabled={
                 disableControls ||
@@ -10436,6 +10521,29 @@ export function AccountsPage() {
           if (!authJsonPasteSaving) setAuthJsonPasteOpen(false);
         }}
         onSave={handleSavePastedAuthJson}
+      />
+      <ProxyFilterModal
+        open={proxyFilterOpen}
+        sessionID={proxyFilterSessionID}
+        files={files}
+        credentialsLoading={loading}
+        loading={proxyFilterLoading}
+        saving={proxyFilterSaving}
+        savedURLs={proxyFilterURLs}
+        error={proxyFilterError}
+        onClose={() => {
+          if (!proxyFilterLoading && !proxyFilterSaving) setProxyFilterOpen(false);
+        }}
+        onSave={saveProxyFilterURLs}
+        onCopy={async (text) => {
+          const copied = await copyToClipboard(text);
+          showNotification(
+            copied
+              ? t('accounts.proxy_filter_copied')
+              : t('notification.copy_failed', { defaultValue: 'Copy failed' }),
+            copied ? 'success' : 'error'
+          );
+        }}
       />
       <OAuthExcludedEditorModal
         open={oauthExcludedEditorProvider !== null}

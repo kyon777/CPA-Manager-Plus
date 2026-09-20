@@ -14,6 +14,7 @@ import (
 
 const managerConfigKey = "manager_config_v1"
 const automationSettingsKey = "automation_settings_v1"
+const proxyFilterSettingsKey = "proxy_filter_settings_v1"
 const adminCredentialKey = "admin_credential_v1"
 const bootstrapStateKey = "bootstrap_state_v1"
 
@@ -24,6 +25,8 @@ type Repository interface {
 	LoadManagerConfig(ctx context.Context) (model.ManagerConfig, bool, error)
 	SaveAutomationSettings(ctx context.Context, settings model.AutomationSettings) (model.AutomationSettings, error)
 	LoadAutomationSettings(ctx context.Context) (model.AutomationSettings, bool, error)
+	SaveProxyFilterSettings(ctx context.Context, settings model.ProxyFilterSettings) (model.ProxyFilterSettings, error)
+	LoadProxyFilterSettings(ctx context.Context) (model.ProxyFilterSettings, bool, error)
 	SaveSetup(ctx context.Context, setup model.Setup) error
 	LoadSetup(ctx context.Context) (model.Setup, bool, error)
 	SaveAdminCredential(ctx context.Context, credential model.AdminCredential) error
@@ -224,6 +227,33 @@ func (r *repository) marshalManagerConfig(cfg model.ManagerConfig) ([]byte, erro
 	return json.Marshal(protected)
 }
 
+func (r *repository) marshalProxyFilterSettings(settings model.ProxyFilterSettings) ([]byte, error) {
+	data, err := json.Marshal(settings)
+	if err != nil || r.protector == nil {
+		return data, err
+	}
+	protected, err := r.protector.ProtectString(string(data))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(protected), nil
+}
+
+func (r *repository) unmarshalProxyFilterSettings(raw string) (model.ProxyFilterSettings, error) {
+	if r.protector != nil {
+		plaintext, err := r.protector.UnprotectString(raw)
+		if err != nil {
+			return model.ProxyFilterSettings{}, err
+		}
+		raw = plaintext
+	}
+	var settings model.ProxyFilterSettings
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return model.ProxyFilterSettings{}, err
+	}
+	return settings, nil
+}
+
 func (r *repository) LoadManagerConfig(ctx context.Context) (model.ManagerConfig, bool, error) {
 	var raw string
 	err := r.db.QueryRowContext(ctx, `select value from settings where key = ?`, managerConfigKey).Scan(&raw)
@@ -278,6 +308,45 @@ func (r *repository) LoadAutomationSettings(ctx context.Context) (model.Automati
 	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
 		return model.AutomationSettings{}, false, err
 	}
+	return settings, true, nil
+}
+
+func (r *repository) SaveProxyFilterSettings(ctx context.Context, settings model.ProxyFilterSettings) (model.ProxyFilterSettings, error) {
+	settings.URLs = model.NormalizeProxyFilterURLs(settings.URLs)
+	settings.UpdatedAtMS = time.Now().UnixMilli()
+	data, err := r.marshalProxyFilterSettings(settings)
+	if err != nil {
+		return model.ProxyFilterSettings{}, err
+	}
+	_, err = r.db.ExecContext(
+		ctx,
+		`insert into settings(key, value, updated_at_ms)
+		 values(?, ?, ?)
+		 on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
+		proxyFilterSettingsKey,
+		string(data),
+		settings.UpdatedAtMS,
+	)
+	if err != nil {
+		return model.ProxyFilterSettings{}, err
+	}
+	return settings, nil
+}
+
+func (r *repository) LoadProxyFilterSettings(ctx context.Context) (model.ProxyFilterSettings, bool, error) {
+	var raw string
+	err := r.db.QueryRowContext(ctx, `select value from settings where key = ?`, proxyFilterSettingsKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ProxyFilterSettings{URLs: []string{}}, false, nil
+	}
+	if err != nil {
+		return model.ProxyFilterSettings{}, false, err
+	}
+	settings, err := r.unmarshalProxyFilterSettings(raw)
+	if err != nil {
+		return model.ProxyFilterSettings{}, false, err
+	}
+	settings.URLs = model.NormalizeProxyFilterURLs(settings.URLs)
 	return settings, true, nil
 }
 
