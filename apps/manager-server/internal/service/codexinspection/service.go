@@ -249,6 +249,14 @@ type codexRateLimit struct {
 	SecondaryWindow *codexWindow
 }
 
+type codexCredits struct {
+	HasCredits          bool
+	Unlimited           bool
+	Balance             *float64
+	OverageLimitReached bool
+	SpendControlReached bool
+}
+
 type codexWindow struct {
 	UsedPercent        *float64
 	LimitWindowSeconds *float64
@@ -1856,6 +1864,7 @@ func (s *Service) inspectSingleAccount(
 		planType = resolveCodexPlanType(item.File)
 	}
 	rateLimit := parseRateLimit(readMap(payload, "rate_limit", "rateLimit"))
+	credits := parseCodexCredits(payload)
 	usedPercent := deriveRateLimitUsedPercent(rateLimit)
 	bodyLower := strings.ToLower(response.BodyText)
 	isQuota := statusCode == http.StatusPaymentRequired ||
@@ -1864,7 +1873,7 @@ func (s *Service) inspectSingleAccount(
 		strings.Contains(bodyLower, "payment_required") ||
 		isRateLimitReached(rateLimit) ||
 		(usedPercent != nil && *usedPercent >= settings.UsedPercentThreshold)
-	decision := resolveProbeAction(item, statusCode, response.BodyText, rateLimit, usedPercent, isQuota, settings.UsedPercentThreshold, planType)
+	decision := resolveProbeActionWithCredits(item, statusCode, response.BodyText, rateLimit, credits, usedPercent, isQuota, settings.UsedPercentThreshold, planType)
 
 	base.Action = decision.Action
 	base.ActionReason = decision.ActionReason
@@ -2898,6 +2907,10 @@ func (l runLogger) log(ctx context.Context, level string, message string, detail
 }
 
 func resolveProbeAction(item account, statusCode int, bodyText string, rateLimit *codexRateLimit, usedPercent *float64, isQuota bool, threshold float64, planTypes ...string) inspectionDecision {
+	return resolveProbeActionWithCredits(item, statusCode, bodyText, rateLimit, nil, usedPercent, isQuota, threshold, planTypes...)
+}
+
+func resolveProbeActionWithCredits(item account, statusCode int, bodyText string, rateLimit *codexRateLimit, credits *codexCredits, usedPercent *float64, isQuota bool, threshold float64, planTypes ...string) inspectionDecision {
 	if isDeactivatedWorkspaceResponse(statusCode, bodyText) {
 		return resolveDeactivatedWorkspaceProbeAction(usedPercent)
 	}
@@ -2905,7 +2918,7 @@ func resolveProbeAction(item account, statusCode int, bodyText string, rateLimit
 	if len(planTypes) > 0 {
 		planType = planTypes[0]
 	}
-	if decision := resolveWindowAwareProbeAction(item, statusCode, bodyText, rateLimit, threshold, planType); decision != nil {
+	if decision := resolveWindowAwareProbeAction(item, statusCode, bodyText, rateLimit, credits, threshold, planType); decision != nil {
 		return *decision
 	}
 	return resolveLegacyProbeAction(item, statusCode, bodyText, usedPercent, isQuota, threshold)
@@ -2925,7 +2938,7 @@ func resolveDeactivatedWorkspaceProbeAction(usedPercent *float64) inspectionDeci
 	}
 }
 
-func resolveWindowAwareProbeAction(item account, statusCode int, bodyText string, rateLimit *codexRateLimit, threshold float64, planType string) *inspectionDecision {
+func resolveWindowAwareProbeAction(item account, statusCode int, bodyText string, rateLimit *codexRateLimit, credits *codexCredits, threshold float64, planType string) *inspectionDecision {
 	if rateLimit == nil {
 		return nil
 	}
@@ -2944,12 +2957,13 @@ func resolveWindowAwareProbeAction(item account, statusCode int, bodyText string
 	longWindowLabel := classified.longWindowLabel(longWindow)
 	fiveHour := classified.FiveHour
 	fiveHourOverThreshold := fiveHour != nil && fiveHour.UsedPercent != nil && *fiveHour.UsedPercent >= threshold
+	creditsUsable := hasUsableCodexCredits(credits)
 
 	if statusCode == http.StatusUnauthorized {
 		decision := resolveUnauthorizedProbeAction(bodyText, ptrFloat(longWindowUsedPercent))
 		return &decision
 	}
-	if longWindowUsedPercent >= threshold {
+	if longWindowUsedPercent >= threshold && !creditsUsable {
 		if item.Disabled {
 			return &inspectionDecision{
 				Action:       "keep",
@@ -2967,11 +2981,27 @@ func resolveWindowAwareProbeAction(item account, statusCode int, bodyText string
 	}
 	if item.Disabled {
 		if fiveHourOverThreshold {
+			if creditsUsable {
+				return &inspectionDecision{
+					Action:       "keep",
+					ActionReason: "5 小时额度仍达到阈值，Credits 可用但继续保持禁用",
+					UsedPercent:  ptrFloat(longWindowUsedPercent),
+					IsQuota:      true,
+				}
+			}
 			return &inspectionDecision{
 				Action:       "keep",
 				ActionReason: fmt.Sprintf("5 小时额度仍达到阈值，%s可用但继续保持禁用", longWindowLabel),
 				UsedPercent:  ptrFloat(longWindowUsedPercent),
 				IsQuota:      true,
+			}
+		}
+		if longWindowUsedPercent >= threshold && creditsUsable {
+			return &inspectionDecision{
+				Action:       "enable",
+				ActionReason: fmt.Sprintf("%s达到阈值，但 Credits 可用，建议启用账号", longWindowLabel),
+				UsedPercent:  ptrFloat(longWindowUsedPercent),
+				IsQuota:      false,
 			}
 		}
 		reason := fmt.Sprintf("%s仍可用，建议立即启用账号", longWindowLabel)
@@ -2983,9 +3013,25 @@ func resolveWindowAwareProbeAction(item account, statusCode int, bodyText string
 		}
 	}
 	if fiveHourOverThreshold {
+		if creditsUsable {
+			return &inspectionDecision{
+				Action:       "keep",
+				ActionReason: "5 小时额度达到阈值，Credits 可用但暂不处理账号",
+				UsedPercent:  ptrFloat(longWindowUsedPercent),
+				IsQuota:      true,
+			}
+		}
 		return &inspectionDecision{
 			Action:       "keep",
 			ActionReason: fmt.Sprintf("5 小时额度达到阈值，但%s仍可用，暂不禁用账号", longWindowLabel),
+			UsedPercent:  ptrFloat(longWindowUsedPercent),
+			IsQuota:      false,
+		}
+	}
+	if longWindowUsedPercent >= threshold && creditsUsable {
+		return &inspectionDecision{
+			Action:       "keep",
+			ActionReason: fmt.Sprintf("%s达到阈值，但 Credits 可用，无需处理", longWindowLabel),
 			UsedPercent:  ptrFloat(longWindowUsedPercent),
 			IsQuota:      false,
 		}
@@ -4473,6 +4519,51 @@ func parseRateLimit(raw map[string]any) *codexRateLimit {
 	}
 	limit.LimitReached = readBool(raw, "limit_reached", "limitReached")
 	return limit
+}
+
+func parseCodexCredits(payload map[string]any) *codexCredits {
+	raw := readMap(payload, "credits")
+	spendControl := readMap(payload, "spend_control", "spendControl")
+	if raw == nil && spendControl == nil {
+		return nil
+	}
+	credits := &codexCredits{
+		HasCredits:          readBool(raw, "has_credits", "hasCredits"),
+		Unlimited:           readBool(raw, "unlimited"),
+		OverageLimitReached: readBool(raw, "overage_limit_reached", "overageLimitReached"),
+		SpendControlReached: readBool(spendControl, "reached") || readBool(payload, "spend_control_reached", "spendControlReached"),
+	}
+	if balance, ok := readCodexCreditBalance(raw); ok {
+		credits.Balance = balance
+	}
+	return credits
+}
+
+func readCodexCreditBalance(raw map[string]any) (*float64, bool) {
+	value, ok := firstValue(raw, "balance")
+	if !ok || value == nil {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case float64:
+		return &typed, true
+	case int:
+		balance := float64(typed)
+		return &balance, true
+	case string:
+		balance, err := strconvParseFloat(strings.ReplaceAll(typed, ",", ""))
+		if err == nil {
+			return &balance, true
+		}
+	}
+	return nil, false
+}
+
+func hasUsableCodexCredits(credits *codexCredits) bool {
+	if credits == nil || credits.OverageLimitReached || credits.SpendControlReached {
+		return false
+	}
+	return credits.Unlimited || credits.HasCredits || (credits.Balance != nil && *credits.Balance > 0)
 }
 
 func parseWindow(raw map[string]any) *codexWindow {

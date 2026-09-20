@@ -3955,6 +3955,111 @@ func TestResolveProbeActionUsesMonthlyWindowAsLongQuota(t *testing.T) {
 		}
 	})
 
+	t.Run("enables disabled account when exhausted monthly or weekly quota has usable credits", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name   string
+			window float64
+			body   string
+			reason string
+		}{
+			{name: "monthly balance", window: codexMonthWindow, body: `{"credits":{"balance":"12"}}`, reason: "月额度达到阈值，但 Credits 可用，建议启用账号"},
+			{name: "weekly credit flag", window: codexWeekWindow, body: `{"credits":{"has_credits":true}}`, reason: "周额度达到阈值，但 Credits 可用，建议启用账号"},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				disabledItem := item
+				disabledItem.Disabled = true
+				rateLimit := &codexRateLimit{
+					PrimaryWindow: &codexWindow{
+						UsedPercent:        ptrFloat(100),
+						LimitWindowSeconds: ptrFloat(testCase.window),
+					},
+				}
+				decision := resolveProbeActionWithCredits(
+					disabledItem,
+					http.StatusOK,
+					testCase.body,
+					rateLimit,
+					parseCodexCredits(parseRecord(testCase.body)),
+					deriveRateLimitUsedPercent(rateLimit),
+					true,
+					threshold,
+				)
+
+				if decision.Action != "enable" ||
+					decision.ActionReason != testCase.reason ||
+					decision.UsedPercent == nil ||
+					*decision.UsedPercent != 100 ||
+					decision.IsQuota {
+					t.Fatalf("decision = %#v, want enable with usable credits", decision)
+				}
+			})
+		}
+	})
+
+	t.Run("keeps disabled account when five hour quota is exhausted despite usable credits", func(t *testing.T) {
+		disabledItem := item
+		disabledItem.Disabled = true
+		rateLimit := &codexRateLimit{
+			PrimaryWindow: &codexWindow{
+				UsedPercent:        ptrFloat(100),
+				LimitWindowSeconds: ptrFloat(codexFiveHourWindow),
+			},
+			SecondaryWindow: &codexWindow{
+				UsedPercent:        ptrFloat(100),
+				LimitWindowSeconds: ptrFloat(codexWeekWindow),
+			},
+		}
+		payload := parseRecord(`{"credits":{"has_credits":true}}`)
+		decision := resolveProbeActionWithCredits(
+			disabledItem,
+			http.StatusOK,
+			`{"credits":{"has_credits":true}}`,
+			rateLimit,
+			parseCodexCredits(payload),
+			deriveRateLimitUsedPercent(rateLimit),
+			true,
+			threshold,
+		)
+
+		if decision.Action != "keep" ||
+			decision.ActionReason != "5 小时额度仍达到阈值，Credits 可用但继续保持禁用" ||
+			decision.UsedPercent == nil ||
+			*decision.UsedPercent != 100 ||
+			!decision.IsQuota {
+			t.Fatalf("decision = %#v, want keep while five hour quota is exhausted", decision)
+		}
+	})
+
+	t.Run("does not use credits blocked by overage or spend control", func(t *testing.T) {
+		for _, body := range []string{
+			`{"credits":{"has_credits":true,"overage_limit_reached":true}}`,
+			`{"credits":{"balance":"12"},"spend_control":{"reached":true}}`,
+		} {
+			disabledItem := item
+			disabledItem.Disabled = true
+			rateLimit := &codexRateLimit{
+				PrimaryWindow: &codexWindow{
+					UsedPercent:        ptrFloat(100),
+					LimitWindowSeconds: ptrFloat(codexMonthWindow),
+				},
+			}
+			decision := resolveProbeActionWithCredits(
+				disabledItem,
+				http.StatusOK,
+				body,
+				rateLimit,
+				parseCodexCredits(parseRecord(body)),
+				deriveRateLimitUsedPercent(rateLimit),
+				true,
+				threshold,
+			)
+
+			if decision.Action != "keep" || decision.IsQuota != true {
+				t.Fatalf("decision = %#v, want blocked credits to keep quota-disabled account", decision)
+			}
+		}
+	})
+
 	t.Run("keeps exhausted short window with healthy monthly quota", func(t *testing.T) {
 		rateLimit := &codexRateLimit{
 			PrimaryWindow: &codexWindow{
