@@ -4707,12 +4707,12 @@
       "Existing pending issues can still be processed"
     ],
     "serverErrorPriorityDemotion_title": "Lower Priority on 502/503 or Rate-limit 429",
-    "serverErrorPriorityDemotion_summary": "Each newly stored HTTP 502, 503, or HTTP 429 whose response detail is Rate limit exceeded lowers the matching credential's current priority by 1, never below 0.",
+    "serverErrorPriorityDemotion_summary": "Each newly stored HTTP 502, 503, or HTTP 429 whose response detail is Rate limit exceeded rebalances the matching credential priority. If it is above the highest eligible peer of the same provider, it moves directly one step below that peer, never below 0.",
     "serverErrorPriorityDemotion_toggle": "Enable 502/503 and rate-limit 429 priority demotion",
-    "serverErrorPriorityDemotion_description": "This policy handles only newly stored real request-monitoring events. HTTP 429 triggers only for {\"detail\":\"Rate limit exceeded\"}; it re-verifies the matching JSON credential, then lowers its current priority by 1.",
+    "serverErrorPriorityDemotion_description": "This policy handles only newly stored real request-monitoring events. HTTP 429 triggers only for {\"detail\":\"Rate limit exceeded\"}; it re-verifies the matching JSON credential, compares enabled peers of the same provider, then demotes it.",
     "serverErrorPriorityDemotion_behavior": [
       "Handles only new, unique HTTP 502, 503, or HTTP 429 events with {\"detail\":\"Rate limit exceeded\"}; page refreshes and historical reads do not lower priority again",
-      "Re-reads and verifies the matching JSON credential before lowering its current priority by 1",
+      "Re-reads and verifies the matching JSON credential, then compares enabled peers of the same provider; if the target is higher, it moves to one below the peer maximum, otherwise it decreases by 1",
       "Skips priority 0, ambiguous identities, and non-integer priority values without changing another credential"
     ],
     "authIssueAutoDisable_title": "Auto-Disable Problem Auth Files",
