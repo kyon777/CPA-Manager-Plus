@@ -7154,9 +7154,9 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
           },
         },
         credits: {
-          has_credits: true,
+          has_credits: !isCodexPro20x,
           unlimited: false,
-          balance: isCodexPro20x ? 42.6 : 18.4,
+          balance: isCodexPro20x ? 0 : 18.4,
         },
         rate_limit_reset_credits: {
           available_count: isCodexPro20x ? 3 : isCodexRecovered ? 1 : 2,

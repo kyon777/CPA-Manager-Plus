@@ -22,6 +22,10 @@ import {
 } from '@/utils/quota';
 import { normalizeAuthIndex } from '@/utils/usage';
 import {
+  hasUsableCodexCredits,
+  type CodexCreditsAvailability,
+} from '@/utils/quota/codexCredits';
+import {
   type CodexInspectionAccount,
   type CodexInspectionLogHandler,
   type CodexInspectionResultItem,
@@ -266,6 +270,7 @@ const resolveWindowAwareProbeAction = (
   statusCode: number,
   bodyText: string,
   rateLimit: CodexRateLimitInfo | null,
+  credits: CodexCreditsAvailability | null,
   threshold: number,
   planType?: string | null
 ): CodexInspectionDecision | null => {
@@ -292,12 +297,13 @@ const resolveWindowAwareProbeAction = (
     longWindow === weeklyWindow ? '周额度' : longWindow === monthlyWindow ? '月额度' : '长期额度';
   const longWindowOverThreshold = longWindowUsedPercent >= threshold;
   const fiveHourOverThreshold = fiveHourUsedPercent !== null && fiveHourUsedPercent >= threshold;
+  const creditsUsable = hasUsableCodexCredits(credits);
 
   if (statusCode === 401) {
     return resolveUnauthorizedProbeAction(bodyText, longWindowUsedPercent);
   }
 
-  if (longWindowOverThreshold) {
+  if (longWindowOverThreshold && !creditsUsable) {
     if (account.disabled) {
       return {
         action: 'keep',
@@ -316,11 +322,27 @@ const resolveWindowAwareProbeAction = (
 
   if (account.disabled) {
     if (fiveHourOverThreshold) {
+      if (creditsUsable) {
+        return {
+          action: 'keep',
+          actionReason: '5 小时额度仍达到阈值，Credits 可用但继续保持禁用',
+          usedPercent: longWindowUsedPercent,
+          isQuota: true,
+        };
+      }
       return {
         action: 'keep',
         actionReason: `5 小时额度仍达到阈值，${longWindowLabel}可用但继续保持禁用`,
         usedPercent: longWindowUsedPercent,
         isQuota: true,
+      };
+    }
+    if (longWindowOverThreshold && creditsUsable) {
+      return {
+        action: 'enable',
+        actionReason: `${longWindowLabel}达到阈值，但 Credits 可用，建议启用账号`,
+        usedPercent: longWindowUsedPercent,
+        isQuota: false,
       };
     }
     return {
@@ -332,9 +354,26 @@ const resolveWindowAwareProbeAction = (
   }
 
   if (fiveHourOverThreshold) {
+    if (creditsUsable) {
+      return {
+        action: 'keep',
+        actionReason: '5 小时额度达到阈值，Credits 可用但暂不处理账号',
+        usedPercent: longWindowUsedPercent,
+        isQuota: true,
+      };
+    }
     return {
       action: 'keep',
       actionReason: `5 小时额度达到阈值，但${longWindowLabel}仍可用，暂不禁用账号`,
+      usedPercent: longWindowUsedPercent,
+      isQuota: false,
+    };
+  }
+
+  if (longWindowOverThreshold && creditsUsable) {
+    return {
+      action: 'keep',
+      actionReason: `${longWindowLabel}达到阈值，但 Credits 可用，无需处理`,
       usedPercent: longWindowUsedPercent,
       isQuota: false,
     };
@@ -353,6 +392,7 @@ const resolveProbeAction = (
   statusCode: number,
   bodyText: string,
   rateLimit: CodexRateLimitInfo | null,
+  credits: CodexCreditsAvailability | null,
   usedPercent: number | null,
   isQuota: boolean,
   threshold: number,
@@ -367,6 +407,7 @@ const resolveProbeAction = (
     statusCode,
     bodyText,
     rateLimit,
+    credits,
     threshold,
     planType
   );
@@ -459,6 +500,17 @@ export const inspectSingleAccount = async (
     }
 
     const rateLimit = payload?.rate_limit ?? payload?.rateLimit ?? null;
+    const credits = payload?.credits
+      ? {
+          creditsHasCredits: payload.credits.has_credits ?? payload.credits.hasCredits,
+          creditsUnlimited: payload.credits.unlimited,
+          creditsBalance: payload.credits.balance,
+          creditsOverageLimitReached:
+            payload.credits.overage_limit_reached ?? payload.credits.overageLimitReached,
+          spendControlReached:
+            payload.spend_control?.reached ?? payload.spendControl?.reached,
+        }
+      : null;
     const usedPercent = deriveCodexRateLimitUsedPercent(rateLimit);
     const bodyText = result.bodyText.toLowerCase();
     const isQuota =
@@ -471,6 +523,7 @@ export const inspectSingleAccount = async (
       result.statusCode,
       result.bodyText,
       rateLimit,
+      credits,
       usedPercent,
       isQuota,
       settings.usedPercentThreshold,

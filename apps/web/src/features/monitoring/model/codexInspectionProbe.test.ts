@@ -226,6 +226,65 @@ describe('inspectSingleAccount', () => {
     expect(result.isQuota).toBe(true);
   });
 
+  it('keeps an enabled account when exhausted monthly quota has usable Credits', async () => {
+    const usage = createUsageResult(100);
+    Object.assign(usage.payload, { credits: { balance: '996.8907575' } });
+    mockRequestCodexUsageRaw.mockResolvedValue(usage);
+
+    const result = await inspectSingleAccount(baseAccount, settings);
+
+    expect(result).toMatchObject({
+      action: 'keep',
+      actionReason: '月额度达到阈值，但 Credits 可用，无需处理',
+      usedPercent: 100,
+      isQuota: false,
+    });
+  });
+
+  it('suggests enabling a disabled account when exhausted weekly quota has usable Credits', async () => {
+    const usage = createUsageResult(100, {
+      primary_window: {
+        used_percent: 100,
+        limit_window_seconds: 604_800,
+      },
+    });
+    Object.assign(usage.payload, { credits: { has_credits: true } });
+    mockRequestCodexUsageRaw.mockResolvedValue(usage);
+
+    const result = await inspectSingleAccount(createDisabledAccount(true), settings);
+
+    expect(result).toMatchObject({
+      action: 'enable',
+      actionReason: '周额度达到阈值，但 Credits 可用，建议启用账号',
+      usedPercent: 100,
+      isQuota: false,
+    });
+  });
+
+  it('does not let Credits bypass an exhausted five-hour window', async () => {
+    const usage = createUsageResult(100, {
+      primary_window: {
+        used_percent: 100,
+        limit_window_seconds: 18_000,
+      },
+      secondary_window: {
+        used_percent: 100,
+        limit_window_seconds: 604_800,
+      },
+    });
+    Object.assign(usage.payload, { credits: { balance: '12' } });
+    mockRequestCodexUsageRaw.mockResolvedValue(usage);
+
+    const result = await inspectSingleAccount(createDisabledAccount(true), settings);
+
+    expect(result).toMatchObject({
+      action: 'keep',
+      actionReason: '5 小时额度仍达到阈值，Credits 可用但继续保持禁用',
+      usedPercent: 100,
+      isQuota: true,
+    });
+  });
+
   it('keeps an enabled account when only the short window is exhausted', async () => {
     mockRequestCodexUsageRaw.mockResolvedValue(
       createUsageResult(5, {
