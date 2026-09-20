@@ -7,19 +7,21 @@ import { pluginsApi } from '@/services/api';
 import { useAuthStore, useThemeStore } from '@/stores';
 import { getErrorMessage, isRecord } from '@/utils/helpers';
 import type { PluginListResponse } from '@/types';
-import {
-  createPluginHostStyleBridge,
-  type PluginHostStyleBridge,
-} from './pluginHostStyle';
+import { createPluginHostStyleBridge, type PluginHostStyleBridge } from './pluginHostStyle';
 import {
   collectPluginResourceEntries,
   PLUGIN_RESOURCES_REFRESH_EVENT,
   resolvePluginAssetURL,
 } from './pluginResources';
+import {
+  appendRateLimitBridgeParentOrigin,
+  createRateLimitBridgeHost,
+  RATE_LIMIT_BRIDGE_PLUGIN_ID,
+  resolveRateLimitBridgeFrameOrigin,
+} from './pluginRateLimitBridge';
 import styles from './PluginResourcePage.module.scss';
 
-const hasStatus = (error: unknown, status: number) =>
-  isRecord(error) && error.status === status;
+const hasStatus = (error: unknown, status: number) => isRecord(error) && error.status === status;
 
 const safeDecodeURIComponent = (value = '') => {
   try {
@@ -100,6 +102,20 @@ export function PluginResourcePage() {
   }, [data?.plugins, menuIndex, pluginID]);
 
   const iframeSrc = resource ? resolvePluginAssetURL(resource.menu.path, apiBase) : '';
+  const rateLimitBridgeFrameOrigin = useMemo(
+    () =>
+      pluginID === RATE_LIMIT_BRIDGE_PLUGIN_ID && iframeSrc
+        ? resolveRateLimitBridgeFrameOrigin(iframeSrc, window.location.origin)
+        : '',
+    [iframeSrc, pluginID]
+  );
+  const bridgedIframeSrc = useMemo(
+    () =>
+      rateLimitBridgeFrameOrigin
+        ? appendRateLimitBridgeParentOrigin(iframeSrc, window.location.origin)
+        : iframeSrc,
+    [iframeSrc, rateLimitBridgeFrameOrigin]
+  );
 
   const refreshPluginHostStyle = useCallback(() => {
     const iframe = iframeRef.current;
@@ -139,6 +155,32 @@ export function PluginResourcePage() {
     []
   );
 
+  useEffect(() => {
+    if (pluginID !== RATE_LIMIT_BRIDGE_PLUGIN_ID || !rateLimitBridgeFrameOrigin) return;
+
+    const handleBridgeMessage = createRateLimitBridgeHost({
+      expectedOrigin: rateLimitBridgeFrameOrigin,
+      isActiveFrameSource: (source) => iframeRef.current?.contentWindow === source,
+      getConfig: () => pluginsApi.getConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID),
+      patchConfig: (patch) => pluginsApi.patchConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID, patch),
+      reply: (source, response) => {
+        const target = iframeRef.current?.contentWindow;
+        if (!target || target !== source) return;
+        target.postMessage(response, rateLimitBridgeFrameOrigin);
+      },
+    });
+    const onMessage = (event: MessageEvent<unknown>) => {
+      void handleBridgeMessage({
+        data: event.data,
+        origin: event.origin,
+        source: event.source,
+      });
+    };
+
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [pluginID, rateLimitBridgeFrameOrigin]);
+
   return (
     <div className={styles.page}>
       {loading ? (
@@ -167,7 +209,7 @@ export function PluginResourcePage() {
         <iframe
           ref={iframeRef}
           className={styles.frame}
-          src={iframeSrc}
+          src={bridgedIframeSrc}
           title={resource.label}
           referrerPolicy="no-referrer"
           allow="clipboard-read; clipboard-write"
