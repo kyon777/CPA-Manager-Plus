@@ -29,6 +29,9 @@ export const readAuthFileProxyURL = (file: Pick<AuthFileItem, 'proxy_url' | 'pro
     typeof file.proxy_url === 'string' && file.proxy_url.trim() ? file.proxy_url : file.proxyUrl
   );
 
+const isTrueFlag = (value: unknown): boolean =>
+  value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
+
 /**
  * Computes the requested proxy values that are not used by any enabled
  * credential. The caller supplies the complete credential inventory rather
@@ -42,13 +45,11 @@ export const findMissingEnabledProxyURLs = (
   const enabledProxyURLs = new Set(
     files
       .filter((file) => {
-        const disabled = file.disabled ?? file['disabled'];
-        const runtimeOnly = file['runtime_only'] ?? file.runtimeOnly;
         return (
-          disabled !== true &&
-          String(disabled ?? '').trim().toLowerCase() !== 'true' &&
-          runtimeOnly !== true &&
-          String(runtimeOnly ?? '').trim().toLowerCase() !== 'true'
+          !isTrueFlag(file.disabled) &&
+          !isTrueFlag(file['disabled']) &&
+          !isTrueFlag(file.runtimeOnly) &&
+          !isTrueFlag(file['runtime_only'])
         );
       })
       .map(readAuthFileProxyURL)
