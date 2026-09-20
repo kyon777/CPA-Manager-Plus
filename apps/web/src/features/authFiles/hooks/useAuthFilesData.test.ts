@@ -785,6 +785,46 @@ describe('useAuthFilesData savePastedAuthJson', () => {
     hook.unmount();
   });
 
+  it('uploads each record from a pasted CPA array as an individual auth file', async () => {
+    const hook = mountUseAuthFilesData();
+    const records = [
+      { type: 'codex', email: 'first@example.com', access_token: 'first-token' },
+      { type: 'codex', email: 'second@example.com', access_token: 'second-token' },
+      { type: 'codex', email: 'third@example.com', access_token: 'third-token' },
+    ];
+    mocks.uploadFiles.mockImplementationOnce(async (files: File[]) => ({
+      status: 'ok',
+      uploaded: files.length,
+      files: files.map((file) => file.name),
+      failed: [],
+    }));
+
+    const savedNames = await hook
+      .getCurrent()
+      .savePastedAuthJson('cpa', 'codex-account.json', JSON.stringify(records));
+
+    expect(savedNames).toEqual([
+      'first@example.com.json',
+      'second@example.com.json',
+      'third@example.com.json',
+    ]);
+    expect(mocks.saveJsonObject).not.toHaveBeenCalled();
+    expect(mocks.uploadFiles).toHaveBeenCalledTimes(1);
+    const uploadedFiles = mocks.uploadFiles.mock.calls[0]?.[0] as File[];
+    expect(uploadedFiles.map((file) => file.name)).toEqual([
+      'first@example.com.json',
+      'second@example.com.json',
+      'third@example.com.json',
+    ]);
+    const uploadedJson = await Promise.all(
+      uploadedFiles.map(async (file) => JSON.parse(await file.text()) as Record<string, unknown>)
+    );
+    expect(uploadedJson).toEqual(records);
+    expect(uploadedJson.every((item) => !Array.isArray(item))).toBe(true);
+    expect(mocks.showNotification).toHaveBeenCalledWith('auth_files.paste_success_many', 'success');
+    hook.unmount();
+  });
+
   it('saves converted sub2api JSON as separate CPA auth files', async () => {
     const hook = mountUseAuthFilesData();
     const sub2apiInput = JSON.stringify({

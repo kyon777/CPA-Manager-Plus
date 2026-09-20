@@ -947,18 +947,46 @@ export const convertAuthJsonInput = (
   now = new Date(),
   maxInputChars = MAX_AUTH_JSON_INPUT_CHARS
 ): AuthJsonConversionResult => {
-  const parsed = parseJsonObject(text, type === 'session' || type === 'sub2api', maxInputChars);
+  const parsed = parseJsonObject(
+    text,
+    type === 'cpa' || type === 'session' || type === 'sub2api',
+    maxInputChars
+  );
   if (hasForbiddenInvisibleCharacter(parsed)) {
     throw new AuthJsonConversionError('Auth JSON contains unsupported invisible characters');
   }
   if (type === 'cpa') {
-    if (hasUnsafeCpaIdToken(parsed)) {
-      throw new AuthJsonConversionError('CPA auth JSON contains unsupported id_token');
+    const cpaRecords = Array.isArray(parsed) ? parsed : [parsed];
+    if (cpaRecords.length === 0) {
+      throw new AuthJsonConversionError('CPA auth JSON array must contain at least one object');
     }
-    if (!isRecord(parsed) || !hasCpaAuthFileShape(parsed)) {
-      throw new AuthJsonConversionError('CPA auth JSON is missing required auth fields');
-    }
-    return parsed;
+
+    const validatedRecords = cpaRecords.map((record, index) => {
+      if (!isRecord(record)) {
+        throw new AuthJsonConversionError(
+          Array.isArray(parsed)
+            ? `CPA auth JSON item ${index + 1} must be an object`
+            : 'CPA auth JSON is missing required auth fields'
+        );
+      }
+      if (hasUnsafeCpaIdToken(record)) {
+        throw new AuthJsonConversionError(
+          Array.isArray(parsed)
+            ? `CPA auth JSON item ${index + 1} contains unsupported id_token`
+            : 'CPA auth JSON contains unsupported id_token'
+        );
+      }
+      if (!hasCpaAuthFileShape(record)) {
+        throw new AuthJsonConversionError(
+          Array.isArray(parsed)
+            ? `CPA auth JSON item ${index + 1} is missing required auth fields`
+            : 'CPA auth JSON is missing required auth fields'
+        );
+      }
+      return record;
+    });
+
+    return Array.isArray(parsed) ? validatedRecords : validatedRecords[0];
   }
 
   if (type === 'sub2api') {
@@ -1037,6 +1065,19 @@ const getDefaultAuthFileIdSegment = (authJson: JsonRecord) => {
   return buildSafeFileNameSegment(rawId, { maxLength: 8 }) || buildAuthFileFingerprint(authJson);
 };
 
+const getDefaultCpaBatchAuthFileName = (authJson: JsonRecord) => {
+  const identity = buildSafeFileNameSegment(
+    firstNonEmpty(authJson.email, authJson.name, authJson.account_id, 'account'),
+    {
+      fallback: 'account',
+      maxLength: 120,
+      preserveEmailSymbols: true,
+    }
+  );
+
+  return `${identity}.json`;
+};
+
 export const getDefaultSessionAuthFileName = (authJson: JsonRecord) => {
   const provider = buildSafeFileNameSegment(firstNonEmpty(authJson.type, authJson.provider), {
     fallback: 'codex',
@@ -1094,7 +1135,7 @@ export const buildAuthJsonFilePayloads = (
   const converted = convertAuthJsonInput(text, type, now, maxInputChars);
   const authJsonRecords = Array.isArray(converted) ? converted : [converted];
 
-  if (authJsonRecords.length === 1) {
+  if (authJsonRecords.length === 1 && !(type === 'cpa' && Array.isArray(converted))) {
     const authJson = authJsonRecords[0];
     const fileName =
       (type === 'session' || type === 'sub2api') && requestedFileName === 'codex-account.json'
@@ -1105,7 +1146,10 @@ export const buildAuthJsonFilePayloads = (
 
   return ensureUniqueAuthJsonFilePayloadNames(
     authJsonRecords.map((authJson) => ({
-      fileName: getDefaultSessionAuthFileName(authJson),
+      fileName:
+        type === 'cpa'
+          ? getDefaultCpaBatchAuthFileName(authJson)
+          : getDefaultSessionAuthFileName(authJson),
       authJson,
     }))
   );

@@ -33,6 +33,26 @@ describe('convertAuthJsonInput', () => {
     expect(result).toEqual(input);
   });
 
+  it('accepts a top-level CPA array and preserves each record', () => {
+    const records = [
+      { type: 'codex', email: 'first@example.com', access_token: 'first-token' },
+      { type: 'codex', email: 'second@example.com', access_token: 'second-token' },
+    ];
+
+    expect(convertAuthJsonInput(JSON.stringify(records), 'cpa')).toEqual(records);
+  });
+
+  it('rejects a CPA array member without auth fields before upload', () => {
+    const records = [
+      { type: 'codex', email: 'valid@example.com', access_token: 'valid-token' },
+      { type: 'codex', email: 'invalid@example.com' },
+    ];
+
+    expect(() => convertAuthJsonInput(JSON.stringify(records), 'cpa')).toThrow(
+      'CPA auth JSON item 2 is missing required auth fields'
+    );
+  });
+
   it('converts a ChatGPT session object to CPA Codex auth JSON', () => {
     const accessToken = buildJwt({
       exp: 1_800_000_000,
@@ -1167,6 +1187,28 @@ describe('convertAuthJsonInput', () => {
       expect.stringMatching(/^\{/),
       expect.stringMatching(/^\{/),
     ]);
+  });
+
+  it('splits a CPA array into unique email-based file payloads', () => {
+    const records = [
+      { type: 'codex', email: 'First.User@example.com', access_token: 'first-token' },
+      { type: 'codex', email: 'First.User@example.com', access_token: 'second-token' },
+    ];
+
+    expect(
+      buildAuthJsonFilePayloads('cpa', 'codex-account.json', JSON.stringify(records))
+    ).toEqual([
+      { fileName: 'first.user@example.com.json', authJson: records[0] },
+      { fileName: 'first.user@example.com-2.json', authJson: records[1] },
+    ]);
+  });
+
+  it('uses an email-based file name for a one-record CPA array', () => {
+    const record = { type: 'codex', email: 'only@example.com', access_token: 'only-token' };
+
+    expect(
+      buildAuthJsonFilePayloads('cpa', 'codex-account.json', JSON.stringify([record]))
+    ).toEqual([{ fileName: 'only@example.com.json', authJson: record }]);
   });
 
   it('deduplicates generated sub2api auth file names within one import', () => {
