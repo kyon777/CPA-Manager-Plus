@@ -22,12 +22,13 @@ const (
 	serverErrorPriorityDemotionActionTimeout = 30 * time.Second
 )
 
-// ServerErrorPriorityDemotionWorker lowers a credential's current priority by
-// one for each newly persisted HTTP 502 or 503 request-monitoring event, plus
-// HTTP 429 only when its raw response body explicitly reports
-// {"detail":"Rate limit exceeded"}. The collector only forwards inserted
-// event hashes, so a historical event is never replayed by a page refresh or
-// process restart.
+// ServerErrorPriorityDemotionWorker rebalances a credential's priority for
+// each newly persisted HTTP 502 or 503 request-monitoring event, plus HTTP 429
+// only when its raw response body explicitly reports
+// {"detail":"Rate limit exceeded"}. The target is moved below the highest
+// eligible peer when it is currently above that peer; otherwise it moves down
+// one step. The collector only forwards inserted event hashes, so a historical
+// event is never replayed by a page refresh or process restart.
 type ServerErrorPriorityDemotionWorker struct {
 	client            *http.Client
 	authFileMutations *cpaauthfiles.MutationCoordinator
@@ -151,12 +152,69 @@ func (w *ServerErrorPriorityDemotionWorker) handleCandidate(
 		log.Printf("[server-error-priority] priority already zero for auth file %q event=%q", candidate.FileName, candidate.EventHash)
 		return
 	}
-	nextPriority := currentPriority - 1
+	allFiles, err := client.Fetch(ctx, candidate.BaseURL, candidate.ManagementKey)
+	if err != nil {
+		log.Printf("[server-error-priority] failed to read peer priorities for auth file %q event=%q: %v", candidate.FileName, candidate.EventHash, err)
+		return
+	}
+	peerMax, hasPeer := serverErrorPriorityPeerMaximum(allFiles, target.File)
+	nextPriority := serverErrorPriorityAfterPeerRebalance(currentPriority, peerMax, hasPeer)
+	if nextPriority == currentPriority {
+		log.Printf("[server-error-priority] priority unchanged for auth file %q event=%q: current=%d peer_max=%d has_peer=%t", candidate.FileName, candidate.EventHash, currentPriority, peerMax, hasPeer)
+		return
+	}
 	if err := client.PatchPriorityTarget(ctx, candidate.BaseURL, candidate.ManagementKey, target, nextPriority); err != nil {
 		log.Printf("[server-error-priority] failed to lower priority for auth file %q event=%q: %v", candidate.FileName, candidate.EventHash, err)
 		return
 	}
-	log.Printf("[server-error-priority] lowered auth file %q priority %d -> %d after HTTP %d event=%q", candidate.FileName, currentPriority, nextPriority, candidate.StatusCode, candidate.EventHash)
+	log.Printf("[server-error-priority] lowered auth file %q priority %d -> %d after HTTP %d event=%q peer_max=%d has_peer=%t", candidate.FileName, currentPriority, nextPriority, candidate.StatusCode, candidate.EventHash, peerMax, hasPeer)
+}
+
+func serverErrorPriorityAfterPeerRebalance(currentPriority int, peerMax int, hasPeer bool) int {
+	if currentPriority <= 0 {
+		return 0
+	}
+	nextPriority := currentPriority - 1
+	if hasPeer && peerMax < currentPriority {
+		nextPriority = peerMax - 1
+	}
+	if nextPriority < 0 {
+		return 0
+	}
+	return nextPriority
+}
+
+func serverErrorPriorityPeerMaximum(files []cpaauthfiles.File, target cpaauthfiles.File) (int, bool) {
+	targetProvider := credentialpolicy.NormalizeProvider(target.Provider)
+	maxPriority := 0
+	found := false
+	for _, file := range files {
+		if file.Disabled || credentialpolicy.NormalizeProvider(file.Provider) != targetProvider || sameServerErrorPriorityCredential(file, target) {
+			continue
+		}
+		priority, valid := serverErrorPriorityFromAuthFile(file)
+		if !valid {
+			continue
+		}
+		if !found || priority > maxPriority {
+			maxPriority = priority
+			found = true
+		}
+	}
+	return maxPriority, found
+}
+
+func sameServerErrorPriorityCredential(left cpaauthfiles.File, right cpaauthfiles.File) bool {
+	leftID := strings.TrimSpace(left.ID)
+	rightID := strings.TrimSpace(right.ID)
+	if leftID != "" && rightID != "" {
+		return leftID == rightID
+	}
+	leftName := strings.TrimSpace(left.Name)
+	rightName := strings.TrimSpace(right.Name)
+	leftAuthIndex := strings.TrimSpace(left.AuthIndex)
+	rightAuthIndex := strings.TrimSpace(right.AuthIndex)
+	return leftName != "" && leftName == rightName && leftAuthIndex != "" && leftAuthIndex == rightAuthIndex
 }
 
 func serverErrorPriorityDemotionCandidateFromEvent(

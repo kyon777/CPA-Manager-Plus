@@ -16,7 +16,7 @@ func TestServerErrorPriorityDemotionWorkerDecreasesCurrentPriorityForHTTP502(t *
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v0/management/auth-files":
-			if r.URL.Query().Get("name") != "codex-auth.json" {
+			if name := r.URL.Query().Get("name"); name != "" && name != "codex-auth.json" {
 				t.Fatalf("auth-file lookup query = %q", r.URL.RawQuery)
 			}
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
@@ -50,6 +50,69 @@ func TestServerErrorPriorityDemotionWorkerDecreasesCurrentPriorityForHTTP502(t *
 		AuthFileSnapshot: "codex-auth.json",
 		AuthIndex:        "auth-1",
 		AccountSnapshot:  "user@example.com",
+		Provider:         "codex",
+	}
+	candidate, ok := serverErrorPriorityDemotionCandidateFromEvent(event, server.URL, "management-key")
+	if !ok {
+		t.Fatal("HTTP 502 should produce a priority-demotion candidate")
+	}
+
+	worker := NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(
+		cpaauthfiles.NewMutationCoordinator(),
+	)
+	worker.client = server.Client()
+	worker.handleCandidate(context.Background(), candidate)
+
+	if patchCalls != 1 {
+		t.Fatalf("priority patch calls = %d, want 1", patchCalls)
+	}
+}
+
+func TestServerErrorPriorityDemotionWorkerRebalancesAbovePeerMaximum(t *testing.T) {
+	patchCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v0/management/auth-files" {
+			if r.URL.Query().Get("name") != "" {
+				_ = json.NewEncoder(w).Encode([]map[string]any{{
+					"id": "runtime-auth-a", "name": "codex-a.json", "auth_index": "auth-a",
+					"provider": "codex", "email": "a@example.com", "priority": 150,
+				}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "runtime-auth-a", "name": "codex-a.json", "auth_index": "auth-a", "provider": "codex", "email": "a@example.com", "priority": 150},
+				{"id": "runtime-auth-b", "name": "codex-b.json", "auth_index": "auth-b", "provider": "codex", "email": "b@example.com", "priority": 100},
+				{"id": "runtime-auth-c", "name": "codex-c.json", "auth_index": "auth-c", "provider": "codex", "email": "c@example.com", "priority": 100},
+			})
+			return
+		}
+		if r.Method == http.MethodPatch && r.URL.Path == "/v0/management/auth-files/fields" {
+			patchCalls++
+			var payload struct {
+				Name      string `json:"name"`
+				AuthIndex string `json:"auth_index"`
+				Priority  int    `json:"priority"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode priority patch: %v", err)
+			}
+			if payload.Name != "runtime-auth-a" || payload.AuthIndex != "auth-a" || payload.Priority != 99 {
+				t.Fatalf("priority patch = %#v, want target priority 99 below peer maximum 100", payload)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	event := usage.Event{
+		EventHash:        "evt-http-502-rebalance",
+		Failed:           true,
+		FailStatusCode:   http.StatusBadGateway,
+		AuthFileSnapshot: "codex-a.json",
+		AuthIndex:        "auth-a",
+		AccountSnapshot:  "a@example.com",
 		Provider:         "codex",
 	}
 	candidate, ok := serverErrorPriorityDemotionCandidateFromEvent(event, server.URL, "management-key")
@@ -155,5 +218,55 @@ func TestServerErrorPriorityDemotionCandidateAccepts502503AndQualified429(t *tes
 				t.Fatalf("event %#v must not produce a priority-demotion candidate", event)
 			}
 		})
+	}
+}
+
+func TestServerErrorPriorityAfterPeerRebalance(t *testing.T) {
+	tests := []struct {
+		name    string
+		current int
+		peerMax int
+		hasPeer bool
+		want    int
+	}{
+		{name: "higher target jumps below lower peers", current: 150, peerMax: 100, hasPeer: true, want: 99},
+		{name: "higher peer keeps one-step demotion", current: 100, peerMax: 150, hasPeer: true, want: 99},
+		{name: "equal peer keeps one-step demotion", current: 100, peerMax: 100, hasPeer: true, want: 99},
+		{name: "no peers keeps one-step demotion", current: 100, peerMax: 0, hasPeer: false, want: 99},
+		{name: "clamps below zero", current: 1, peerMax: 0, hasPeer: true, want: 0},
+		{name: "zero remains zero", current: 0, peerMax: 100, hasPeer: true, want: 0},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := serverErrorPriorityAfterPeerRebalance(testCase.current, testCase.peerMax, testCase.hasPeer); got != testCase.want {
+				t.Fatalf("rebalance(%d, %d, %t) = %d, want %d", testCase.current, testCase.peerMax, testCase.hasPeer, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestServerErrorPriorityPeerMaximumFiltersTargetDisabledAndOtherProviders(t *testing.T) {
+	target := cpaauthfiles.FromMap(map[string]any{
+		"id": "target", "name": "target.json", "auth_index": "target-index", "provider": "codex", "priority": 150,
+	})
+	files := []cpaauthfiles.File{
+		target,
+		cpaauthfiles.FromMap(map[string]any{
+			"id": "peer", "name": "peer.json", "auth_index": "peer-index", "provider": "codex", "priority": 100,
+		}),
+		cpaauthfiles.FromMap(map[string]any{
+			"id": "disabled-peer", "name": "disabled.json", "auth_index": "disabled-index", "provider": "codex", "priority": 999, "disabled": true,
+		}),
+		cpaauthfiles.FromMap(map[string]any{
+			"id": "other-provider", "name": "other.json", "auth_index": "other-index", "provider": "xai", "priority": 888,
+		}),
+		cpaauthfiles.FromMap(map[string]any{
+			"id": "invalid-peer", "name": "invalid.json", "auth_index": "invalid-index", "provider": "codex", "priority": "not-an-integer",
+		}),
+	}
+
+	peerMax, hasPeer := serverErrorPriorityPeerMaximum(files, target)
+	if !hasPeer || peerMax != 100 {
+		t.Fatalf("peer maximum = (%d, %t), want (100, true)", peerMax, hasPeer)
 	}
 }
