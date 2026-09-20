@@ -31,4 +31,14 @@ describe('proxy filter model', () => {
     );
     expect(missing).toEqual(['http://missing', 'http://disabled-only']);
   });
+
+  it('uses server-projected proxy URLs when CPA masks them from the auth-files list', () => {
+    const missing = findMissingEnabledProxyURLs(
+      ['http://used/', 'http://missing/'],
+      [{ name: 'used.json', disabled: false }],
+      ['http://used/']
+    );
+
+    expect(missing).toEqual(['http://missing']);
+  });
 });

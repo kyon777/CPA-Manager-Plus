@@ -83,6 +83,7 @@ import {
 } from '@/features/accounts/hooks/useCredentialInspectionSnapshot';
 import { useAccountsWorkspaceRefresh } from '@/features/accounts/hooks/useAccountsWorkspaceRefresh';
 import { useCredentialRuntimeMetadata } from '@/features/accounts/hooks/useCredentialRuntimeMetadata';
+import { useProxyFilterInventory } from '@/features/accounts/hooks/useProxyFilterInventory';
 import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderSnapshotsLoader';
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
@@ -131,6 +132,7 @@ import {
   type AccountRowSort,
   type AccountStatusFilter,
 } from '@/features/accounts/model/accountRows';
+import { isEnabledProxyFilterCredential } from '@/features/accounts/model/proxyFilter';
 import {
   buildInspectionCodexQuotaState,
   getEffectiveAccountInspectionAction,
@@ -4167,6 +4169,23 @@ export function AccountsPage() {
       freshAccountInspectionBySelectionKey,
     ]
   );
+  const proxyFilterEnabledRows = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          !row.disabled && !row.runtimeOnly && isEnabledProxyFilterCredential(row.raw)
+      ),
+    [rows]
+  );
+  const proxyFilterTargets = useMemo(
+    () => buildCredentialRuntimeMetadataTargets(proxyFilterEnabledRows),
+    [proxyFilterEnabledRows]
+  );
+  const proxyFilterInventory = useProxyFilterInventory({
+    active: proxyFilterOpen && activeView === 'accounts',
+    managerRequestScope,
+    targets: proxyFilterTargets,
+  });
   const codexStatusBySelectionKey = useMemo(() => {
     const statusMap = new Map<string, ReturnType<typeof getAuthFileCodexStatus>>();
     rows.forEach((row) => {
@@ -10526,7 +10545,17 @@ export function AccountsPage() {
         open={proxyFilterOpen}
         sessionID={proxyFilterSessionID}
         files={files}
-        credentialsLoading={loading}
+        enabledProxyURLs={proxyFilterInventory.proxyURLs}
+        enabledCredentialCount={proxyFilterInventory.enabledCount}
+        credentialsLoading={loading || proxyFilterInventory.loading}
+        credentialsError={
+          proxyFilterInventory.error ||
+          (proxyFilterInventory.incompleteCount > 0
+            ? t('accounts.proxy_filter_incomplete', {
+                count: proxyFilterInventory.incompleteCount,
+              })
+            : '')
+        }
         loading={proxyFilterLoading}
         saving={proxyFilterSaving}
         savedURLs={proxyFilterURLs}

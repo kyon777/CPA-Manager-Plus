@@ -971,6 +971,7 @@
     "proxy_filter_copied": "Proxy URLs copied",
     "proxy_filter_unavailable": "Manager Server is not connected; proxy filtering is unavailable",
     "proxy_filter_credentials_loading": "Credentials are still loading",
+    "proxy_filter_incomplete": "{{count}} credentials could not be read; the result may be incomplete.",
     "proxy_filter_loading": "Loading the server-saved proxy list…",
     "batch_delete_banned_page": "Delete banned credentials on this page ({{count}})",
     "batch_delete_banned_title": "Delete {{count}} banned credential(s)",

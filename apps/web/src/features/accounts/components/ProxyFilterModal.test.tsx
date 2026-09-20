@@ -45,9 +45,12 @@ describe('ProxyFilterModal', () => {
           open
           sessionID={1}
           files={[
-            makeFile({ disabled: false, proxy_url: 'http://used/' }),
+            makeFile({ disabled: false }),
             makeFile({ disabled: true, proxy_url: 'http://disabled-only' }),
           ]}
+          enabledProxyURLs={['http://used/']}
+          enabledCredentialCount={1}
+          credentialsError=""
           credentialsLoading={false}
           loading={false}
           saving={false}
@@ -85,6 +88,9 @@ describe('ProxyFilterModal', () => {
           open
           sessionID={8}
           files={[]}
+          enabledProxyURLs={[]}
+          enabledCredentialCount={0}
+          credentialsError=""
           credentialsLoading={false}
           loading={false}
           saving={false}
@@ -111,6 +117,9 @@ describe('ProxyFilterModal', () => {
           open
           sessionID={9}
           files={[]}
+          enabledProxyURLs={[]}
+          enabledCredentialCount={0}
+          credentialsError=""
           credentialsLoading={false}
           loading={false}
           saving={false}

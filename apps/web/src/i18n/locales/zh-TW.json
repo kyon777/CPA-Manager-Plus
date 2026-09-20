@@ -969,6 +969,7 @@
     "proxy_filter_copied": "代理 URL 已複製",
     "proxy_filter_unavailable": "Manager Server 未連線，無法使用代理篩選",
     "proxy_filter_credentials_loading": "憑證仍在載入",
+    "proxy_filter_incomplete": "有 {{count}} 個憑證無法讀取，結果可能不完整。",
     "proxy_filter_loading": "正在讀取伺服器儲存的代理清單…",
     "batch_delete_banned_page": "刪除目前頁已封鎖帳號 ({{count}})",
     "batch_delete_banned_title": "刪除 {{count}} 個已封鎖帳號",

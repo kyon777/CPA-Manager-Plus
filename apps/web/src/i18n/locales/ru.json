@@ -975,6 +975,7 @@
     "proxy_filter_copied": "Proxy URL скопированы",
     "proxy_filter_unavailable": "Manager Server не подключён; фильтр прокси недоступен",
     "proxy_filter_credentials_loading": "Учётные данные ещё загружаются",
+    "proxy_filter_incomplete": "Не удалось прочитать некоторые учетные данные; результат может быть неполным.",
     "proxy_filter_loading": "Загрузка сохранённого на сервере списка прокси…",
     "batch_delete_banned_page": "Удалить заблокированные учётные данные на странице ({{count}})",
     "batch_delete_banned_title": "Удалить заблокированные учётные данные: {{count}}",

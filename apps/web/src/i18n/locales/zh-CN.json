@@ -969,6 +969,7 @@
     "proxy_filter_copied": "代理 URL 已复制",
     "proxy_filter_unavailable": "Manager Server 未连接，无法使用代理筛选",
     "proxy_filter_credentials_loading": "凭证仍在加载，请稍候",
+    "proxy_filter_incomplete": "有 {{count}} 个凭证无法读取，结果可能不完整。",
     "proxy_filter_loading": "正在读取服务器保存的代理列表…",
     "batch_delete_banned_page": "删除当前页已封禁账号 ({{count}})",
     "batch_delete_banned_title": "删除 {{count}} 个已封禁账号",

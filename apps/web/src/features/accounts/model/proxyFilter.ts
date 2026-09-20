@@ -24,13 +24,23 @@ export const normalizeProxyFilterURLs = (values: Iterable<unknown>): string[] =>
   return normalized;
 };
 
-export const readAuthFileProxyURL = (file: Pick<AuthFileItem, 'proxy_url' | 'proxyUrl'>): string =>
+export const readAuthFileProxyURL = (file: AuthFileItem): string =>
   normalizeProxyFilterURL(
-    typeof file.proxy_url === 'string' && file.proxy_url.trim() ? file.proxy_url : file.proxyUrl
+    typeof file.proxy_url === 'string' && file.proxy_url.trim()
+      ? file.proxy_url
+      : typeof file.proxyUrl === 'string' && file.proxyUrl.trim()
+        ? file.proxyUrl
+        : file['proxy-url']
   );
 
 const isTrueFlag = (value: unknown): boolean =>
   value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
+
+export const isEnabledProxyFilterCredential = (file: AuthFileItem): boolean =>
+  !isTrueFlag(file.disabled) &&
+  !isTrueFlag(file['disabled']) &&
+  !isTrueFlag(file.runtimeOnly) &&
+  !isTrueFlag(file['runtime_only']);
 
 /**
  * Computes the requested proxy values that are not used by any enabled
@@ -39,21 +49,16 @@ const isTrueFlag = (value: unknown): boolean =>
  */
 export const findMissingEnabledProxyURLs = (
   requestedURLs: Iterable<unknown>,
-  files: readonly AuthFileItem[]
+  files: readonly AuthFileItem[],
+  projectedEnabledProxyURLs: Iterable<unknown> = []
 ): string[] => {
   const requested = normalizeProxyFilterURLs(requestedURLs);
   const enabledProxyURLs = new Set(
     files
-      .filter((file) => {
-        return (
-          !isTrueFlag(file.disabled) &&
-          !isTrueFlag(file['disabled']) &&
-          !isTrueFlag(file.runtimeOnly) &&
-          !isTrueFlag(file['runtime_only'])
-        );
-      })
+      .filter(isEnabledProxyFilterCredential)
       .map(readAuthFileProxyURL)
       .filter(Boolean)
   );
+  normalizeProxyFilterURLs(projectedEnabledProxyURLs).forEach((url) => enabledProxyURLs.add(url));
   return requested.filter((url) => !enabledProxyURLs.has(url));
 };

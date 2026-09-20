@@ -14,7 +14,10 @@ type ProxyFilterModalProps = {
   open: boolean;
   sessionID: number;
   files: readonly AuthFileItem[];
+  enabledProxyURLs: readonly string[];
+  enabledCredentialCount: number;
   credentialsLoading: boolean;
+  credentialsError: string;
   loading: boolean;
   saving: boolean;
   savedURLs: readonly string[];
@@ -30,7 +33,10 @@ export function ProxyFilterModal({
   open,
   sessionID,
   files,
+  enabledProxyURLs,
+  enabledCredentialCount,
   credentialsLoading,
+  credentialsError,
   loading,
   saving,
   savedURLs,
@@ -48,10 +54,7 @@ export function ProxyFilterModal({
   const input = inputOverride?.key === savedInputKey ? inputOverride.value : savedInput;
 
   const inputURLs = useMemo(() => parseInput(input), [input]);
-  const enabledCount = useMemo(
-    () => files.filter((file) => file.disabled !== true).length,
-    [files]
-  );
+  const enabledCount = Math.max(0, enabledCredentialCount);
 
   const handleSave = async () => {
     try {
@@ -65,8 +68,8 @@ export function ProxyFilterModal({
   };
 
   const handleFilter = () => {
-    if (credentialsLoading) return;
-    setMissingURLs(findMissingEnabledProxyURLs(inputURLs, files));
+    if (credentialsLoading || credentialsError) return;
+    setMissingURLs(findMissingEnabledProxyURLs(inputURLs, files, enabledProxyURLs));
   };
 
   const resultText = missingURLs?.join('\n') ?? '';
@@ -89,8 +92,12 @@ export function ProxyFilterModal({
           </Button>
           <Button
             onClick={handleFilter}
-            disabled={busy || credentialsLoading}
-            title={credentialsLoading ? t('accounts.proxy_filter_credentials_loading') : undefined}
+            disabled={busy || credentialsLoading || Boolean(credentialsError)}
+            title={
+              credentialsLoading
+                ? t('accounts.proxy_filter_credentials_loading')
+                : credentialsError || undefined
+            }
           >
             <IconSearch size={15} />
             {t('accounts.proxy_filter_run')}
@@ -121,6 +128,10 @@ export function ProxyFilterModal({
         </div>
         {loading ? <p className={styles.loading}>{t('accounts.proxy_filter_loading')}</p> : null}
         {error ? <div className={styles.error}>{error}</div> : null}
+        {credentialsLoading ? (
+          <p className={styles.loading}>{t('accounts.proxy_filter_credentials_loading')}</p>
+        ) : null}
+        {credentialsError ? <div className={styles.error}>{credentialsError}</div> : null}
         {missingURLs !== null ? (
           <section className={styles.result} aria-live="polite">
             <div className={styles.resultHeader}>
