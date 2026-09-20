@@ -537,22 +537,31 @@ const isCodexMonthlyQuotaWindow = (window: CodexQuotaState['windows'][number]): 
   window.labelKey === 'codex_quota.monthly_window' ||
   window.limitWindowSeconds === 2_592_000;
 
+const isCodexWeeklyQuotaWindow = (window: CodexQuotaState['windows'][number]): boolean =>
+  window.id === 'weekly' ||
+  window.labelKey === 'codex_quota.weekly_window' ||
+  window.labelKey === 'codex_quota.secondary_window' ||
+  window.limitWindowSeconds === 604_800;
+
+const isCodexLongQuotaWindow = (window: CodexQuotaState['windows'][number]): boolean =>
+  isCodexWeeklyQuotaWindow(window) || isCodexMonthlyQuotaWindow(window);
+
 const isCodexQuotaWindowExhausted = (window: CodexQuotaState['windows'][number]): boolean =>
   typeof window.usedPercent === 'number' &&
   Number.isFinite(window.usedPercent) &&
   window.usedPercent >= 100;
 
-const isCodexMonthlyAllowanceCoveredByCredits = (quota: CodexQuotaState): boolean => {
+const isCodexLongAllowanceCoveredByCredits = (quota: CodexQuotaState): boolean => {
   if (!hasUsableCodexCredits(quota)) return false;
   const exhaustedWindows = codexMainQuotaWindows(quota).filter(isCodexQuotaWindowExhausted);
-  return exhaustedWindows.length > 0 && exhaustedWindows.every(isCodexMonthlyQuotaWindow);
+  return exhaustedWindows.length > 0 && exhaustedWindows.every(isCodexLongQuotaWindow);
 };
 
 const applyCodexCreditAvailability = (
   summary: AccountQuotaSummary,
   quota: CodexQuotaState
 ): AccountQuotaSummary =>
-  summary.status === 'exhausted' && isCodexMonthlyAllowanceCoveredByCredits(quota)
+  summary.status === 'exhausted' && isCodexLongAllowanceCoveredByCredits(quota)
     ? { ...summary, status: 'ok' }
     : summary;
 

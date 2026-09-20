@@ -430,6 +430,41 @@ describe('resolveAccountQuota', () => {
     });
   });
 
+  it('keeps a Codex account available when its weekly allowance is exhausted but paid credits remain', () => {
+    const file = {
+      name: 'codex-weekly-paid-credits.json',
+      type: 'codex',
+      authIndex: 'auth-1',
+    } as AuthFileItem;
+    const quota: CodexQuotaState = {
+      status: 'success',
+      creditsHasCredits: false,
+      creditsBalance: '120',
+      creditsOverageLimitReached: false,
+      spendControlReached: false,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          usedPercent: 100,
+          resetLabel: 'week-end',
+          limitWindowSeconds: 604_800,
+          modelScope: { kind: 'family', key: 'codex_main', complete: true },
+        },
+      ],
+    };
+
+    expect(
+      resolveAccountQuota(file, emptyStores(), {
+        codexQuotaBySelectionKey: new Map([[getAuthFileSelectionKey(file), quota]]),
+      })
+    ).toMatchObject({
+      status: 'ok',
+      remainingPercent: 0,
+      creditsBalance: '120',
+    });
+  });
+
   it('keeps a Codex account exhausted when paid credits are blocked by spend controls', () => {
     const file = {
       name: 'codex-credits-blocked.json',
