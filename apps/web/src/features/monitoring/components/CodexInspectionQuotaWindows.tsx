@@ -14,9 +14,17 @@ export type CodexInspectionQuotaWindowView = {
   resetAccuracy?: CodexInspectionQuotaWindow['resetAccuracy'];
 };
 
+export type CodexInspectionCreditsView = {
+  observed?: boolean;
+  balance?: string | number | null;
+  hasCredits?: boolean | null;
+  unlimited?: boolean | null;
+};
+
 type CodexInspectionQuotaWindowsProps = {
   windows?: readonly CodexInspectionQuotaWindowView[] | null;
   fallbackUsedPercent?: number | null;
+  credits?: CodexInspectionCreditsView | null;
   t: TFunction;
 };
 
@@ -40,9 +48,21 @@ const getQuotaFillClass = (remainingPercent: number | null) => {
 const formatQuotaLabel = (window: CodexInspectionQuotaWindowView, t: TFunction) =>
   t(window.labelKey, window.labelParams ?? {});
 
+const formatCreditsLabel = (credits?: CodexInspectionCreditsView | null) => {
+  if (!credits?.observed) return null;
+  if (credits.balance !== null && credits.balance !== undefined) {
+    const balance = String(credits.balance).trim();
+    if (balance) return `Credits ${balance}`;
+  }
+  if (credits.unlimited === true) return 'Credits 无限';
+  if (credits.hasCredits === true) return 'Credits 可用';
+  return 'Credits --';
+};
+
 export function CodexInspectionQuotaWindows({
   windows,
   fallbackUsedPercent,
+  credits,
   t,
 }: CodexInspectionQuotaWindowsProps) {
   const normalizedFallbackUsedPercent = normalizePercent(fallbackUsedPercent);
@@ -76,6 +96,11 @@ export function CodexInspectionQuotaWindows({
               usedPercent: normalizedFallbackUsedPercent,
             },
           ];
+  const creditsLabel = formatCreditsLabel(credits);
+  const creditsRowIndex =
+    ['monthly', 'weekly', 'long']
+      .map((id) => rows.findIndex((row) => row.id === id))
+      .find((index) => index >= 0) ?? 0;
 
   if (rows.length === 0) {
     return (
@@ -83,6 +108,11 @@ export function CodexInspectionQuotaWindows({
         <span className={styles.quotaWindowUnavailable}>
           {t('monitoring.codex_inspection_quota_unavailable')}
         </span>
+        {creditsLabel ? (
+          <span className={styles.quotaWindowCredits} data-inspection-credits>
+            {creditsLabel}
+          </span>
+        ) : null}
         <span className={styles.quotaWindowPlaceholderBar} aria-hidden="true" />
       </div>
     );
@@ -90,7 +120,7 @@ export function CodexInspectionQuotaWindows({
 
   return (
     <div className={styles.quotaWindowList}>
-      {rows.map((row) => {
+      {rows.map((row, rowIndex) => {
         const usedPercent = normalizePercent(row.usedPercent);
         const remainingPercent = usedPercent === null ? null : clampPercent(100 - usedPercent);
         const resetTime = isValidQuotaResetAtMs(row.resetAtMs)
@@ -104,10 +134,17 @@ export function CodexInspectionQuotaWindows({
           <div key={row.id} className={styles.quotaWindowRow}>
             <div className={styles.quotaWindowHeader}>
               <span className={styles.quotaWindowLabel}>{row.label}</span>
-              <span className={styles.quotaWindowValue}>
-                {t('monitoring.codex_inspection_quota_remaining', {
-                  percent: formatRemainingPercent(remainingPercent),
-                })}
+              <span className={styles.quotaWindowMeta}>
+                <span className={styles.quotaWindowValue}>
+                  {t('monitoring.codex_inspection_quota_remaining', {
+                    percent: formatRemainingPercent(remainingPercent),
+                  })}
+                </span>
+                {rowIndex === creditsRowIndex && creditsLabel ? (
+                  <span className={styles.quotaWindowCredits} data-inspection-credits>
+                    {creditsLabel}
+                  </span>
+                ) : null}
               </span>
             </div>
             <div className={styles.quotaWindowBar} aria-hidden="true">

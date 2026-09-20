@@ -116,6 +116,15 @@ type StoredCodexInspectionResultItem = Omit<CodexInspectionResultItem, 'raw'> & 
   note?: string;
 };
 
+const normalizeStoredCreditsBalance = (value: unknown): string | number | null => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  return null;
+};
+
 const normalizeQuotaWindowLabelParams = (
   value: unknown
 ): Record<string, string | number> | undefined => {
@@ -175,10 +184,7 @@ const inferStoredCodexWindowKind = (
   return undefined;
 };
 
-const canonicalizeStoredCodexProviderWindowId = (
-  value: string,
-  windowKind?: string
-): string => {
+const canonicalizeStoredCodexProviderWindowId = (value: string, windowKind?: string): string => {
   const raw = value.trim().toLowerCase();
   // `secondary` was used for both weekly and Team monthly windows. Preserve
   // it when no duration/label evidence is available instead of silently
@@ -315,6 +321,10 @@ const serializeResultItemForStorage = (
     autoRecoverEligible: item.autoRecoverEligible,
     error: item.error,
     planType: readNullableString(item.planType),
+    creditsObserved: item.creditsObserved === true,
+    creditsBalance: normalizeStoredCreditsBalance(item.creditsBalance),
+    creditsHasCredits: item.creditsHasCredits ?? null,
+    creditsUnlimited: item.creditsUnlimited ?? null,
     quotaWindows: (item.quotaWindows ?? []).map(serializeQuotaWindow),
     quotaInventoryObserved: item.quotaInventoryObserved === true,
     errorKind: readString(item.errorKind),
@@ -365,6 +375,11 @@ const hydrateStoredResultItem = (
     autoRecoverEligible: readBoolean(value.autoRecoverEligible, false),
     error: readString(value.error),
     planType: readNullableString(value.planType),
+    creditsObserved: readBoolean(value.creditsObserved, false),
+    creditsBalance: normalizeStoredCreditsBalance(value.creditsBalance),
+    creditsHasCredits:
+      typeof value.creditsHasCredits === 'boolean' ? value.creditsHasCredits : null,
+    creditsUnlimited: typeof value.creditsUnlimited === 'boolean' ? value.creditsUnlimited : null,
     quotaWindows: Array.isArray(value.quotaWindows)
       ? value.quotaWindows
           .map(hydrateQuotaWindow)

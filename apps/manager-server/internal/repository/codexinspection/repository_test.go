@@ -127,6 +127,58 @@ func TestResultRoundTripPreservesExplicitEmptyQuotaInventory(t *testing.T) {
 	}
 }
 
+func TestResultRoundTripPreservesObservedCredits(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repository := New(db)
+	ctx := context.Background()
+	run, err := repository.CreateRun(ctx, model.CodexInspectionRun{
+		TriggerType: "manual",
+		Status:      model.CodexInspectionStatusCompleted,
+		StartedAtMS: 1,
+		Settings:    model.DefaultCodexInspectionConfig(),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	balance := 996.8907575
+	hasCredits := true
+	unlimited := false
+	_, err = repository.InsertResult(ctx, model.CodexInspectionResult{
+		RunID:             run.ID,
+		AccountKey:        "codex.json::-::alice",
+		FileName:          "codex.json",
+		DisplayAccount:    "alice@example.com",
+		Provider:          "codex",
+		Action:            "keep",
+		CreditsObserved:   true,
+		CreditsBalance:    &balance,
+		CreditsHasCredits: &hasCredits,
+		CreditsUnlimited:  &unlimited,
+	})
+	if err != nil {
+		t.Fatalf("insert result: %v", err)
+	}
+
+	items, err := repository.ListResults(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("list results: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("stored result count = %d, want 1", len(items))
+	}
+	stored := items[0]
+	if !stored.CreditsObserved || stored.CreditsBalance == nil || *stored.CreditsBalance != balance ||
+		stored.CreditsHasCredits == nil || !*stored.CreditsHasCredits ||
+		stored.CreditsUnlimited == nil || *stored.CreditsUnlimited {
+		t.Fatalf("stored Credits observation = %#v", stored)
+	}
+}
+
 func TestResultRoundTripRejectsMalformedQuotaInventoryAndPreservesValidUpsertEvidence(t *testing.T) {
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

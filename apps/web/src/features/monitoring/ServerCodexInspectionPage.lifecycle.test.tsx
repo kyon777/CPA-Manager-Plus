@@ -224,6 +224,10 @@ describe('ServerCodexInspectionPage quota mapping', () => {
       actionReason: '',
       isQuota: false,
       createdAtMs: 0,
+      creditsObserved: true,
+      creditsBalance: 996.8907575,
+      creditsHasCredits: true,
+      creditsUnlimited: false,
       quotaWindows: [
         {
           id: 'five-hour',
@@ -257,7 +261,54 @@ describe('ServerCodexInspectionPage quota mapping', () => {
     ]);
     expect(mapped.observedHeaderEvidence?.join(' · ')).toContain('Business Premium 5x');
     expect(mapped.observedHeaderEvidence?.join(' · ')).not.toContain('self_serve_business_prolite');
+    expect(mapped).toMatchObject({
+      creditsObserved: true,
+      creditsBalance: 996.8907575,
+      creditsHasCredits: true,
+      creditsUnlimited: false,
+    });
   });
+
+  it('falls back to a matching header snapshot Credits observation for historical runs', () => {
+    const item: CodexInspectionResult = {
+      id: 9,
+      runId: 1,
+      accountKey: 'codex.json::auth-9',
+      fileName: 'codex.json',
+      displayAccount: 'account@example.com',
+      provider: 'codex',
+      disabled: false,
+      action: 'keep',
+      actionReason: '',
+      isQuota: false,
+      createdAtMs: 0,
+    };
+
+    const mapped = toServerResultItem(
+      item,
+      t,
+      {
+        event_hash: 'header-credits',
+        timestamp_ms: 1,
+        response_metadata: {
+          quota: {
+            credits_balance: '535.0317680000',
+            credits_has_credits: true,
+            credits_unlimited: false,
+          },
+        },
+      } satisfies UsageHeaderSnapshot,
+      'en'
+    );
+
+    expect(mapped).toMatchObject({
+      creditsObserved: true,
+      creditsBalance: '535.0317680000',
+      creditsHasCredits: true,
+      creditsUnlimited: false,
+    });
+  });
+
   it('passes a resolved account note through to the result card raw source', () => {
     const item: CodexInspectionResult = {
       id: 8,
@@ -276,6 +327,8 @@ describe('ServerCodexInspectionPage quota mapping', () => {
     const mapped = toServerResultItem(item, t, undefined, 'en', 'Production Pool');
 
     expect(mapped.raw.note).toBe('Production Pool');
+    expect(mapped.creditsObserved).toBe(false);
+    expect(mapped.creditsBalance).toBeNull();
   });
 });
 

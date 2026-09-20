@@ -241,8 +241,9 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			run_id, account_key, file_name, display_account, account_snapshot, auth_index, account_id,
 			provider, disabled, status, state, action, action_reason, status_code,
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
-			plan_type, quota_windows_json, error_kind, error_detail, created_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			plan_type, quota_windows_json, credits_observed, credits_balance, credits_has_credits, credits_unlimited,
+			error_kind, error_detail, created_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		on conflict(run_id, account_key) do update set
 			file_name = excluded.file_name,
 			display_account = excluded.display_account,
@@ -268,6 +269,10 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 				when excluded.quota_windows_json is not null then excluded.quota_windows_json
 				else codex_inspection_results.quota_windows_json
 			end,
+			credits_observed = excluded.credits_observed,
+			credits_balance = excluded.credits_balance,
+			credits_has_credits = excluded.credits_has_credits,
+			credits_unlimited = excluded.credits_unlimited,
 				error_kind = excluded.error_kind,
 				error_detail = excluded.error_detail,
 				created_at_ms = excluded.created_at_ms
@@ -295,6 +300,10 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			nullString(result.ActionError),
 			nullString(result.PlanType),
 			nullStringIf(result.QuotaInventoryObserved, result.QuotaWindowsJSON),
+			boolInt(result.CreditsObserved),
+			nullFloat(result.CreditsBalance),
+			nullBool(result.CreditsHasCredits),
+			nullBool(result.CreditsUnlimited),
 			nullString(result.ErrorKind),
 			nullString(result.ErrorDetail),
 			result.CreatedAtMS,
@@ -447,7 +456,8 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 			id, run_id, account_key, file_name, display_account, account_snapshot, auth_index, account_id,
 			provider, disabled, status, state, action, action_reason, status_code,
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
-			plan_type, quota_windows_json, error_kind, error_detail, created_at_ms
+			plan_type, quota_windows_json, credits_observed, credits_balance, credits_has_credits, credits_unlimited,
+			error_kind, error_detail, created_at_ms
 		from codex_inspection_results
 		where run_id = ?
 		order by file_name asc, display_account asc, id asc`,
@@ -890,8 +900,9 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	var actionStatus, executedAction, actionError sql.NullString
 	var planType, quotaWindowsJSON, errorKind, errorDetail sql.NullString
 	var statusCode sql.NullInt64
-	var usedPercent sql.NullFloat64
-	var disabled, isQuota, autoRecoverEligible int
+	var usedPercent, creditsBalance sql.NullFloat64
+	var disabled, isQuota, autoRecoverEligible, creditsObserved int
+	var creditsHasCredits, creditsUnlimited sql.NullInt64
 	if err := row.Scan(
 		&result.ID,
 		&result.RunID,
@@ -917,6 +928,10 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 		&actionError,
 		&planType,
 		&quotaWindowsJSON,
+		&creditsObserved,
+		&creditsBalance,
+		&creditsHasCredits,
+		&creditsUnlimited,
 		&errorKind,
 		&errorDetail,
 		&result.CreatedAtMS,
@@ -938,6 +953,7 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	result.ExecutedAction = executedAction.String
 	result.ActionError = actionError.String
 	result.PlanType = planType.String
+	result.CreditsObserved = creditsObserved != 0
 	result.QuotaWindowsJSON = quotaWindowsJSON.String
 	result.QuotaWindows, result.QuotaInventoryObserved = model.ParseCodexInspectionQuotaWindows(result.QuotaWindowsJSON)
 	if !result.QuotaInventoryObserved {
@@ -952,6 +968,18 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	if usedPercent.Valid {
 		value := usedPercent.Float64
 		result.UsedPercent = &value
+	}
+	if creditsBalance.Valid {
+		value := creditsBalance.Float64
+		result.CreditsBalance = &value
+	}
+	if creditsHasCredits.Valid {
+		value := creditsHasCredits.Int64 != 0
+		result.CreditsHasCredits = &value
+	}
+	if creditsUnlimited.Valid {
+		value := creditsUnlimited.Int64 != 0
+		result.CreditsUnlimited = &value
 	}
 	return result, nil
 }
@@ -1012,4 +1040,18 @@ func nullFloat(value *float64) any {
 		return nil
 	}
 	return *value
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func nullBool(value *bool) any {
+	if value == nil {
+		return nil
+	}
+	return boolInt(*value)
 }

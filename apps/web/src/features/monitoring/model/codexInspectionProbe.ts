@@ -21,10 +21,7 @@ import {
   resolveCodexPlanType,
 } from '@/utils/quota';
 import { normalizeAuthIndex } from '@/utils/usage';
-import {
-  hasUsableCodexCredits,
-  type CodexCreditsAvailability,
-} from '@/utils/quota/codexCredits';
+import { hasUsableCodexCredits, type CodexCreditsAvailability } from '@/utils/quota/codexCredits';
 import {
   type CodexInspectionAccount,
   type CodexInspectionLogHandler,
@@ -469,6 +466,18 @@ export const inspectSingleAccount = async (
       normalizePlanType(payload?.plan_type ?? payload?.planType) ??
       resolveCodexPlanType(account.raw);
     const quotaWindows = payload ? buildCodexQuotaWindowInfos(payload, { planType }) : [];
+    const creditsPayload = payload?.credits ?? null;
+    const creditsObserved = creditsPayload !== null;
+    const credits = creditsObserved
+      ? {
+          creditsHasCredits: creditsPayload.has_credits ?? creditsPayload.hasCredits,
+          creditsUnlimited: creditsPayload.unlimited,
+          creditsBalance: creditsPayload.balance,
+          creditsOverageLimitReached:
+            creditsPayload.overage_limit_reached ?? creditsPayload.overageLimitReached,
+          spendControlReached: payload?.spend_control?.reached ?? payload?.spendControl?.reached,
+        }
+      : null;
 
     if (!result.hasStatusCode) {
       onLog?.(
@@ -494,23 +503,16 @@ export const inspectSingleAccount = async (
         error: '响应缺少 status_code',
         planType,
         quotaWindows,
+        creditsObserved,
+        creditsBalance: credits?.creditsBalance ?? null,
+        creditsHasCredits: credits?.creditsHasCredits ?? null,
+        creditsUnlimited: credits?.creditsUnlimited ?? null,
         errorKind: 'missing_status',
         errorDetail,
       };
     }
 
     const rateLimit = payload?.rate_limit ?? payload?.rateLimit ?? null;
-    const credits = payload?.credits
-      ? {
-          creditsHasCredits: payload.credits.has_credits ?? payload.credits.hasCredits,
-          creditsUnlimited: payload.credits.unlimited,
-          creditsBalance: payload.credits.balance,
-          creditsOverageLimitReached:
-            payload.credits.overage_limit_reached ?? payload.credits.overageLimitReached,
-          spendControlReached:
-            payload.spend_control?.reached ?? payload.spendControl?.reached,
-        }
-      : null;
     const usedPercent = deriveCodexRateLimitUsedPercent(rateLimit);
     const bodyText = result.bodyText.toLowerCase();
     const isQuota =
@@ -574,6 +576,10 @@ export const inspectSingleAccount = async (
       error: '',
       planType,
       quotaWindows,
+      creditsObserved,
+      creditsBalance: credits?.creditsBalance ?? null,
+      creditsHasCredits: credits?.creditsHasCredits ?? null,
+      creditsUnlimited: credits?.creditsUnlimited ?? null,
       quotaInventoryObserved: payload ? hasCodexQuotaInventory(payload) : false,
       errorKind: result.statusCode >= 200 && result.statusCode < 300 ? '' : 'http_status',
       errorDetail:

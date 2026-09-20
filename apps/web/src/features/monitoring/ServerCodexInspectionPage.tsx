@@ -94,6 +94,7 @@ import {
 import { useAuthStore, useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
 import {
+  buildObservedCodexQuotaFromHeaderSnapshot,
   buildUsageHeaderSnapshotLookup,
   getHeaderSnapshotErrorCode,
   getHeaderSnapshotErrorKind,
@@ -615,6 +616,14 @@ export function toServerResultItem(
     ? t(item.actionReason)
     : item.actionReason;
   const observedHeaderEvidence = buildObservedHeaderEvidence(snapshot, item.provider, locale, t);
+  const observedHeaderQuota = buildObservedCodexQuotaFromHeaderSnapshot(snapshot);
+  const headerCreditsObserved = Boolean(
+    observedHeaderQuota &&
+    (observedHeaderQuota.creditsBalance !== null ||
+      observedHeaderQuota.creditsHasCredits !== null ||
+      observedHeaderQuota.creditsUnlimited !== null)
+  );
+  const creditsObserved = item.creditsObserved === true || headerCreditsObserved;
   const normalizedAccountNote = accountNote.trim();
   return {
     key: `server-${item.id || item.accountKey}`,
@@ -641,6 +650,10 @@ export function toServerResultItem(
     autoRecoverEligible: item.autoRecoverEligible === true,
     error: item.error ?? '',
     planType: item.planType ?? null,
+    creditsObserved,
+    creditsBalance: item.creditsBalance ?? observedHeaderQuota?.creditsBalance ?? null,
+    creditsHasCredits: item.creditsHasCredits ?? observedHeaderQuota?.creditsHasCredits ?? null,
+    creditsUnlimited: item.creditsUnlimited ?? observedHeaderQuota?.creditsUnlimited ?? null,
     quotaWindows: item.quotaWindows?.map((window) => ({
       id: window.id,
       labelKey: window.labelKey,

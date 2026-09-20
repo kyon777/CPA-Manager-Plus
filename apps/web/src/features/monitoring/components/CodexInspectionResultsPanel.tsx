@@ -386,6 +386,16 @@ export function CodexInspectionResultsPanel({
                       <CodexInspectionQuotaWindows
                         windows={quotaWindows}
                         fallbackUsedPercent={item.usedPercent}
+                        credits={
+                          item.creditsObserved
+                            ? {
+                                observed: true,
+                                balance: item.creditsBalance,
+                                hasCredits: item.creditsHasCredits,
+                                unlimited: item.creditsUnlimited,
+                              }
+                            : undefined
+                        }
                         t={t}
                       />
                     </section>

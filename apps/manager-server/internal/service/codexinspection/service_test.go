@@ -6032,6 +6032,21 @@ func newCodexInspectionTestStore(t *testing.T) *store.Store {
 	return db
 }
 
+func TestExtractCodexInspectionCreditsPreservesObservedValues(t *testing.T) {
+	credits := extractCodexInspectionCredits(parseRecord(`{
+		"credits": {
+			"balance": "996.8907575",
+			"has_credits": true,
+			"unlimited": false
+		}
+	}`))
+	if !credits.Observed || credits.Balance == nil || *credits.Balance != 996.8907575 ||
+		credits.HasCredits == nil || !*credits.HasCredits ||
+		credits.Unlimited == nil || *credits.Unlimited {
+		t.Fatalf("Credits observation = %#v", credits)
+	}
+}
+
 func newCodexInspectionTestService(t *testing.T, db *store.Store) *Service {
 	t.Helper()
 	cfg := config.Config{

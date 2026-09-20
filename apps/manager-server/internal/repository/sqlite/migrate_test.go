@@ -2199,7 +2199,7 @@ func TestEnsureAutomationColumnsAddsDecisionMetadata(t *testing.T) {
 	}
 }
 
-func TestEnsureCodexInspectionResultColumnsAddsIdentityAndAutoRecoveryColumns(t *testing.T) {
+func TestEnsureCodexInspectionResultColumnsAddsIdentityAutoRecoveryAndCreditsColumns(t *testing.T) {
 	db, err := sql.Open("sqlite", dataSourceName(filepath.Join(t.TempDir(), "legacy-codex-inspection.sqlite")))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -2213,8 +2213,17 @@ func TestEnsureCodexInspectionResultColumnsAddsIdentityAndAutoRecoveryColumns(t 
 		t.Fatalf("migrate codex inspection results: %v", err)
 	}
 	columns := migrationTableColumns(t, db, "codex_inspection_results")
-	if !columns["account_snapshot"] || !columns["auto_recover_eligible"] {
-		t.Fatalf("legacy results columns = %#v, want account_snapshot and auto_recover_eligible", columns)
+	for _, column := range []string{
+		"account_snapshot",
+		"auto_recover_eligible",
+		"credits_observed",
+		"credits_balance",
+		"credits_has_credits",
+		"credits_unlimited",
+	} {
+		if !columns[column] {
+			t.Fatalf("legacy results is missing %s: %#v", column, columns)
+		}
 	}
 }
 

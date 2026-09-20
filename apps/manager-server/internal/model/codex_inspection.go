@@ -182,6 +182,10 @@ type CodexInspectionResult struct {
 	AutoRecoverEligible    bool                         `json:"autoRecoverEligible"`
 	Error                  string                       `json:"error,omitempty"`
 	PlanType               string                       `json:"planType,omitempty"`
+	CreditsObserved        bool                         `json:"creditsObserved"`
+	CreditsBalance         *float64                     `json:"creditsBalance,omitempty"`
+	CreditsHasCredits      *bool                        `json:"creditsHasCredits,omitempty"`
+	CreditsUnlimited       *bool                        `json:"creditsUnlimited,omitempty"`
 	QuotaWindows           []CodexInspectionQuotaWindow `json:"quotaWindows,omitempty"`
 	QuotaWindowsJSON       string                       `json:"-"`
 	QuotaInventoryObserved bool                         `json:"quotaInventoryObserved"`

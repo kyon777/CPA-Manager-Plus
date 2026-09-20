@@ -168,6 +168,10 @@ export interface CodexInspectionResultItem extends CodexInspectionAccount {
   autoRecoverEligible: boolean;
   error: string;
   planType?: string | null;
+  creditsObserved?: boolean;
+  creditsBalance?: string | number | null;
+  creditsHasCredits?: boolean | null;
+  creditsUnlimited?: boolean | null;
   quotaWindows?: CodexInspectionQuotaWindow[];
   quotaInventoryObserved?: boolean;
   errorKind?: string;

@@ -257,6 +257,13 @@ type codexCredits struct {
 	SpendControlReached bool
 }
 
+type codexInspectionCredits struct {
+	Observed   bool
+	Balance    *float64
+	HasCredits *bool
+	Unlimited  *bool
+}
+
 type codexWindow struct {
 	UsedPercent        *float64
 	LimitWindowSeconds *float64
@@ -1865,6 +1872,7 @@ func (s *Service) inspectSingleAccount(
 	}
 	rateLimit := parseRateLimit(readMap(payload, "rate_limit", "rateLimit"))
 	credits := parseCodexCredits(payload)
+	inspectionCredits := extractCodexInspectionCredits(payload)
 	usedPercent := deriveRateLimitUsedPercent(rateLimit)
 	bodyLower := strings.ToLower(response.BodyText)
 	isQuota := statusCode == http.StatusPaymentRequired ||
@@ -1884,6 +1892,10 @@ func (s *Service) inspectSingleAccount(
 		base.ActionReason += "；禁用来源不受巡检管理，仅允许手动启用"
 	}
 	base.PlanType = planType
+	base.CreditsObserved = inspectionCredits.Observed
+	base.CreditsBalance = inspectionCredits.Balance
+	base.CreditsHasCredits = inspectionCredits.HasCredits
+	base.CreditsUnlimited = inspectionCredits.Unlimited
 	base.QuotaWindows = buildCodexInspectionQuotaWindows(payload, planType)
 	base.QuotaInventoryObserved = codexQuotaInventoryObserved(payload)
 	if base.QuotaInventoryObserved && len(base.QuotaWindows) == 0 {
@@ -4535,6 +4547,24 @@ func parseCodexCredits(payload map[string]any) *codexCredits {
 	}
 	if balance, ok := readCodexCreditBalance(raw); ok {
 		credits.Balance = balance
+	}
+	return credits
+}
+
+func extractCodexInspectionCredits(payload map[string]any) codexInspectionCredits {
+	raw := readMap(payload, "credits")
+	if raw == nil {
+		return codexInspectionCredits{}
+	}
+	credits := codexInspectionCredits{Observed: true}
+	if balance, ok := readCodexCreditBalance(raw); ok {
+		credits.Balance = balance
+	}
+	if value, ok := readBoolPtr(raw, "has_credits", "hasCredits"); ok {
+		credits.HasCredits = value
+	}
+	if value, ok := readBoolPtr(raw, "unlimited"); ok {
+		credits.Unlimited = value
 	}
 	return credits
 }

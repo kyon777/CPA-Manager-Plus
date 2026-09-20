@@ -112,6 +112,40 @@ describe('CodexInspectionQuotaWindows', () => {
     expect(renderer!.root.find((node) => node.props.style?.width).props.style.width).toBe('97%');
   });
 
+  it('shows an observed numeric Credits balance beside the quota remaining value', () => {
+    const props = {
+      windows: [{ id: 'monthly', labelKey: 'monthly', usedPercent: 100 }],
+      credits: {
+        observed: true,
+        balance: 996.8907575,
+      },
+      t,
+    } as unknown as Parameters<typeof CodexInspectionQuotaWindows>[0];
+    let renderer: ReactTestRenderer;
+    act(() => {
+      renderer = create(<CodexInspectionQuotaWindows {...props} />);
+    });
+
+    expect(collectText(renderer!)).toContain('Credits 996.8907575');
+  });
+
+  it('shows usable Credits when the observed response has no numeric balance', () => {
+    const props = {
+      windows: [{ id: 'monthly', labelKey: 'monthly', usedPercent: 100 }],
+      credits: {
+        observed: true,
+        hasCredits: true,
+      },
+      t,
+    } as unknown as Parameters<typeof CodexInspectionQuotaWindows>[0];
+    let renderer: ReactTestRenderer;
+    act(() => {
+      renderer = create(<CodexInspectionQuotaWindows {...props} />);
+    });
+
+    expect(collectText(renderer!)).toContain('Credits 可用');
+  });
+
   it('collapses quota windows without usage percentages into one unavailable state', () => {
     let renderer: ReactTestRenderer;
     act(() => {

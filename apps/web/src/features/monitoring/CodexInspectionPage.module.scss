@@ -849,6 +849,7 @@
 
 .quotaWindowLabel,
 .quotaWindowValue,
+.quotaWindowCredits,
 .quotaWindowReset {
   font-size: 12px;
   line-height: 1.35;
@@ -865,6 +866,22 @@
 .quotaWindowValue {
   flex: 0 0 auto;
   color: var(--inspect-ink);
+  font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.quotaWindowMeta {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.quotaWindowCredits {
+  color: var(--inspect-accent, var(--inspect-blue));
   font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-weight: 700;
   white-space: nowrap;

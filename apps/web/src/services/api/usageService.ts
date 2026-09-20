@@ -339,6 +339,10 @@ export interface CodexInspectionResult {
   autoRecoverEligible?: boolean;
   error?: string;
   planType?: string | null;
+  creditsObserved?: boolean;
+  creditsBalance?: number | null;
+  creditsHasCredits?: boolean | null;
+  creditsUnlimited?: boolean | null;
   quotaWindows?: CodexInspectionQuotaWindow[];
   quotaInventoryObserved?: boolean;
   errorKind?: string;

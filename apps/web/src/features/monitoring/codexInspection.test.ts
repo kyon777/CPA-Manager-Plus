@@ -136,6 +136,10 @@ const createResultItem = (
   autoRecoverEligible: overrides.autoRecoverEligible ?? false,
   error: overrides.error ?? '',
   planType: overrides.planType ?? null,
+  creditsObserved: overrides.creditsObserved,
+  creditsBalance: overrides.creditsBalance ?? null,
+  creditsHasCredits: overrides.creditsHasCredits ?? null,
+  creditsUnlimited: overrides.creditsUnlimited ?? null,
   quotaWindows: overrides.quotaWindows ?? [],
   quotaInventoryObserved: overrides.quotaInventoryObserved,
   errorKind: overrides.errorKind ?? '',
@@ -6641,6 +6645,10 @@ describe('Codex inspection last-run cache', () => {
           isQuota: true,
           planType: 'team',
           quotaInventoryObserved: true,
+          creditsObserved: true,
+          creditsBalance: '996.8907575',
+          creditsHasCredits: true,
+          creditsUnlimited: false,
           quotaWindows: [
             {
               id: 'monthly',
@@ -6672,6 +6680,10 @@ describe('Codex inspection last-run cache', () => {
     const loaded = loadCodexInspectionLastRun();
     expect(loaded?.result.results[0].planType).toBe('team');
     expect(loaded?.result.results[0].quotaInventoryObserved).toBe(true);
+    expect(loaded?.result.results[0].creditsObserved).toBe(true);
+    expect(loaded?.result.results[0].creditsBalance).toBe('996.8907575');
+    expect(loaded?.result.results[0].creditsHasCredits).toBe(true);
+    expect(loaded?.result.results[0].creditsUnlimited).toBe(false);
     expect(loaded?.result.results[0].quotaWindows).toEqual([
       {
         id: 'monthly',

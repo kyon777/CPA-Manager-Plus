@@ -238,6 +238,10 @@ describe('inspectSingleAccount', () => {
       actionReason: '月额度达到阈值，但 Credits 可用，无需处理',
       usedPercent: 100,
       isQuota: false,
+      creditsObserved: true,
+      creditsBalance: '996.8907575',
+      creditsHasCredits: null,
+      creditsUnlimited: null,
     });
   });
 
