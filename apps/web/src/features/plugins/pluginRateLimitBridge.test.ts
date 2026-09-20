@@ -29,14 +29,19 @@ describe('per-auth rate limit iframe bridge', () => {
       pluginID: 'per-auth-rate-limit',
       requestID: 'save_1',
       operation: 'save',
-      settings: { enabled: false, rpm: 30, minInterval: '10s' },
+      settings: { enabled: false, rpm: 30, minInterval: '10s', maxQueueWait: '35s', maxPendingRequests: 500 },
     });
-    expect(save).toMatchObject({ operation: 'save', settings: { rpm: 30, minInterval: '10s' } });
+    expect(save).toMatchObject({
+      operation: 'save',
+      settings: { rpm: 30, minInterval: '10s', maxQueueWait: '35s', maxPendingRequests: 500 },
+    });
     if (!save || save.operation !== 'save') throw new Error('expected save request');
 
     expect(buildRateLimitConfigPatch(save)).toEqual({
       enabled: false,
       default: { rpm: 30, min_interval: '10s' },
+      max_queue_wait: '35s',
+      max_pending_requests: 500,
       accounts: null,
     });
   });
@@ -55,14 +60,21 @@ describe('per-auth rate limit iframe bridge', () => {
         pluginID: 'per-auth-rate-limit',
         requestID: 'save_1',
         operation: 'save',
-        settings: { enabled: true, rpm: -1, minInterval: '10s' },
+        settings: { enabled: true, rpm: -1, minInterval: '10s', maxQueueWait: '35s', maxPendingRequests: 500 },
       },
       {
         protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
         pluginID: 'per-auth-rate-limit',
         requestID: 'save_1',
         operation: 'save',
-        settings: { enabled: true, rpm: 1, minInterval: '-1s' },
+        settings: { enabled: true, rpm: 1, minInterval: '-1s', maxQueueWait: '35s', maxPendingRequests: 500 },
+      },
+      {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'save_1',
+        operation: 'save',
+        settings: { enabled: true, rpm: 1, minInterval: '1s', maxQueueWait: '35s', maxPendingRequests: -1 },
       },
     ];
 
@@ -107,7 +119,12 @@ describe('per-auth rate limit iframe bridge', () => {
     const handle = createRateLimitBridgeHost({
       expectedOrigin: 'https://cpa.kyon666.top',
       isActiveFrameSource: (source) => source === trustedSource,
-      getConfig: async () => ({ enabled: true, default: { rpm: 8, min_interval: '0s' } }),
+      getConfig: async () => ({
+        enabled: true,
+        default: { rpm: 8, min_interval: '0s' },
+        max_queue_wait: '35s',
+        max_pending_requests: 500,
+      }),
       patchConfig: async (patch) => {
         patches.push(patch);
       },
@@ -120,7 +137,7 @@ describe('per-auth rate limit iframe bridge', () => {
         pluginID: 'per-auth-rate-limit',
         requestID: 'save_2',
         operation: 'save',
-        settings: { enabled: true, rpm: 6, minInterval: '10s' },
+        settings: { enabled: true, rpm: 6, minInterval: '10s', maxQueueWait: '1m', maxPendingRequests: 42 },
       },
       origin: 'https://cpa.kyon666.top',
       source: trustedSource,
@@ -137,7 +154,13 @@ describe('per-auth rate limit iframe bridge', () => {
     });
 
     expect(patches).toEqual([
-      { enabled: true, default: { rpm: 6, min_interval: '10s' }, accounts: null },
+      {
+        enabled: true,
+        default: { rpm: 6, min_interval: '10s' },
+        max_queue_wait: '1m',
+        max_pending_requests: 42,
+        accounts: null,
+      },
     ]);
     expect(sent).toEqual([
       expect.objectContaining({ requestID: 'save_2', operation: 'result', ok: true }),
