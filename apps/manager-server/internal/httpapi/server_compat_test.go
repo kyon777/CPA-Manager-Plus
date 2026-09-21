@@ -1233,6 +1233,62 @@ func TestServerCompatPluginProxyRoutes(t *testing.T) {
 	})
 }
 
+func TestServerCompatAPIKeyModelPolicyUsesSavedCPAManagementKey(t *testing.T) {
+	type observedRequest struct {
+		method        string
+		path          string
+		authorization string
+		body          string
+	}
+
+	observed := make(chan observedRequest, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		observed <- observedRequest{
+			method:        r.Method,
+			path:          r.URL.Path,
+			authorization: r.Header.Get("Authorization"),
+			body:          string(body),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":1,"enforcement_mode":"audit","unmanaged_key_behavior":"allow","keys":{}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	handler, db := newCompatHandler(t, testutil.NewConfig(t), nil)
+	if err := db.SaveManagerConfig(context.Background(), store.ManagerConfig{
+		CPAConnection: store.ManagerCPAConnectionConfig{
+			CPABaseURL:    upstream.URL,
+			ManagementKey: "saved-cpa-management-key",
+		},
+	}); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	path := "/v0/management/plugins/api-key-model-policy/policy"
+	body := `{"version":1,"enforcement_mode":"audit","unmanaged_key_behavior":"allow","keys":{}}`
+	rr := testutil.Request(t, handler, http.MethodPut, path, body, testutil.AdminKey)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+
+	select {
+	case got := <-observed:
+		if got.method != http.MethodPut || got.path != path ||
+			got.authorization != "Bearer saved-cpa-management-key" || got.body != body {
+			t.Fatalf("policy proxy request = %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CPA upstream did not receive API key model policy request")
+	}
+
+	callerRR := testutil.Request(t, handler, http.MethodGet, path, "", "caller-key")
+	testutil.RequireStatus(t, callerRR, http.StatusUnauthorized)
+	select {
+	case got := <-observed:
+		t.Fatalf("caller-auth policy request reached CPA upstream: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 type recordingAutomationRuntimeService struct {
 	reloadCount int
 }

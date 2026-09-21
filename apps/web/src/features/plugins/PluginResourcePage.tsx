@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { pluginsApi } from '@/services/api';
+import { apiKeyModelPolicyApi, apiKeysApi, pluginsApi, usageServiceApi } from '@/services/api';
 import { useAuthStore, useThemeStore } from '@/stores';
 import { getErrorMessage, isRecord } from '@/utils/helpers';
 import type { PluginListResponse } from '@/types';
@@ -14,11 +14,16 @@ import {
   resolvePluginAssetURL,
 } from './pluginResources';
 import {
-  appendRateLimitBridgeParentOrigin,
   createRateLimitBridgeHost,
   RATE_LIMIT_BRIDGE_PLUGIN_ID,
   resolveRateLimitBridgeFrameOrigin,
 } from './pluginRateLimitBridge';
+import { appendPluginResourceBridgeParentOrigin } from './pluginResourceBridgeRouting';
+import {
+  API_KEY_MODEL_POLICY_BRIDGE_PLUGIN_ID,
+  createApiKeyModelPolicyBridgeHost,
+  resolveApiKeyModelPolicyBridgeFrameOrigin,
+} from './pluginApiKeyModelPolicyBridge';
 import styles from './PluginResourcePage.module.scss';
 
 const hasStatus = (error: unknown, status: number) => isRecord(error) && error.status === status;
@@ -41,6 +46,7 @@ export function PluginResourcePage() {
   const params = useParams<{ pluginId: string; menuIndex: string }>();
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const apiBase = useAuthStore((state) => state.apiBase);
+  const managementKey = useAuthStore((state) => state.managementKey);
   const supportsPlugin = useAuthStore((state) => state.supportsPlugin);
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
 
@@ -109,12 +115,16 @@ export function PluginResourcePage() {
         : '',
     [iframeSrc, pluginID]
   );
-  const bridgedIframeSrc = useMemo(
+  const apiKeyModelPolicyBridgeFrameOrigin = useMemo(
     () =>
-      rateLimitBridgeFrameOrigin
-        ? appendRateLimitBridgeParentOrigin(iframeSrc, window.location.origin)
-        : iframeSrc,
-    [iframeSrc, rateLimitBridgeFrameOrigin]
+      pluginID === API_KEY_MODEL_POLICY_BRIDGE_PLUGIN_ID && iframeSrc
+        ? resolveApiKeyModelPolicyBridgeFrameOrigin(iframeSrc, window.location.origin)
+        : '',
+    [iframeSrc, pluginID]
+  );
+  const bridgedIframeSrc = useMemo(
+    () => appendPluginResourceBridgeParentOrigin(pluginID, iframeSrc, window.location.origin),
+    [iframeSrc, pluginID]
   );
 
   const refreshPluginHostStyle = useCallback(() => {
@@ -180,6 +190,40 @@ export function PluginResourcePage() {
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [pluginID, rateLimitBridgeFrameOrigin]);
+
+  useEffect(() => {
+    if (pluginID !== API_KEY_MODEL_POLICY_BRIDGE_PLUGIN_ID || !apiKeyModelPolicyBridgeFrameOrigin) {
+      return;
+    }
+
+    const handleBridgeMessage = createApiKeyModelPolicyBridgeHost({
+      expectedOrigin: apiKeyModelPolicyBridgeFrameOrigin,
+      isActiveFrameSource: (source) => iframeRef.current?.contentWindow === source,
+      listNativeKeys: () => apiKeysApi.list(),
+      replaceNativeKeys: (keys) => apiKeysApi.replace(keys),
+      getPolicy: () => apiKeyModelPolicyApi.getPolicy(),
+      putPolicy: (policy) => apiKeyModelPolicyApi.putPolicy(policy),
+      getAliases: async () => {
+        const response = await usageServiceApi.getApiKeyAliases(apiBase, managementKey);
+        return response.items;
+      },
+      reply: (source, response) => {
+        const target = iframeRef.current?.contentWindow;
+        if (!target || target !== source) return;
+        target.postMessage(response, apiKeyModelPolicyBridgeFrameOrigin);
+      },
+    });
+    const onMessage = (event: MessageEvent<unknown>) => {
+      void handleBridgeMessage({
+        data: event.data,
+        origin: event.origin,
+        source: event.source,
+      });
+    };
+
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [apiBase, apiKeyModelPolicyBridgeFrameOrigin, managementKey, pluginID]);
 
   return (
     <div className={styles.page}>
