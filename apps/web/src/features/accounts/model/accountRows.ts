@@ -6,6 +6,7 @@ import {
   sumRecentRequests,
   type RecentRequestBucket,
 } from '@/utils/recentRequests';
+import { parseTimestampMs } from '@/utils/timestamp';
 import {
   authFileMatchesCodexStatusFilter,
   getAuthFileCodexInspectionKey,
@@ -40,6 +41,7 @@ import {
   isAccountQuotaRefreshProblemCurrent,
   isAccountRequestCredentialEvidenceCurrent,
   isAccountRequestHealthEvidenceCurrent,
+  orderAccountRequestEvidence,
   resolveAccountAuthenticationProblemEvidence,
   resolveAccountRequestHealthEvidence,
   type AccountRequestEvidenceBySelectionKey,
@@ -801,7 +803,12 @@ export const sortAccountRows = (
   if (!sort || sort.key === 'default') return defaultSorted;
 
   return defaultSorted.sort((left, right) => {
-    const byColumn = compareAccountRowsBySort(left, right, sort);
+    const byColumn = compareAccountRowsBySort(
+      left,
+      right,
+      sort,
+      requestEvidenceBySelectionKey
+    );
     return byColumn === 0
       ? compareDefaultAccountRows(left, right, requestEvidenceBySelectionKey)
       : byColumn;
@@ -1028,7 +1035,37 @@ const compareAccountPlanTypes = (
   return rankComparison || compareText(leftCanonical ?? '', rightCanonical ?? '', direction);
 };
 
-const compareAccountRowsBySort = (left: AccountRow, right: AccountRow, sort: AccountRowSort) => {
+const toValidRequestTimestamp = (value: unknown): number | null => {
+  const timestampMs = parseTimestampMs(value);
+  return Number.isFinite(timestampMs) && timestampMs > 0 ? timestampMs : null;
+};
+
+/**
+ * The rendered "latest request" time comes from Manager Server's account
+ * history projection. Older CPA list payloads only provide bucket counts, so
+ * their timestamp is a best-effort fallback and their count is used only when
+ * neither row has a timestamp at all.
+ */
+const getLatestAccountRequestAtMs = (
+  row: AccountRow,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+): number | null => {
+  const evidenceRequests = orderAccountRequestEvidence(
+    requestEvidenceBySelectionKey?.get(row.selectionKey)
+  );
+  const timestamps = [
+    ...evidenceRequests.map((request) => toValidRequestTimestamp(request.timestamp_ms)),
+    ...row.usage.recentRequests.map((request) => toValidRequestTimestamp(request.time)),
+  ].filter((timestamp): timestamp is number => timestamp !== null);
+  return timestamps.length > 0 ? Math.max(...timestamps) : null;
+};
+
+const compareAccountRowsBySort = (
+  left: AccountRow,
+  right: AccountRow,
+  sort: AccountRowSort,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+) => {
   if (sort.key === 'name') {
     const accountComparison = compareText(left.accountLabel, right.accountLabel, sort.direction);
     return accountComparison || compareText(left.fileName, right.fileName, sort.direction);
@@ -1049,6 +1086,14 @@ const compareAccountRowsBySort = (left: AccountRow, right: AccountRow, sort: Acc
     return compareNumbers(left.priority ?? 0, right.priority ?? 0, sort.direction);
   }
   if (sort.key === 'recent') {
+    const leftLatestRequestAtMs = getLatestAccountRequestAtMs(left, requestEvidenceBySelectionKey);
+    const rightLatestRequestAtMs = getLatestAccountRequestAtMs(
+      right,
+      requestEvidenceBySelectionKey
+    );
+    if (leftLatestRequestAtMs !== null || rightLatestRequestAtMs !== null) {
+      return compareNullableNumbers(leftLatestRequestAtMs, rightLatestRequestAtMs, sort.direction);
+    }
     const leftTotal = left.usage.success + left.usage.failure;
     const rightTotal = right.usage.success + right.usage.failure;
     return compareNumbers(leftTotal, rightTotal, sort.direction);

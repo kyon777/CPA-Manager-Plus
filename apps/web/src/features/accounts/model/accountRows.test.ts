@@ -2778,6 +2778,41 @@ describe('accountRows', () => {
     ).toEqual(['low.json', 'high.json', 'middle.json']);
   });
 
+  it('sorts recent requests by the latest persisted request time instead of request volume', () => {
+    const rows = buildAccountRows(
+      [
+        {
+          name: 'a-older-but-busy.json',
+          type: 'codex',
+          recent_requests: [{ success: 99, failed: 1 }],
+        },
+        {
+          name: 'z-newer-but-quiet.json',
+          type: 'codex',
+          recent_requests: [{ success: 1, failed: 0 }],
+        },
+      ],
+      emptyStores()
+    );
+    const bySelectionKey = new Map(
+      rows.map((row) => [
+        row.selectionKey,
+        {
+          latestRequest: {
+            timestamp_ms: row.fileName === 'a-older-but-busy.json' ? 1_000 : 2_000,
+            failed: false,
+          },
+        },
+      ])
+    );
+
+    expect(
+      sortAccountRows(rows, { key: 'recent', direction: 'desc' }, bySelectionKey).map(
+        (row) => row.fileName
+      )
+    ).toEqual(['z-newer-but-quiet.json', 'a-older-but-busy.json']);
+  });
+
   it('keeps card remainingDays homologous with sort=remaining when display quota is idle', () => {
     const nowMs = 1_800_000_000_000;
     const soonerUntilMs = nowMs + 3 * 86_400_000;

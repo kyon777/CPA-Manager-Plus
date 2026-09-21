@@ -25,7 +25,6 @@ vi.mock('@/components/ui/Modal', () => ({
 type ModalHarness = {
   renderer: ReactTestRenderer;
   clickSave: () => Promise<void>;
-  setFileName: (value: string) => void;
   setJsonText: (value: string) => void;
   setType: (value: AuthJsonInputType) => void;
   getText: () => string;
@@ -48,13 +47,6 @@ const mountModal = (
       />
     );
   });
-
-  const setFileName = (value: string) => {
-    const input = renderer!.root.findByType(Input);
-    act(() => {
-      input.props.onChange({ target: { value } });
-    });
-  };
 
   const setJsonText = (value: string) => {
     const textarea = renderer!.root.findByProps({ id: 'auth-json-paste-content' });
@@ -80,35 +72,18 @@ const mountModal = (
     });
   };
 
-  const getText = () => JSON.stringify(renderer!.toJSON());
-
   return {
     renderer: renderer!,
     clickSave,
-    setFileName,
     setJsonText,
     setType,
-    getText,
+    getText: () => JSON.stringify(renderer!.toJSON()),
   };
 };
 
 describe('AuthJsonPasteModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  it('rejects invalid file names without calling save', async () => {
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    const modal = mountModal(onSave);
-
-    modal.setFileName('invalid/name.json');
-    modal.setJsonText('{"type":"codex"}');
-
-    await modal.clickSave();
-
-    expect(onSave).not.toHaveBeenCalled();
-    expect(modal.getText()).toContain('auth_files.paste_error_file_name_invalid');
-    modal.renderer.unmount();
   });
 
   it('defaults to CPA authentication JSON', () => {
@@ -118,56 +93,25 @@ describe('AuthJsonPasteModal', () => {
     modal.renderer.unmount();
   });
 
-  it.each([
-    'CON.json',
-    'CON.codex.json',
-    'AUX.json',
-    'NUL.json',
-    '.json',
-    '.codex.json',
-    '.hidden.json',
-    'LPT1.json',
-    'LPT1.backup.json',
-    'name .json',
-    'name..json',
-  ])('rejects Windows-unsafe file name %s without calling save', async (fileName) => {
+  it('does not render a file-name input and saves with the internal default name', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const modal = mountModal(onSave);
+    const json = '{"type":"codex","email":"user@example.com"}';
 
-    modal.setFileName(fileName);
-    modal.setJsonText('{"type":"codex"}');
-
+    modal.setJsonText(json);
     await modal.clickSave();
 
-    expect(onSave).not.toHaveBeenCalled();
-    expect(modal.getText()).toContain('auth_files.paste_error_file_name_invalid');
+    expect(modal.renderer.root.findAllByType(Input)).toHaveLength(0);
+    expect(modal.getText()).not.toContain('auth_files.paste_file_name_label');
+    expect(onSave).toHaveBeenCalledWith('cpa', 'codex-account.json', json);
     modal.renderer.unmount();
   });
 
-  it.each(['codex-\u202Egpj.json', 'codex-\u2066account.json', 'codex-\u200Baccount.json'])(
-    'rejects visually misleading file name %s without calling save',
-    async (fileName) => {
-      const onSave = vi.fn().mockResolvedValue(undefined);
-      const modal = mountModal(onSave);
-
-      modal.setFileName(fileName);
-      modal.setJsonText('{"type":"codex"}');
-
-      await modal.clickSave();
-
-      expect(onSave).not.toHaveBeenCalled();
-      expect(modal.getText()).toContain('auth_files.paste_error_file_name_invalid');
-      modal.renderer.unmount();
-    }
-  );
-
-  it('rejects empty json text without calling save', async () => {
+  it('rejects empty JSON text without calling save', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const modal = mountModal(onSave);
 
-    modal.setFileName('valid.json');
     modal.setJsonText('   ');
-
     await modal.clickSave();
 
     expect(onSave).not.toHaveBeenCalled();
@@ -175,39 +119,30 @@ describe('AuthJsonPasteModal', () => {
     modal.renderer.unmount();
   });
 
-  it('passes selected type, file name, and json text to save', async () => {
+  it('passes selected CPA type and JSON text to save', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const modal = mountModal(onSave);
+    const json = '{"type":"codex","email":"user@example.com"}';
 
     modal.setType('cpa');
-    modal.setFileName('custom-auth.json');
-    modal.setJsonText('{"type":"codex","email":"user@example.com"}');
-
+    modal.setJsonText(json);
     await modal.clickSave();
 
-    expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave).toHaveBeenCalledWith(
-      'cpa',
-      'custom-auth.json',
-      '{"type":"codex","email":"user@example.com"}'
-    );
+    expect(onSave).toHaveBeenCalledWith('cpa', 'codex-account.json', json);
     modal.renderer.unmount();
   });
 
-  it('passes selected sub2api type to save', async () => {
+  it('passes selected sub2api type with the internal default name to save', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const modal = mountModal(onSave);
 
     modal.setType('sub2api');
-    modal.setFileName('sub2api-auth.json');
     modal.setJsonText('{"accounts":[]}');
 
     expect(modal.getText()).toContain('auth_files.paste_sub2api_hint');
-
     await modal.clickSave();
 
-    expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave).toHaveBeenCalledWith('sub2api', 'sub2api-auth.json', '{"accounts":[]}');
+    expect(onSave).toHaveBeenCalledWith('sub2api', 'codex-account.json', '{"accounts":[]}');
     modal.renderer.unmount();
   });
 
@@ -215,9 +150,7 @@ describe('AuthJsonPasteModal', () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const modal = mountModal(onSave, true);
 
-    modal.setFileName('custom-auth.json');
     modal.setJsonText('{"type":"codex","email":"user@example.com"}');
-
     await modal.clickSave();
 
     expect(onSave).not.toHaveBeenCalled();
@@ -228,9 +161,7 @@ describe('AuthJsonPasteModal', () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const modal = mountModal(onSave, false, true);
 
-    modal.setFileName('custom-auth.json');
     modal.setJsonText('{"type":"codex","email":"user@example.com"}');
-
     await modal.clickSave();
 
     expect(onSave).not.toHaveBeenCalled();
@@ -241,9 +172,7 @@ describe('AuthJsonPasteModal', () => {
     const onSave = vi.fn().mockRejectedValue(new Error('upload failed'));
     const modal = mountModal(onSave);
 
-    modal.setFileName('custom-auth.json');
     modal.setJsonText('{"type":"codex"}');
-
     await modal.clickSave();
 
     expect(onSave).toHaveBeenCalledTimes(1);

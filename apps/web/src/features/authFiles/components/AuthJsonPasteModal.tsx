@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
-import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
+import {
+  DEFAULT_AUTH_JSON_FILE_NAME,
+  type AuthJsonInputType,
+} from '@/features/authFiles/sessionAuthConverter';
 import styles from './AuthJsonPasteModal.module.scss';
 
 type AuthJsonPasteModalProps = {
@@ -13,59 +15,6 @@ type AuthJsonPasteModalProps = {
   disabled?: boolean;
   onClose: () => void;
   onSave: (type: AuthJsonInputType, fileName: string, jsonText: string) => Promise<void>;
-};
-
-const DEFAULT_FILE_NAME = 'codex-account.json';
-const INVALID_BASE_FILE_NAME_PATTERN = /[\\/:*?"<>|]/;
-const FORBIDDEN_INVISIBLE_CODE_POINTS = new Set([
-  0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2066,
-  0x2067, 0x2068, 0x2069, 0xfeff,
-]);
-const WINDOWS_RESERVED_BASE_NAMES = new Set([
-  'con',
-  'prn',
-  'aux',
-  'nul',
-  'com1',
-  'com2',
-  'com3',
-  'com4',
-  'com5',
-  'com6',
-  'com7',
-  'com8',
-  'com9',
-  'lpt1',
-  'lpt2',
-  'lpt3',
-  'lpt4',
-  'lpt5',
-  'lpt6',
-  'lpt7',
-  'lpt8',
-  'lpt9',
-]);
-
-const isValidBaseJsonFileName = (value: string) => {
-  const lowerValue = value.toLowerCase();
-  const baseName = value.slice(0, -'.json'.length);
-  const windowsDeviceName = baseName.split('.')[0]?.toLowerCase() ?? '';
-
-  return (
-    lowerValue.endsWith('.json') &&
-    baseName !== '' &&
-    baseName.trim() === baseName &&
-    !baseName.startsWith('.') &&
-    !baseName.endsWith('.') &&
-    !WINDOWS_RESERVED_BASE_NAMES.has(windowsDeviceName) &&
-    !INVALID_BASE_FILE_NAME_PATTERN.test(value) &&
-    !Array.from(value).some((char) => {
-      const codePoint = char.codePointAt(0);
-      return (
-        codePoint === undefined || codePoint < 32 || FORBIDDEN_INVISIBLE_CODE_POINTS.has(codePoint)
-      );
-    })
-  );
 };
 
 export function AuthJsonPasteModal({
@@ -77,13 +26,11 @@ export function AuthJsonPasteModal({
 }: AuthJsonPasteModalProps) {
   const { t } = useTranslation();
   const [type, setType] = useState<AuthJsonInputType>('cpa');
-  const [fileName, setFileName] = useState(DEFAULT_FILE_NAME);
   const [jsonText, setJsonText] = useState('');
   const [error, setError] = useState('');
 
   const resetForm = () => {
     setType('cpa');
-    setFileName(DEFAULT_FILE_NAME);
     setJsonText('');
     setError('');
   };
@@ -114,20 +61,11 @@ export function AuthJsonPasteModal({
       : type === 'sub2api'
         ? 'auth_files.paste_sub2api_hint'
         : 'auth_files.paste_cpa_hint';
-  const canSave = !disabled && !saving && Boolean(fileName.trim()) && Boolean(jsonText.trim());
+  const canSave = !disabled && !saving && Boolean(jsonText.trim());
 
   const handleSave = async () => {
     if (saving || disabled) return;
 
-    const trimmedName = fileName.trim();
-    if (!trimmedName) {
-      setError(t('auth_files.paste_error_file_name'));
-      return;
-    }
-    if (!isValidBaseJsonFileName(trimmedName)) {
-      setError(t('auth_files.paste_error_file_name_invalid'));
-      return;
-    }
     if (!jsonText.trim()) {
       setError(t('auth_files.paste_error_json_required'));
       return;
@@ -135,7 +73,7 @@ export function AuthJsonPasteModal({
 
     setError('');
     try {
-      await onSave(type, trimmedName, jsonText);
+      await onSave(type, DEFAULT_AUTH_JSON_FILE_NAME, jsonText);
       resetForm();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('notification.save_failed'));
@@ -172,13 +110,6 @@ export function AuthJsonPasteModal({
             disabled={saving || disabled}
           />
         </div>
-        <Input
-          label={t('auth_files.paste_file_name_label')}
-          value={fileName}
-          onChange={(event) => setFileName(event.target.value)}
-          disabled={saving || disabled}
-          placeholder={DEFAULT_FILE_NAME}
-        />
         <div className={styles.formGroup}>
           <label htmlFor="auth-json-paste-content">{t('auth_files.paste_json_label')}</label>
           <textarea

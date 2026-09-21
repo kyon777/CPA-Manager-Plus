@@ -1211,6 +1211,14 @@ describe('convertAuthJsonInput', () => {
     ).toEqual([{ fileName: 'only@example.com.json', authJson: record }]);
   });
 
+  it('uses an email-based file name for one pasted CPA object with the modal default name', () => {
+    const record = { type: 'codex', email: 'single@example.com', access_token: 'single-token' };
+
+    expect(
+      buildAuthJsonFilePayloads('cpa', 'codex-account.json', JSON.stringify(record))
+    ).toEqual([{ fileName: 'single@example.com.json', authJson: record }]);
+  });
+
   it('deduplicates generated sub2api auth file names within one import', () => {
     const result = buildAuthJsonFilePayloads(
       'sub2api',

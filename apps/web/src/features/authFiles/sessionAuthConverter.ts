@@ -1,5 +1,10 @@
 export type AuthJsonInputType = 'cpa' | 'session' | 'sub2api';
 
+/** Internal sentinel used by the paste dialog. It is never uploaded as the
+ * final CPA filename: the converter derives a safe name from the credential
+ * identity before saving. */
+export const DEFAULT_AUTH_JSON_FILE_NAME = 'codex-account.json';
+
 type JsonRecord = Record<string, unknown>;
 export type AuthJsonConversionResult = JsonRecord | JsonRecord[];
 export type AuthJsonFilePayload = {
@@ -1138,9 +1143,12 @@ export const buildAuthJsonFilePayloads = (
   if (authJsonRecords.length === 1 && !(type === 'cpa' && Array.isArray(converted))) {
     const authJson = authJsonRecords[0];
     const fileName =
-      (type === 'session' || type === 'sub2api') && requestedFileName === 'codex-account.json'
-        ? getDefaultSessionAuthFileName(authJson)
-        : requestedFileName;
+      type === 'cpa' && requestedFileName === DEFAULT_AUTH_JSON_FILE_NAME
+        ? getDefaultCpaBatchAuthFileName(authJson)
+        : (type === 'session' || type === 'sub2api') &&
+            requestedFileName === DEFAULT_AUTH_JSON_FILE_NAME
+          ? getDefaultSessionAuthFileName(authJson)
+          : requestedFileName;
     return [{ fileName, authJson }];
   }
 
