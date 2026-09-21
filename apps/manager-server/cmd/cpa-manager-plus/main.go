@@ -220,13 +220,6 @@ func runServer() {
 		serverErrorPriorityDemotionWorker,
 	)
 	serverApp.AppContext().AutomationRuntimeService = automationRuntime
-	manager.SetUsageEventHandler(worker.NewUsageEventFanout(
-		automationRuntime.UsageEventHandler(),
-		tokenRecoverySignalWorker,
-		accountHistoryRollupWorker,
-		usageDerivedRollupWorker,
-		usageHourlyAggregateWorker,
-	))
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -262,6 +255,16 @@ func runServer() {
 	if ctx.Err() == nil {
 		log.Printf("[startup] starting background workers")
 		automationRuntime.Start(ctx)
+		// AutomationRuntime.Start installs its own gated handler on the collector.
+		// Install the complete fanout afterwards so token-recovery signals and the
+		// derived rollup workers are not overwritten by that initialization step.
+		manager.SetUsageEventHandler(worker.NewUsageEventFanout(
+			automationRuntime.UsageEventHandler(),
+			tokenRecoverySignalWorker,
+			accountHistoryRollupWorker,
+			usageDerivedRollupWorker,
+			usageHourlyAggregateWorker,
+		))
 		serverApp.AppContext().TokenRecoveryService.Start(ctx)
 		codexInspectionWorker.Start(ctx)
 		accountHistoryRollupWorker.Start(ctx)

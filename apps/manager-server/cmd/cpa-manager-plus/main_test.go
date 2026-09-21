@@ -162,6 +162,19 @@ func TestDerivedMigrationsStartAfterHTTPListenerIsBound(t *testing.T) {
 	}
 }
 
+func TestUsageEventFanoutIsInstalledAfterAutomationRuntime(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	source := string(content)
+	runtimeStartAt := strings.Index(source, "automationRuntime.Start(ctx)")
+	fanoutAt := strings.Index(source, "manager.SetUsageEventHandler(worker.NewUsageEventFanout(")
+	if runtimeStartAt < 0 || fanoutAt < 0 || fanoutAt < runtimeStartAt {
+		t.Fatalf("usage event fanout must be installed after automation runtime startup: runtime=%d fanout=%d", runtimeStartAt, fanoutAt)
+	}
+}
+
 func TestManagerDatabaseProcessLockPrecedesStoreOpen(t *testing.T) {
 	content, err := os.ReadFile("main.go")
 	if err != nil {
