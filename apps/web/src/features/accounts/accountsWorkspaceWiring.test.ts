@@ -223,6 +223,15 @@ describe('accounts workspace wiring', () => {
     expect(String(recovery.batch_recovery_result)).toContain('{{count}}');
   });
 
+  it('keeps the one-shot automatic recovery marker visible after its task has reached a terminal state', () => {
+    expect(accountsPageSource).toContain(
+      'accountProxyURL || recoveryPresentation || hasAutomaticRecoveryAttempt(runtime?.recoveryTask)'
+    );
+    expect(accountsPageSource).toContain(
+      'accountNote || accountProxyURL || recoveryPresentation || hasAutomaticRecoveryAttempt(runtime?.recoveryTask)'
+    );
+  });
+
   it.each([en, ru, zhCN, zhTW])('defines the current-page banned deletion copy', (locale) => {
     const accounts = locale.accounts as Record<string, unknown>;
     for (const key of [

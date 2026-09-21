@@ -9455,7 +9455,7 @@ export function AccountsPage() {
                       </span>
                     </div>
                   )}
-                  {accountProxyURL || recoveryPresentation ? (
+                  {accountProxyURL || recoveryPresentation || hasAutomaticRecoveryAttempt(runtime?.recoveryTask) ? (
                     <div
                       className={styles.accountGridCardRuntimeMeta}
                       data-account-list-annotations={row.selectionKey}
@@ -9725,7 +9725,7 @@ export function AccountsPage() {
                           </span>
                         ) : null}
                       </div>
-                      {accountNote || accountProxyURL || recoveryPresentation ? (
+                      {accountNote || accountProxyURL || recoveryPresentation || hasAutomaticRecoveryAttempt(runtime?.recoveryTask) ? (
                         <div
                           className={styles.accountCardAnnotations}
                           data-account-list-annotations={row.selectionKey}
