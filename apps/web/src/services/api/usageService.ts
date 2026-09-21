@@ -161,6 +161,7 @@ export interface AccountProcessingPolicy {
   authIssueQueue: AccountPolicyCapability;
   authIssueAutoDisable: AccountPolicyCapability;
   serverErrorPriorityDemotion: AccountPolicyCapability;
+  codexReauthAutoUpdate: AccountPolicyCapability;
 }
 
 export interface AccountProcessingPolicyPatch {
@@ -168,6 +169,7 @@ export interface AccountProcessingPolicyPatch {
   authIssueQueueEnabled?: boolean;
   authIssueAutoDisableEnabled?: boolean;
   serverErrorPriorityDemotionEnabled?: boolean;
+  codexReauthAutoUpdateEnabled?: boolean;
 }
 
 export interface QuotaCooldownInfo {
@@ -411,6 +413,7 @@ export interface TokenRecoveryTargetRequest {
   accountEmail?: string;
   provider: 'codex';
   observedAtMs?: number;
+  observedStatusCode?: number;
 }
 
 export interface TokenRecoveryTask {
@@ -423,6 +426,7 @@ export interface TokenRecoveryTask {
   mode: 'auto' | 'manual' | string;
   lastErrorCode?: string;
   lastErrorMessage?: string;
+  autoAttemptedAtMs?: number;
   lastSignalAtMs?: number;
   startedAtMs?: number;
   completedAtMs?: number;

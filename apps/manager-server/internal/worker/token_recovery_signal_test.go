@@ -27,13 +27,17 @@ func TestTokenRecoverySignalWorkerOnlySignalsCodexReauthEvents(t *testing.T) {
 			Failed: true, FailStatusCode: 502, FailSummary: "upstream error", TimestampMS: 125,
 			AuthFileSnapshot: "server-error.json", AuthIndex: "9", AccountSnapshot: "server@example.com", AuthProviderSnapshot: "codex",
 		},
+		{
+			Failed: true, FailStatusCode: 403, FailSummary: "invalid_token", TimestampMS: 126,
+			AuthFileSnapshot: "forbidden.json", AuthIndex: "10", AccountSnapshot: "forbidden@example.com", AuthProviderSnapshot: "codex",
+		},
 	})
 
 	targets := recorder.targets()
 	if len(targets) != 1 {
 		t.Fatalf("signal targets = %#v, want one", targets)
 	}
-	if got := targets[0]; got.FileName != "physical account.json" || got.AuthIndex != "7" || got.AccountEmail != "person@example.com" || got.Provider != "codex" || got.ObservedAtMS != 123 {
+	if got := targets[0]; got.FileName != "physical account.json" || got.AuthIndex != "7" || got.AccountEmail != "person@example.com" || got.Provider != "codex" || got.ObservedAtMS != 123 || got.ObservedStatusCode != 401 {
 		t.Fatalf("signal target = %#v", got)
 	}
 }

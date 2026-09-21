@@ -40,6 +40,7 @@ type Status struct {
 	AccountActions              Capability `json:"authIssueQueue"`
 	AccountActionsAutoDisable   Capability `json:"authIssueAutoDisable"`
 	ServerErrorPriorityDemotion Capability `json:"serverErrorPriorityDemotion"`
+	CodexReauthAutoUpdate       Capability `json:"codexReauthAutoUpdate"`
 }
 
 type UpdateRequest struct {
@@ -47,6 +48,7 @@ type UpdateRequest struct {
 	AccountActionsEnabled              *bool `json:"authIssueQueueEnabled,omitempty"`
 	AccountActionsAutoDisable          *bool `json:"authIssueAutoDisableEnabled,omitempty"`
 	ServerErrorPriorityDemotionEnabled *bool `json:"serverErrorPriorityDemotionEnabled,omitempty"`
+	CodexReauthAutoUpdateEnabled       *bool `json:"codexReauthAutoUpdateEnabled,omitempty"`
 }
 
 type Service struct {
@@ -119,6 +121,12 @@ func (s *Service) Update(ctx context.Context, req UpdateRequest) (Status, error)
 		}
 		current.ServerErrorPriorityDemotionEnabled = boolPtr(*req.ServerErrorPriorityDemotionEnabled)
 	}
+	if req.CodexReauthAutoUpdateEnabled != nil {
+		if s.cfg.CodexReauthAutoUpdateEnvSet {
+			return Status{}, errors.New("codexReauthAutoUpdateEnabled is locked by environment variable")
+		}
+		current.CodexReauthAutoUpdateEnabled = boolPtr(*req.CodexReauthAutoUpdateEnabled)
+	}
 	// SaveAutomationSettings returns the record it persisted (including the
 	// UpdatedAtMS it assigned). We build the response from that record instead
 	// of re-reading, so a transient read failure after a successful save cannot
@@ -162,6 +170,7 @@ type RuntimeSettings struct {
 	AccountActionsEnabled              bool
 	AccountActionsAutoDisable          bool
 	ServerErrorPriorityDemotionEnabled bool
+	CodexReauthAutoUpdateEnabled       bool
 }
 
 func (s *Service) loadSettings(ctx context.Context) (store.AutomationSettings, bool, error) {
@@ -180,6 +189,8 @@ type resolved struct {
 	autoSource                          string
 	serverErrorValue, serverErrorLocked bool
 	serverErrorSource                   string
+	codexReauthValue, codexReauthLocked bool
+	codexReauthSource                   string
 }
 
 func (s *Service) resolve(settings store.AutomationSettings) resolved {
@@ -187,6 +198,7 @@ func (s *Service) resolve(settings store.AutomationSettings) resolved {
 	accountValue, accountSource, accountLocked := s.resolveField(settings.AccountActionsEnabled, s.cfg.AccountActionsEnabled, s.cfg.AccountActionsEnvSet)
 	autoConfigured, autoSource, autoLocked := s.resolveField(settings.AccountActionsAutoDisable, s.cfg.AccountActionsAutoDisable, s.cfg.AccountActionsAutoEnvSet)
 	serverErrorValue, serverErrorSource, serverErrorLocked := s.resolveField(settings.ServerErrorPriorityDemotionEnabled, s.cfg.ServerErrorPriorityDemotionEnabled, s.cfg.ServerErrorPriorityDemotionEnvSet)
+	codexReauthValue, codexReauthSource, codexReauthLocked := s.resolveField(settings.CodexReauthAutoUpdateEnabled, s.cfg.CodexReauthAutoUpdateEnabled, s.cfg.CodexReauthAutoUpdateEnvSet)
 	return resolved{
 		quotaValue:        quotaValue,
 		quotaSource:       quotaSource,
@@ -200,6 +212,9 @@ func (s *Service) resolve(settings store.AutomationSettings) resolved {
 		serverErrorValue:  serverErrorValue,
 		serverErrorSource: serverErrorSource,
 		serverErrorLocked: serverErrorLocked,
+		codexReauthValue:  codexReauthValue,
+		codexReauthSource: codexReauthSource,
+		codexReauthLocked: codexReauthLocked,
 	}
 }
 
@@ -208,7 +223,7 @@ func (s *Service) statusFromSettings(settings store.AutomationSettings) Status {
 	autoEffective := r.accountValue && r.autoConfigured
 
 	return Status{
-		Source:      overallSource(r.quotaSource, r.accountSource, r.autoSource, r.serverErrorSource),
+		Source:      overallSource(r.quotaSource, r.accountSource, r.autoSource, r.serverErrorSource, r.codexReauthSource),
 		UpdatedAtMS: settings.UpdatedAtMS,
 		QuotaCooldown: Capability{
 			Enabled:       r.quotaValue,
@@ -243,6 +258,14 @@ func (s *Service) statusFromSettings(settings store.AutomationSettings) Status {
 			EnvKey:        "USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED",
 			ConfigFileKey: "serverErrorPriorityDemotionEnabled",
 		},
+		CodexReauthAutoUpdate: Capability{
+			Enabled:       r.codexReauthValue,
+			Configured:    r.codexReauthValue,
+			Source:        r.codexReauthSource,
+			Locked:        r.codexReauthLocked,
+			EnvKey:        "USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED",
+			ConfigFileKey: "codexReauthAutoUpdateEnabled",
+		},
 	}
 }
 
@@ -253,6 +276,7 @@ func (s *Service) runtimeFromSettings(settings store.AutomationSettings) Runtime
 		AccountActionsEnabled:              r.accountValue,
 		AccountActionsAutoDisable:          r.accountValue && r.autoConfigured,
 		ServerErrorPriorityDemotionEnabled: r.serverErrorValue,
+		CodexReauthAutoUpdateEnabled:       r.codexReauthValue,
 	}
 }
 

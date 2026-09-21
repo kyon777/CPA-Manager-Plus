@@ -1351,6 +1351,14 @@
   white-space: nowrap;
 }
 
+.accountRecoveryStatusGroup {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
 button.accountRecoveryStatus {
   border: 0;
   appearance: none;

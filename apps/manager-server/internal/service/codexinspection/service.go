@@ -710,7 +710,8 @@ func (s *Service) signalCompletedReauthRecoveries(ctx context.Context, results [
 		return
 	}
 	for _, result := range results {
-		if normalizeInspectionProvider(result.Provider) != "codex" || strings.ToLower(strings.TrimSpace(result.Action)) != "reauth" {
+		if normalizeInspectionProvider(result.Provider) != "codex" || strings.ToLower(strings.TrimSpace(result.Action)) != "reauth" ||
+			result.Disabled || result.StatusCode == nil || *result.StatusCode != http.StatusUnauthorized {
 			continue
 		}
 		fileName := strings.TrimSpace(result.FileName)
@@ -726,11 +727,12 @@ func (s *Service) signalCompletedReauthRecoveries(ctx context.Context, results [
 			seenAt = time.Now().UnixMilli()
 		}
 		_, _ = s.reauthRecovery.SignalAutomatic(ctx, model.TokenRecoveryTarget{
-			FileName:     fileName,
-			AuthIndex:    strings.TrimSpace(result.AuthIndex),
-			AccountEmail: accountEmail,
-			Provider:     "codex",
-			ObservedAtMS: seenAt,
+			FileName:           fileName,
+			AuthIndex:          strings.TrimSpace(result.AuthIndex),
+			AccountEmail:       accountEmail,
+			Provider:           "codex",
+			ObservedAtMS:       seenAt,
+			ObservedStatusCode: *result.StatusCode,
 		})
 	}
 }

@@ -108,6 +108,7 @@ import {
   buildCredentialRuntimeMetadataTargets,
   buildPageRecoveryCandidates,
   formatRecoveryState,
+  hasAutomaticRecoveryAttempt,
 } from '@/features/accounts/model/credentialRuntimeMetadata';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
@@ -328,6 +329,7 @@ import {
   type QuotaCooldownInfo,
   type TokenRecoveryBatchTargetRequest,
   type TokenRecoveryTargetRequest,
+  type CredentialRuntimeMetadataItem,
   type UsageHeaderSnapshot,
   type UsageHeaderSnapshotsResponse,
 } from '@/services/api';
@@ -8930,15 +8932,19 @@ export function AccountsPage() {
 
   const renderAccountRecoveryStatus = (
     row: AccountRow,
+    recoveryTask: CredentialRuntimeMetadataItem['recoveryTask'],
     recoveryPresentation: ReturnType<typeof formatRecoveryState>
   ) => {
-    if (!recoveryPresentation) return null;
-    const label = t(recoveryPresentation.labelKey, recoveryPresentation.values);
+    const autoAttempted = hasAutomaticRecoveryAttempt(recoveryTask);
+    if (!recoveryPresentation && !autoAttempted) return null;
+    const label = recoveryPresentation
+      ? t(recoveryPresentation.labelKey, recoveryPresentation.values)
+      : '';
     const className = [
       styles.accountRecoveryStatus,
-      recoveryPresentation.tone === 'danger'
+      recoveryPresentation?.tone === 'danger'
         ? styles.accountRecoveryStatusDanger
-        : recoveryPresentation.tone === 'success'
+        : recoveryPresentation?.tone === 'success'
           ? styles.accountRecoveryStatusSuccess
           : styles.accountRecoveryStatusInfo,
     ]
@@ -8950,19 +8956,31 @@ export function AccountsPage() {
       title: label,
     };
 
-    return recoveryPresentation.tone === 'danger' ? (
-      <button
-        type="button"
-        {...props}
-        onClick={(event) => {
-          event.stopPropagation();
-          handleReauthAccount(row.raw);
-        }}
-      >
-        {label}
-      </button>
-    ) : (
-      <span {...props}>{label}</span>
+    const currentStatus = recoveryPresentation ? (
+      recoveryPresentation.tone === 'danger' ? (
+        <button
+          type="button"
+          {...props}
+          onClick={(event) => {
+            event.stopPropagation();
+            handleReauthAccount(row.raw);
+          }}
+        >
+          {label}
+        </button>
+      ) : (
+        <span {...props}>{label}</span>
+      )
+    ) : null;
+    return (
+      <span className={styles.accountRecoveryStatusGroup} data-account-auto-recovery-attempt={autoAttempted ? row.selectionKey : undefined}>
+        {currentStatus}
+        {autoAttempted ? (
+          <span className={`${styles.accountRecoveryStatus} ${styles.accountRecoveryStatusInfo}`}>
+            {t('accounts.recovery_auto_attempted')}
+          </span>
+        ) : null}
+      </span>
     );
   };
   const renderAccountHistory = (
@@ -9451,7 +9469,7 @@ export function AccountsPage() {
                           {accountProxyURLLabel}
                         </span>
                       ) : null}
-                      {renderAccountRecoveryStatus(row, recoveryPresentation)}
+                      {renderAccountRecoveryStatus(row, runtime?.recoveryTask, recoveryPresentation)}
                     </div>
                   ) : null}
                 </div>
@@ -9730,7 +9748,7 @@ export function AccountsPage() {
                               {accountProxyURLLabel}
                             </span>
                           ) : null}
-                          {renderAccountRecoveryStatus(row, recoveryPresentation)}
+                          {renderAccountRecoveryStatus(row, runtime?.recoveryTask, recoveryPresentation)}
                         </div>
                       ) : null}
                     </div>

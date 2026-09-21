@@ -91,9 +91,17 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusBadRequest, err)
 			return
 		}
-		task, err := h.App.TokenRecoveryService.SignalAutomatic(r.Context(), target)
+		if h.App.TokenRecoveryAutomaticSignal == nil {
+			response.Error(w, http.StatusServiceUnavailable, errors.New("automatic token recovery is unavailable"))
+			return
+		}
+		task, err := h.App.TokenRecoveryAutomaticSignal.SignalAutomatic(r.Context(), target)
 		if err != nil {
 			response.Error(w, tokenRecoveryErrorStatus(err), err)
+			return
+		}
+		if task.ID == 0 {
+			response.JSON(w, http.StatusOK, map[string]any{"task": nil})
 			return
 		}
 		response.JSON(w, http.StatusOK, map[string]any{"task": task})
@@ -192,7 +200,7 @@ func decodeBatchTarget(value json.RawMessage) (batchTarget, error) {
 		return batchTarget{}, errors.New("invalid token recovery batch target")
 	}
 	allowed := map[string]struct{}{
-		"clientKey": {}, "fileName": {}, "authIndex": {}, "accountEmail": {}, "provider": {}, "observedAtMs": {},
+		"clientKey": {}, "fileName": {}, "authIndex": {}, "accountEmail": {}, "provider": {}, "observedAtMs": {}, "observedStatusCode": {},
 	}
 	for key := range raw {
 		if _, ok := allowed[key]; !ok {
@@ -204,12 +212,13 @@ func decodeBatchTarget(value json.RawMessage) (batchTarget, error) {
 		return batchTarget{}, errors.New("invalid token recovery batch target")
 	}
 	var decoded struct {
-		ClientKey    string `json:"clientKey"`
-		FileName     string `json:"fileName"`
-		AuthIndex    string `json:"authIndex"`
-		AccountEmail string `json:"accountEmail"`
-		Provider     string `json:"provider"`
-		ObservedAtMS int64  `json:"observedAtMs"`
+		ClientKey          string `json:"clientKey"`
+		FileName           string `json:"fileName"`
+		AuthIndex          string `json:"authIndex"`
+		AccountEmail       string `json:"accountEmail"`
+		Provider           string `json:"provider"`
+		ObservedAtMS       int64  `json:"observedAtMs"`
+		ObservedStatusCode int    `json:"observedStatusCode"`
 	}
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		return batchTarget{}, errors.New("invalid token recovery batch target")
@@ -221,11 +230,12 @@ func decodeBatchTarget(value json.RawMessage) (batchTarget, error) {
 	return batchTarget{
 		ClientKey: strings.TrimSpace(decoded.ClientKey),
 		Target: model.TokenRecoveryTarget{
-			FileName:     decoded.FileName,
-			AuthIndex:    decoded.AuthIndex,
-			AccountEmail: decoded.AccountEmail,
-			Provider:     provider,
-			ObservedAtMS: decoded.ObservedAtMS,
+			FileName:           decoded.FileName,
+			AuthIndex:          decoded.AuthIndex,
+			AccountEmail:       decoded.AccountEmail,
+			Provider:           provider,
+			ObservedAtMS:       decoded.ObservedAtMS,
+			ObservedStatusCode: decoded.ObservedStatusCode,
 		},
 	}, nil
 }
@@ -245,7 +255,7 @@ func decodeTarget(r *http.Request) (model.TokenRecoveryTarget, error) {
 		return model.TokenRecoveryTarget{}, errors.New("invalid token recovery request")
 	}
 	allowed := map[string]struct{}{
-		"fileName": {}, "authIndex": {}, "accountEmail": {}, "provider": {}, "observedAtMs": {},
+		"fileName": {}, "authIndex": {}, "accountEmail": {}, "provider": {}, "observedAtMs": {}, "observedStatusCode": {},
 	}
 	for key := range raw {
 		if _, ok := allowed[key]; !ok {

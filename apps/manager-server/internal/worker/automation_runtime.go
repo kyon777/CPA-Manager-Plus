@@ -101,7 +101,7 @@ func (r *AutomationRuntime) logState(ctx context.Context, action string) {
 		return
 	}
 	settings := r.settings.RuntimeSettings(ctx)
-	log.Printf("[automation] runtime settings %s quotaCooldown=%t accountActions=%t accountActionsAutoDisable=%t serverErrorPriorityDemotion=%t", action, settings.QuotaCooldownEnabled, settings.AccountActionsEnabled, settings.AccountActionsAutoDisable, settings.ServerErrorPriorityDemotionEnabled)
+	log.Printf("[automation] runtime settings %s quotaCooldown=%t accountActions=%t accountActionsAutoDisable=%t serverErrorPriorityDemotion=%t codexReauthAutoUpdate=%t", action, settings.QuotaCooldownEnabled, settings.AccountActionsEnabled, settings.AccountActionsAutoDisable, settings.ServerErrorPriorityDemotionEnabled, settings.CodexReauthAutoUpdateEnabled)
 }
 
 type automationUsageHandler struct {

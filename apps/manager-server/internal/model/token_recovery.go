@@ -21,6 +21,9 @@ type TokenRecoveryTarget struct {
 	AccountEmail string `json:"accountEmail,omitempty"`
 	Provider     string `json:"provider"`
 	ObservedAtMS int64  `json:"observedAtMs,omitempty"`
+	// ObservedStatusCode is evidence supplied only by the event/inspection
+	// producer. Automatic recovery is deliberately limited to a confirmed 401.
+	ObservedStatusCode int `json:"observedStatusCode,omitempty"`
 }
 
 // TokenRecoveryTask is the redacted durable task state allowed to leave the
@@ -37,9 +40,13 @@ type TokenRecoveryTask struct {
 	Mode             string `json:"mode"`
 	LastErrorCode    string `json:"lastErrorCode,omitempty"`
 	LastErrorMessage string `json:"lastErrorMessage,omitempty"`
-	LastSignalAtMS   int64  `json:"lastSignalAtMs"`
-	StartedAtMS      int64  `json:"startedAtMs,omitempty"`
-	CompletedAtMS    int64  `json:"completedAtMs,omitempty"`
-	CreatedAtMS      int64  `json:"createdAtMs"`
-	UpdatedAtMS      int64  `json:"updatedAtMs"`
+	// AutoAttemptedAtMS is an immutable audit marker for the first automatic
+	// recovery cycle. Manual retries deliberately retain it so a later 401
+	// cannot silently create another automatic external acquisition.
+	AutoAttemptedAtMS int64 `json:"autoAttemptedAtMs,omitempty"`
+	LastSignalAtMS    int64 `json:"lastSignalAtMs"`
+	StartedAtMS       int64 `json:"startedAtMs,omitempty"`
+	CompletedAtMS     int64 `json:"completedAtMs,omitempty"`
+	CreatedAtMS       int64 `json:"createdAtMs"`
+	UpdatedAtMS       int64 `json:"updatedAtMs"`
 }

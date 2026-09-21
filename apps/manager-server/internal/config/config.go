@@ -51,6 +51,7 @@ type Config struct {
 	AccountActionsEnabled              bool
 	AccountActionsAutoDisable          bool
 	ServerErrorPriorityDemotionEnabled bool
+	CodexReauthAutoUpdateEnabled       bool
 	DashboardHourlyRollupEnabled       bool
 	UsageImportChunkBytes              int64
 	UsageImportDiskQuotaBytes          int64
@@ -60,6 +61,7 @@ type Config struct {
 	AccountActionsEnvSet               bool
 	AccountActionsAutoEnvSet           bool
 	ServerErrorPriorityDemotionEnvSet  bool
+	CodexReauthAutoUpdateEnvSet        bool
 }
 
 type LoadOptions struct {
@@ -89,6 +91,7 @@ type fileConfig struct {
 	AccountActionsEnabled              bool     `json:"accountActionsEnabled,omitempty"`
 	AccountActionsAutoDisable          bool     `json:"accountActionsAutoDisable,omitempty"`
 	ServerErrorPriorityDemotionEnabled bool     `json:"serverErrorPriorityDemotionEnabled,omitempty"`
+	CodexReauthAutoUpdateEnabled       bool     `json:"codexReauthAutoUpdateEnabled,omitempty"`
 	UsageImportChunkBytes              int64    `json:"usageImportChunkBytes,omitempty"`
 	UsageImportDiskQuotaBytes          int64    `json:"usageImportDiskQuotaBytes,omitempty"`
 	UsageImportMaxSessions             int      `json:"usageImportMaxSessions,omitempty"`
@@ -166,6 +169,7 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		AccountActionsEnabled:              envBool("USAGE_ACCOUNT_ACTIONS_ENABLED", cfgFile.AccountActionsEnabled),
 		AccountActionsAutoDisable:          envBool("USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE", cfgFile.AccountActionsAutoDisable),
 		ServerErrorPriorityDemotionEnabled: envBool("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED", cfgFile.ServerErrorPriorityDemotionEnabled),
+		CodexReauthAutoUpdateEnabled:       envBool("USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED", cfgFile.CodexReauthAutoUpdateEnabled),
 		DashboardHourlyRollupEnabled:       envBool("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", true),
 		UsageImportChunkBytes: envInt64(
 			"USAGE_IMPORT_CHUNK_BYTES",
@@ -187,6 +191,7 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		AccountActionsEnvSet:              hasEnv("USAGE_ACCOUNT_ACTIONS_ENABLED"),
 		AccountActionsAutoEnvSet:          hasEnv("USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE"),
 		ServerErrorPriorityDemotionEnvSet: hasEnv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED"),
+		CodexReauthAutoUpdateEnvSet:       hasEnv("USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED"),
 	}, nil
 }
 

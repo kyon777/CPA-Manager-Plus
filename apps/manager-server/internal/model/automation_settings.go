@@ -14,5 +14,6 @@ type AutomationSettings struct {
 	AccountActionsEnabled              *bool `json:"authIssueQueueEnabled,omitempty"`
 	AccountActionsAutoDisable          *bool `json:"authIssueAutoDisableEnabled,omitempty"`
 	ServerErrorPriorityDemotionEnabled *bool `json:"serverErrorPriorityDemotionEnabled,omitempty"`
+	CodexReauthAutoUpdateEnabled       *bool `json:"codexReauthAutoUpdateEnabled,omitempty"`
 	UpdatedAtMS                        int64 `json:"updatedAtMs,omitempty"`
 }

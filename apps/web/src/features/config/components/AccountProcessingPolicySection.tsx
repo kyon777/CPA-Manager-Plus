@@ -25,6 +25,7 @@ const patchKeyByCapability: Record<AccountPolicyCapabilityKey, keyof AccountProc
     providerQuotaCooldown: 'codexQuotaCooldownEnabled',
     authIssueQueue: 'authIssueQueueEnabled',
     authIssueAutoDisable: 'authIssueAutoDisableEnabled',
+    codexReauthAutoUpdate: 'codexReauthAutoUpdateEnabled',
     serverErrorPriorityDemotion: 'serverErrorPriorityDemotionEnabled',
   };
 

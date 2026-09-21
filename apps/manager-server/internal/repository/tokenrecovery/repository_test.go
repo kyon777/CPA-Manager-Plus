@@ -85,6 +85,49 @@ func TestSignalAutomaticWithoutObservedAtDoesNotRequeueSucceededTask(t *testing.
 	}
 }
 
+func TestSignalAutomaticRecordsOneShotAttemptAcrossSuccessAndManualRetry(t *testing.T) {
+	repo := newTestRepository(t)
+	target := model.TokenRecoveryTarget{
+		FileName: "codex.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: 100,
+	}
+	first, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	if first.AutoAttemptedAtMS != 0 {
+		t.Fatalf("queued automatic task must not claim an attempt before execution: %#v", first)
+	}
+	claimed, ok, err := repo.ClaimNextQueued(context.Background())
+	if err != nil || !ok || claimed.ID != first.ID {
+		t.Fatalf("ClaimNextQueued() = %#v, %t, %v", claimed, ok, err)
+	}
+	if claimed.AutoAttemptedAtMS <= 0 {
+		t.Fatalf("claimed automatic task must retain auto attempt timestamp: %#v", claimed)
+	}
+	completed, err := repo.Complete(context.Background(), claimed.ID)
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+
+	repeatedTarget := target
+	repeatedTarget.ObservedAtMS = completed.CompletedAtMS + 1
+	repeated, err := repo.SignalAutomatic(context.Background(), repeatedTarget)
+	if err != nil {
+		t.Fatalf("repeated SignalAutomatic() error = %v", err)
+	}
+	if repeated.ID != first.ID || repeated.Status != model.TokenRecoveryStatusSucceeded || repeated.AutoAttemptedAtMS != claimed.AutoAttemptedAtMS {
+		t.Fatalf("completed automatic task was requeued or lost its marker: first=%#v repeated=%#v", first, repeated)
+	}
+
+	manual, err := repo.RequestManual(context.Background(), target)
+	if err != nil {
+		t.Fatalf("RequestManual() error = %v", err)
+	}
+	if manual.Status != model.TokenRecoveryStatusManualQueued || manual.AutoAttemptedAtMS != claimed.AutoAttemptedAtMS {
+		t.Fatalf("manual retry must preserve automatic attempt history: %#v", manual)
+	}
+}
+
 func TestSignalAutomaticDeduplicatesSameAuthIndexWhenOneSourceLacksEmail(t *testing.T) {
 	repo := newTestRepository(t)
 	withoutEmail, err := repo.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
@@ -169,6 +212,53 @@ func TestClaimNextQueuedHasExactlyOneConcurrentWinner(t *testing.T) {
 	}
 	if winners != 1 {
 		t.Fatalf("concurrent claim winners = %d, want 1", winners)
+	}
+}
+
+func TestClaimNextEligibleLeavesAutomaticTaskQueuedWhenAutomaticProcessingIsOff(t *testing.T) {
+	repo := newTestRepository(t)
+	automatic, err := repo.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
+		FileName: "automatic.json", AuthIndex: "1", AccountEmail: "automatic@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	manual, err := repo.RequestManual(context.Background(), model.TokenRecoveryTarget{
+		FileName: "manual.json", AuthIndex: "2", AccountEmail: "manual@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("RequestManual() error = %v", err)
+	}
+
+	claimed, ok, err := repo.ClaimNextEligible(context.Background(), false)
+	if err != nil || !ok || claimed.ID != manual.ID || claimed.Status != model.TokenRecoveryStatusManualRunning {
+		t.Fatalf("ClaimNextEligible(false) = %#v, %t, %v", claimed, ok, err)
+	}
+	stillQueued, found, err := repo.GetByID(context.Background(), automatic.ID)
+	if err != nil || !found || stillQueued.Status != model.TokenRecoveryStatusAutoQueued || stillQueued.AutoAttemptedAtMS != 0 {
+		t.Fatalf("automatic task must remain queued and unattempted: %#v, %t, %v", stillQueued, found, err)
+	}
+}
+
+func TestRequestManualTakesOverPausedAutomaticQueue(t *testing.T) {
+	repo := newTestRepository(t)
+	target := model.TokenRecoveryTarget{
+		FileName: "paused.json", AuthIndex: "3", AccountEmail: "paused@example.com", Provider: "codex",
+	}
+	automatic, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	manual, err := repo.RequestManual(context.Background(), target)
+	if err != nil {
+		t.Fatalf("RequestManual() error = %v", err)
+	}
+	if manual.ID != automatic.ID || manual.Status != model.TokenRecoveryStatusManualQueued || manual.Mode != model.TokenRecoveryModeManual {
+		t.Fatalf("manual retry did not take over paused automatic queue: %#v", manual)
+	}
+	claimed, ok, err := repo.ClaimNextEligible(context.Background(), false)
+	if err != nil || !ok || claimed.ID != automatic.ID || claimed.Status != model.TokenRecoveryStatusManualRunning {
+		t.Fatalf("manual task was not claimable while automatic processing was off: %#v, %t, %v", claimed, ok, err)
 	}
 }
 

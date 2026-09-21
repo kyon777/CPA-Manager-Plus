@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -46,7 +47,7 @@ func (w *TokenRecoverySignalWorker) HandleUsageEvents(ctx context.Context, _ col
 
 func tokenRecoveryTargetFromUsageEvent(event usage.Event) (model.TokenRecoveryTarget, bool) {
 	decision, ok := classifyAccountActionEvent(event)
-	if !ok || decision.Action != credentialpolicy.ActionReauth {
+	if !ok || decision.Action != credentialpolicy.ActionReauth || event.FailStatusCode != http.StatusUnauthorized {
 		return model.TokenRecoveryTarget{}, false
 	}
 	provider := credentialpolicy.NormalizeProvider(firstNonEmpty(event.AuthProviderSnapshot, event.Provider))
@@ -59,11 +60,12 @@ func tokenRecoveryTargetFromUsageEvent(event usage.Event) (model.TokenRecoveryTa
 		seenAt = time.Now().UnixMilli()
 	}
 	return model.TokenRecoveryTarget{
-		FileName:     fileName,
-		AuthIndex:    strings.TrimSpace(event.AuthIndex),
-		AccountEmail: recoveryEmailFromSnapshot(fileName, event.AccountSnapshot),
-		Provider:     "codex",
-		ObservedAtMS: seenAt,
+		FileName:           fileName,
+		AuthIndex:          strings.TrimSpace(event.AuthIndex),
+		AccountEmail:       recoveryEmailFromSnapshot(fileName, event.AccountSnapshot),
+		Provider:           "codex",
+		ObservedAtMS:       seenAt,
+		ObservedStatusCode: event.FailStatusCode,
 	}, true
 }
 

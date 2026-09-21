@@ -121,6 +121,10 @@ export const buildPageRecoveryCandidates = (
 export const isPendingRecoveryStatus = (status: TokenRecoveryStatus | null | undefined): boolean =>
   Boolean(status && pendingRecoveryStatuses.has(status));
 
+export const hasAutomaticRecoveryAttempt = (
+  task: TokenRecoveryTask | null | undefined
+): boolean => Boolean(task && (task.autoAttemptedAtMs ?? 0) > 0);
+
 export const formatRecoveryState = (
   task: TokenRecoveryTask | null | undefined
 ): RecoveryPresentation | null => {

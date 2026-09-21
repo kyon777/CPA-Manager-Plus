@@ -6574,6 +6574,14 @@ export const getDemoAccountProcessingPolicy = (): AccountProcessingPolicy => ({
     envKey: 'USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED',
     configFileKey: 'serverErrorPriorityDemotionEnabled',
   },
+  codexReauthAutoUpdate: {
+    enabled: false,
+    configured: false,
+    source: 'startup',
+    locked: false,
+    envKey: 'USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED',
+    configFileKey: 'codexReauthAutoUpdateEnabled',
+  },
 });
 
 export const getDemoQuotaCooldowns = (): QuotaCooldownInfo[] => {

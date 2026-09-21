@@ -300,3 +300,45 @@ func TestStatusExposesServerErrorPriorityDemotionPolicy(t *testing.T) {
 		t.Fatalf("environment-locked serverErrorPriorityDemotion = %#v", lockedStatus.ServerErrorPriorityDemotion)
 	}
 }
+
+func TestStatusExposesCodexReauthAutoUpdatePolicy(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	svc := New(config.Config{}, st)
+	if status := mustStatus(t, svc, ctx); status.CodexReauthAutoUpdate.Enabled || status.CodexReauthAutoUpdate.Configured {
+		t.Fatalf("Codex reauth auto-update should default off: %#v", status.CodexReauthAutoUpdate)
+	}
+	if _, err := svc.Update(ctx, UpdateRequest{CodexReauthAutoUpdateEnabled: boolPtr(true)}); err != nil {
+		t.Fatalf("enable Codex reauth auto-update: %v", err)
+	}
+	status := mustStatus(t, svc, ctx)
+	if !status.CodexReauthAutoUpdate.Enabled ||
+		!status.CodexReauthAutoUpdate.Configured ||
+		status.CodexReauthAutoUpdate.Source != SourceDB ||
+		status.CodexReauthAutoUpdate.EnvKey != "USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED" ||
+		status.CodexReauthAutoUpdate.ConfigFileKey != "codexReauthAutoUpdateEnabled" {
+		t.Fatalf("Codex reauth auto-update status = %#v", status.CodexReauthAutoUpdate)
+	}
+	if !svc.RuntimeSettings(ctx).CodexReauthAutoUpdateEnabled {
+		t.Fatalf("Codex reauth auto-update must be enabled in runtime settings")
+	}
+
+	locked := New(config.Config{
+		CodexReauthAutoUpdateEnabled: false,
+		CodexReauthAutoUpdateEnvSet:  true,
+	}, st)
+	lockedStatus := mustStatus(t, locked, ctx)
+	if lockedStatus.CodexReauthAutoUpdate.Enabled ||
+		!lockedStatus.CodexReauthAutoUpdate.Locked ||
+		lockedStatus.CodexReauthAutoUpdate.Source != SourceEnv {
+		t.Fatalf("environment-locked Codex reauth auto-update = %#v", lockedStatus.CodexReauthAutoUpdate)
+	}
+	if _, err := locked.Update(ctx, UpdateRequest{CodexReauthAutoUpdateEnabled: boolPtr(true)}); err == nil || !strings.Contains(err.Error(), "locked by environment variable") {
+		t.Fatalf("environment-locked Codex reauth auto-update patch error = %v", err)
+	}
+}

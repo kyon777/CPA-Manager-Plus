@@ -375,6 +375,10 @@ func (s *Store) ClaimNextTokenRecovery(ctx context.Context) (TokenRecoveryTask, 
 	return s.TokenRecoveries.ClaimNextQueued(ctx)
 }
 
+func (s *Store) ClaimNextEligibleTokenRecovery(ctx context.Context, allowAutomatic bool) (TokenRecoveryTask, bool, error) {
+	return s.TokenRecoveries.ClaimNextEligible(ctx, allowAutomatic)
+}
+
 func (s *Store) CompleteTokenRecovery(ctx context.Context, id int64) (TokenRecoveryTask, error) {
 	return s.TokenRecoveries.Complete(ctx, id)
 }

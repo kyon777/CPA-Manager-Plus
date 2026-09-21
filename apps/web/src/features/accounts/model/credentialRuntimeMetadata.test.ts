@@ -6,6 +6,7 @@ import {
   buildPageAccountBannedRows,
   buildPageRecoveryCandidates,
   formatRecoveryState,
+  hasAutomaticRecoveryAttempt,
   isPendingRecoveryStatus,
 } from './credentialRuntimeMetadata';
 import { buildCodexTokenRecoveryTarget } from '@/features/oauth/codexReauthModel';
@@ -169,6 +170,12 @@ describe('credential runtime metadata model', () => {
       labelKey: 'accounts.recovery_failed_reason',
       values: { reason: 'invalid_proxy' },
     });
+  });
+
+  it('recognizes the durable automatic-attempt audit marker independently of current task state', () => {
+    expect(hasAutomaticRecoveryAttempt({ autoAttemptedAtMs: 123 } as never)).toBe(true);
+    expect(hasAutomaticRecoveryAttempt({ autoAttemptedAtMs: 0 } as never)).toBe(false);
+    expect(hasAutomaticRecoveryAttempt(null)).toBe(false);
   });
 
   it('uses the verified Codex member email when making a recovery locator', () => {

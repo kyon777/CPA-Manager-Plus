@@ -2,6 +2,7 @@ package codexinspection
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"testing"
 
@@ -14,7 +15,7 @@ func TestCompletedCodexInspectionSignalsOnlyCodexReauthLocators(t *testing.T) {
 	service := NewWithOptions(&store.Store{}, nil, ServiceOptions{ReauthRecoveryNotifier: recorder, OwnerID: "test-owner"})
 	service.signalCompletedReauthRecoveries(context.Background(), []model.CodexInspectionResult{
 		{
-			Provider: "codex", Action: "reauth", FileName: "physical account.json", AuthIndex: "7", AccountSnapshot: "person@example.com", AccountID: "must-not-be-forwarded", CreatedAtMS: 123,
+			Provider: "codex", Action: "reauth", FileName: "physical account.json", AuthIndex: "7", AccountSnapshot: "person@example.com", AccountID: "must-not-be-forwarded", StatusCode: intPtr(http.StatusUnauthorized), CreatedAtMS: 123,
 		},
 		{
 			Provider: "xai", Action: "reauth", FileName: "xai.json", AuthIndex: "8", AccountSnapshot: "xai@example.com", CreatedAtMS: 124,
@@ -22,13 +23,19 @@ func TestCompletedCodexInspectionSignalsOnlyCodexReauthLocators(t *testing.T) {
 		{
 			Provider: "codex", Action: "keep", FileName: "keep.json", AuthIndex: "9", AccountSnapshot: "keep@example.com", CreatedAtMS: 125,
 		},
+		{
+			Provider: "codex", Action: "reauth", FileName: "forbidden.json", AuthIndex: "10", AccountSnapshot: "forbidden@example.com", StatusCode: intPtr(http.StatusForbidden), CreatedAtMS: 126,
+		},
+		{
+			Provider: "codex", Action: "reauth", FileName: "disabled.json", AuthIndex: "11", AccountSnapshot: "disabled@example.com", StatusCode: intPtr(http.StatusUnauthorized), Disabled: true, CreatedAtMS: 127,
+		},
 	})
 
 	targets := recorder.targets()
 	if len(targets) != 1 {
 		t.Fatalf("recovery targets = %#v", targets)
 	}
-	if got := targets[0]; got.FileName != "physical account.json" || got.AuthIndex != "7" || got.AccountEmail != "person@example.com" || got.Provider != "codex" || got.ObservedAtMS != 123 {
+	if got := targets[0]; got.FileName != "physical account.json" || got.AuthIndex != "7" || got.AccountEmail != "person@example.com" || got.Provider != "codex" || got.ObservedAtMS != 123 || got.ObservedStatusCode != http.StatusUnauthorized {
 		t.Fatalf("recovery target = %#v", got)
 	}
 }
@@ -37,7 +44,7 @@ func TestCompletedCodexInspectionIgnoresNonEmailDisplaySnapshot(t *testing.T) {
 	recorder := &inspectionRecoveryRecorder{}
 	service := NewWithOptions(&store.Store{}, nil, ServiceOptions{ReauthRecoveryNotifier: recorder, OwnerID: "test-owner"})
 	service.signalCompletedReauthRecoveries(context.Background(), []model.CodexInspectionResult{{
-		Provider: "codex", Action: "reauth", FileName: "physical.json", AuthIndex: "7",
+		Provider: "codex", Action: "reauth", FileName: "physical.json", AuthIndex: "7", StatusCode: intPtr(http.StatusUnauthorized),
 		AccountSnapshot: "display-label", DisplayAccount: "fallback@example.com", CreatedAtMS: 123,
 	}})
 	targets := recorder.targets()
@@ -45,6 +52,8 @@ func TestCompletedCodexInspectionIgnoresNonEmailDisplaySnapshot(t *testing.T) {
 		t.Fatalf("recovery targets = %#v", targets)
 	}
 }
+
+func intPtr(value int) *int { return &value }
 
 type inspectionRecoveryRecorder struct {
 	mu    sync.Mutex

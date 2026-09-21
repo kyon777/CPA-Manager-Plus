@@ -205,6 +205,7 @@ describe('accounts workspace wiring', () => {
     const keys = [
       'batch_recovery_page',
       'recovery_auto_processing',
+      'recovery_auto_attempted',
       'recovery_manual_processing',
       'recovery_succeeded',
       'recovery_failed_reason',

@@ -30,6 +30,7 @@ type TaskStore interface {
 	GetTokenRecovery(context.Context, store.TokenRecoveryTarget) (store.TokenRecoveryTask, bool, error)
 	GetTokenRecoveryByID(context.Context, int64) (store.TokenRecoveryTask, bool, error)
 	ClaimNextTokenRecovery(context.Context) (store.TokenRecoveryTask, bool, error)
+	ClaimNextEligibleTokenRecovery(context.Context, bool) (store.TokenRecoveryTask, bool, error)
 	CompleteTokenRecovery(context.Context, int64) (store.TokenRecoveryTask, error)
 	FailTokenRecovery(context.Context, int64, string, string) (store.TokenRecoveryTask, error)
 	FailRunningTokenRecoveriesOnStartup(context.Context) (int64, error)
@@ -51,6 +52,10 @@ type Options struct {
 	Acquirer            tokenacquisition.Acquirer
 	MutationCoordinator *cpaauthfiles.MutationCoordinator
 	IdlePollInterval    time.Duration
+	// AutomaticEnabled is re-evaluated before every claim. A nil callback keeps
+	// the historical raw-service behavior (automatic work enabled); the live
+	// application supplies the persisted policy callback.
+	AutomaticEnabled func(context.Context) bool
 }
 
 type Service struct {
@@ -60,6 +65,7 @@ type Service struct {
 	acquirer            tokenacquisition.Acquirer
 	mutationCoordinator *cpaauthfiles.MutationCoordinator
 	idlePollInterval    time.Duration
+	automaticEnabled    func(context.Context) bool
 	wake                chan struct{}
 	startOnce           sync.Once
 }
@@ -84,6 +90,7 @@ func NewWithOptions(options Options) *Service {
 		acquirer:            options.Acquirer,
 		mutationCoordinator: coordinator,
 		idlePollInterval:    idlePollInterval,
+		automaticEnabled:    options.AutomaticEnabled,
 		wake:                make(chan struct{}, 1),
 	}
 }
@@ -145,7 +152,11 @@ func (s *Service) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		task, found, err := s.tasks.ClaimNextTokenRecovery(ctx)
+		allowAutomatic := true
+		if s.automaticEnabled != nil {
+			allowAutomatic = s.automaticEnabled(ctx)
+		}
+		task, found, err := s.tasks.ClaimNextEligibleTokenRecovery(ctx, allowAutomatic)
 		if err != nil {
 			s.wait(ctx)
 			continue

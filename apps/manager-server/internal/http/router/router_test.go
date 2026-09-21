@@ -32,13 +32,21 @@ func TestRouterRoutesTokenRecoveryBeforeCoreManagementProxy(t *testing.T) {
 	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
 		t.Fatalf("save admin credential: %v", err)
 	}
+	recovery := tokenrecoverysvc.NewWithOptions(tokenrecoverysvc.Options{Tasks: st})
+	automaticSignal := tokenrecoverysvc.NewAutomaticSignalGate(tokenrecoverysvc.AutomaticSignalGateOptions{
+		Recovery:      recovery,
+		SetupResolver: routerTokenRecoverySetupResolver{},
+		AuthFiles:     routerTokenRecoveryAuthFiles{},
+		Enabled:       func(context.Context) bool { return true },
+	})
 	appContext := &app.Context{
-		Config:               config.Config{CORSOrigins: []string{"*"}},
-		AdminAuthService:     adminauthsvc.New(config.Config{}, st),
-		TokenRecoveryService: tokenrecoverysvc.NewWithOptions(tokenrecoverysvc.Options{Tasks: st}),
+		Config:                       config.Config{CORSOrigins: []string{"*"}},
+		AdminAuthService:             adminauthsvc.New(config.Config{}, st),
+		TokenRecoveryService:         recovery,
+		TokenRecoveryAutomaticSignal: automaticSignal,
 	}
 	handler := New(appContext)
-	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/signals", bytes.NewBufferString(`{"fileName":"a.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex"}`))
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/signals", bytes.NewBufferString(`{"fileName":"a.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex","observedStatusCode":401}`))
 	request.Header.Set("Authorization", "Bearer "+adminKey)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -99,4 +107,26 @@ type routerCredentialRuntimeSetupResolver struct {
 
 func (r routerCredentialRuntimeSetupResolver) ResolveSetup(context.Context) (store.Setup, bool, error) {
 	return store.Setup{CPAUpstreamURL: r.baseURL, ManagementKey: "core-management-key"}, true, nil
+}
+
+type routerTokenRecoverySetupResolver struct{}
+
+func (routerTokenRecoverySetupResolver) ResolveSetup(context.Context) (store.Setup, bool, error) {
+	return store.Setup{CPAUpstreamURL: "https://core.example.test", ManagementKey: "management-key"}, true, nil
+}
+
+type routerTokenRecoveryAuthFiles struct{}
+
+func (routerTokenRecoveryAuthFiles) Verify(
+	_ context.Context,
+	_ string,
+	_ string,
+	identity cpaauthfiles.Identity,
+) (cpaauthfiles.File, error) {
+	return cpaauthfiles.File{
+		Name:            identity.AuthFileName,
+		AuthIndex:       identity.AuthIndex,
+		Provider:        identity.Provider,
+		AccountSnapshot: identity.AccountSnapshot,
+	}, nil
 }

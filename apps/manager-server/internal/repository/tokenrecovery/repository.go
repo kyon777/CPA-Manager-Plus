@@ -22,6 +22,7 @@ type Repository interface {
 	Get(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, bool, error)
 	GetByID(context.Context, int64) (model.TokenRecoveryTask, bool, error)
 	ClaimNextQueued(context.Context) (model.TokenRecoveryTask, bool, error)
+	ClaimNextEligible(context.Context, bool) (model.TokenRecoveryTask, bool, error)
 	Complete(context.Context, int64) (model.TokenRecoveryTask, error)
 	Fail(context.Context, int64, string, string) (model.TokenRecoveryTask, error)
 	FailRunningOnStartup(context.Context) (int64, error)
@@ -41,7 +42,6 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 		return model.TokenRecoveryTask{}, err
 	}
 	now := time.Now().UnixMilli()
-	hasObservedAt := normalized.ObservedAtMS > 0
 	seenAt := normalized.ObservedAtMS
 	if seenAt <= 0 {
 		seenAt = now
@@ -57,7 +57,10 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 		return model.TokenRecoveryTask{}, err
 	}
 	if !found {
-		id, err := insertTask(ctx, tx, identityKey, normalized, model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryModeAuto, seenAt, now)
+		// A signal only queues the work. The durable audit marker is written when
+		// a worker actually claims the automatic task, so it accurately means an
+		// external token-acquisition attempt has begun.
+		id, err := insertTask(ctx, tx, identityKey, normalized, model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryModeAuto, 0, seenAt, now)
 		if err != nil {
 			return model.TokenRecoveryTask{}, err
 		}
@@ -71,20 +74,23 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 		return item, nil
 	}
 
-	if existing.Status == model.TokenRecoveryStatusSucceeded && hasObservedAt && seenAt > existing.CompletedAtMS {
+	if isQueuedOrRunning(existing.Status) {
+		// There is already one recovery cycle in flight. Do not relabel a manual
+		// cycle as automatic, and do not enqueue a duplicate automatic cycle.
+		err = nil
+	} else if hasAutomaticAttempt(existing) {
+		if existing.AutoAttemptedAtMS <= 0 {
+			attemptedAt := firstPositive(existing.StartedAtMS, existing.CompletedAtMS, existing.CreatedAtMS, now)
+			_, err = tx.ExecContext(ctx, `update token_recovery_tasks set auto_attempted_at_ms = ?, updated_at_ms = ? where id = ?`, attemptedAt, now, existing.ID)
+		}
+	} else {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
 			status = ?, mode = ?, last_error_code = null, last_error_message = null,
 			account_email = case when account_email = '' and ? != '' then ? else account_email end,
-			last_signal_at_ms = ?,
+			auto_attempted_at_ms = 0, last_signal_at_ms = ?,
 			started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
 			model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryModeAuto,
 			normalized.AccountEmail, normalized.AccountEmail, seenAt, now, existing.ID)
-	} else {
-		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
-			account_email = case when account_email = '' and ? != '' then ? else account_email end,
-			last_signal_at_ms = case when ? > last_signal_at_ms then ? else last_signal_at_ms end,
-			updated_at_ms = ? where id = ?`,
-			normalized.AccountEmail, normalized.AccountEmail, seenAt, seenAt, now, existing.ID)
 	}
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
@@ -120,7 +126,7 @@ func (r *repository) RequestManual(ctx context.Context, target model.TokenRecove
 		return model.TokenRecoveryTask{}, err
 	}
 	if !found {
-		id, err := insertTask(ctx, tx, identityKey, normalized, model.TokenRecoveryStatusManualQueued, model.TokenRecoveryModeManual, seenAt, now)
+		id, err := insertTask(ctx, tx, identityKey, normalized, model.TokenRecoveryStatusManualQueued, model.TokenRecoveryModeManual, 0, seenAt, now)
 		if err != nil {
 			return model.TokenRecoveryTask{}, err
 		}
@@ -133,7 +139,18 @@ func (r *repository) RequestManual(ctx context.Context, target model.TokenRecove
 		}
 		return item, nil
 	}
-	if isQueuedOrRunning(existing.Status) {
+	if existing.Status == model.TokenRecoveryStatusAutoQueued {
+		// An automatic queue can be paused by the persisted switch. A manual
+		// operator action must be able to take ownership of that queued row;
+		// otherwise the scheduler would intentionally ignore it while the
+		// automatic policy is off and the manual retry could never start.
+		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
+			status = ?, mode = ?, last_error_code = null, last_error_message = null,
+			account_email = case when account_email = '' and ? != '' then ? else account_email end,
+			last_signal_at_ms = ?, started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
+			model.TokenRecoveryStatusManualQueued, model.TokenRecoveryModeManual,
+			normalized.AccountEmail, normalized.AccountEmail, seenAt, now, existing.ID)
+	} else if isQueuedOrRunning(existing.Status) {
 		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
 			account_email = case when account_email = '' and ? != '' then ? else account_email end,
 			last_signal_at_ms = case when ? > last_signal_at_ms then ? else last_signal_at_ms end,
@@ -184,6 +201,13 @@ func (r *repository) GetByID(ctx context.Context, id int64) (model.TokenRecovery
 }
 
 func (r *repository) ClaimNextQueued(ctx context.Context) (model.TokenRecoveryTask, bool, error) {
+	return r.ClaimNextEligible(ctx, true)
+}
+
+// ClaimNextEligible claims the oldest manual task and, only when permitted,
+// the oldest automatic task. It leaves paused automatic work durable and
+// untouched while the operator's one-shot switch is off.
+func (r *repository) ClaimNextEligible(ctx context.Context, allowAutomatic bool) (model.TokenRecoveryTask, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.TokenRecoveryTask{}, false, err
@@ -192,9 +216,9 @@ func (r *repository) ClaimNextQueued(ctx context.Context) (model.TokenRecoveryTa
 	var id int64
 	var status string
 	err = tx.QueryRowContext(ctx, `select id, status from token_recovery_tasks
-		where status in (?, ?)
+		where status = ? or (? and status = ?)
 		order by created_at_ms asc, id asc limit 1`,
-		model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryStatusManualQueued).Scan(&id, &status)
+		model.TokenRecoveryStatusManualQueued, allowAutomatic, model.TokenRecoveryStatusAutoQueued).Scan(&id, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.TokenRecoveryTask{}, false, nil
 	}
@@ -206,8 +230,11 @@ func (r *repository) ClaimNextQueued(ctx context.Context) (model.TokenRecoveryTa
 		runningStatus = model.TokenRecoveryStatusManualRunning
 	}
 	now := time.Now().UnixMilli()
-	res, err := tx.ExecContext(ctx, `update token_recovery_tasks set status = ?, started_at_ms = ?, updated_at_ms = ?
-		where id = ? and status = ?`, runningStatus, now, now, id, status)
+	res, err := tx.ExecContext(ctx, `update token_recovery_tasks set
+		status = ?, started_at_ms = ?,
+		auto_attempted_at_ms = case when ? = ? and coalesce(auto_attempted_at_ms, 0) = 0 then ? else auto_attempted_at_ms end,
+		updated_at_ms = ? where id = ? and status = ?`,
+		runningStatus, now, status, model.TokenRecoveryStatusAutoQueued, now, now, id, status)
 	if err != nil {
 		return model.TokenRecoveryTask{}, false, err
 	}
@@ -295,12 +322,12 @@ func (r *repository) FailRunningOnStartup(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
-func insertTask(ctx context.Context, tx *sql.Tx, identityKey string, target model.TokenRecoveryTarget, status, mode string, seenAt, now int64) (int64, error) {
+func insertTask(ctx context.Context, tx *sql.Tx, identityKey string, target model.TokenRecoveryTarget, status, mode string, autoAttemptedAt, seenAt, now int64) (int64, error) {
 	res, err := tx.ExecContext(ctx, `insert into token_recovery_tasks (
 		identity_key, file_name, auth_index, account_email, provider, status, mode,
-		last_signal_at_ms, created_at_ms, updated_at_ms
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		identityKey, target.FileName, target.AuthIndex, target.AccountEmail, target.Provider, status, mode, seenAt, now, now)
+		auto_attempted_at_ms, last_signal_at_ms, created_at_ms, updated_at_ms
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		identityKey, target.FileName, target.AuthIndex, target.AccountEmail, target.Provider, status, mode, autoAttemptedAt, seenAt, now, now)
 	if err != nil {
 		return 0, err
 	}
@@ -312,7 +339,7 @@ type rowQueryer interface {
 }
 
 const selectTasks = `select id, file_name, auth_index, account_email, provider, status, mode,
-	coalesce(last_error_code, ''), coalesce(last_error_message, ''), last_signal_at_ms, coalesce(started_at_ms, 0), coalesce(completed_at_ms, 0), created_at_ms, updated_at_ms
+	coalesce(last_error_code, ''), coalesce(last_error_message, ''), coalesce(auto_attempted_at_ms, 0), last_signal_at_ms, coalesce(started_at_ms, 0), coalesce(completed_at_ms, 0), created_at_ms, updated_at_ms
 	from token_recovery_tasks`
 
 func getByIdentityKey(ctx context.Context, q rowQueryer, identityKey string) (model.TokenRecoveryTask, bool, error) {
@@ -367,7 +394,7 @@ func scanTask(row interface{ Scan(...any) error }) (model.TokenRecoveryTask, err
 	var item model.TokenRecoveryTask
 	err := row.Scan(
 		&item.ID, &item.FileName, &item.AuthIndex, &item.AccountEmail, &item.Provider, &item.Status, &item.Mode,
-		&item.LastErrorCode, &item.LastErrorMessage, &item.LastSignalAtMS, &item.StartedAtMS, &item.CompletedAtMS, &item.CreatedAtMS, &item.UpdatedAtMS,
+		&item.LastErrorCode, &item.LastErrorMessage, &item.AutoAttemptedAtMS, &item.LastSignalAtMS, &item.StartedAtMS, &item.CompletedAtMS, &item.CreatedAtMS, &item.UpdatedAtMS,
 	)
 	return item, err
 }
@@ -394,6 +421,24 @@ func isQueuedOrRunning(status string) bool {
 	default:
 		return false
 	}
+}
+
+func hasAutomaticAttempt(task model.TokenRecoveryTask) bool {
+	if task.AutoAttemptedAtMS > 0 {
+		return true
+	}
+	// Compatibility for tasks created before auto_attempted_at_ms existed:
+	// only a terminal task with auto mode proves an automatic cycle completed.
+	return task.Mode == model.TokenRecoveryModeAuto && !isQueuedOrRunning(task.Status)
+}
+
+func firstPositive(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func sanitizeErrorCode(value string) string {

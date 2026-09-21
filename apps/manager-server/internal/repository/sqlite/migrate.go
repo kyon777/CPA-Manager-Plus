@@ -726,6 +726,7 @@ func Migrate(db *sql.DB) error {
 			mode text not null,
 			last_error_code text,
 			last_error_message text,
+			auto_attempted_at_ms integer,
 			last_signal_at_ms integer not null,
 			started_at_ms integer,
 			completed_at_ms integer,
@@ -1055,11 +1056,15 @@ func ensureTokenRecoveryTaskColumns(db *sql.DB) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if _, ok := existing["last_error_message"]; ok {
-		return nil
+	if _, ok := existing["last_error_message"]; !ok {
+		if _, err := db.Exec(`alter table token_recovery_tasks add column last_error_message text`); err != nil {
+			return fmt.Errorf("add token_recovery_tasks.last_error_message: %w", err)
+		}
 	}
-	if _, err := db.Exec(`alter table token_recovery_tasks add column last_error_message text`); err != nil {
-		return fmt.Errorf("add token_recovery_tasks.last_error_message: %w", err)
+	if _, ok := existing["auto_attempted_at_ms"]; !ok {
+		if _, err := db.Exec(`alter table token_recovery_tasks add column auto_attempted_at_ms integer`); err != nil {
+			return fmt.Errorf("add token_recovery_tasks.auto_attempted_at_ms: %w", err)
+		}
 	}
 	return nil
 }

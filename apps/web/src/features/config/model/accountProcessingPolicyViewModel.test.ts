@@ -38,6 +38,14 @@ function policy(overrides: Partial<AccountProcessingPolicy> = {}): AccountProces
       envKey: 'USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED',
       configFileKey: 'serverErrorPriorityDemotionEnabled',
     },
+    codexReauthAutoUpdate: {
+      enabled: false,
+      configured: false,
+      source: 'startup',
+      locked: false,
+      envKey: 'USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED',
+      configFileKey: 'codexReauthAutoUpdateEnabled',
+    },
     ...overrides,
   };
 }
@@ -53,6 +61,7 @@ describe('buildAccountProcessingPolicyViewModel', () => {
     expect(groups[1].items.map((item) => item.key)).toEqual([
       'authIssueQueue',
       'authIssueAutoDisable',
+      'codexReauthAutoUpdate',
     ]);
     expect(groups[2].key).toBe('serverErrors');
     expect(groups[2].items.map((item) => item.key)).toEqual(['serverErrorPriorityDemotion']);

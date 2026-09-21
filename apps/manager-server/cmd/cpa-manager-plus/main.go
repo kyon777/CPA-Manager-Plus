@@ -197,7 +197,7 @@ func runServer() {
 	serverErrorPriorityDemotionWorker := worker.NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(
 		serverApp.AppContext().AuthFileMutationCoordinator,
 	)
-	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryService)
+	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryAutomaticSignal)
 	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)
 	usageDerivedRollupWorker := worker.NewUsagePricingRollupWorker(db)
 	serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)

@@ -16,6 +16,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	tokenrecoverysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenrecovery"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
@@ -24,7 +25,7 @@ const tokenRecoveryHandlerAdminKey = "cpamp_token_recovery_test"
 
 func TestHandlerSignalsAndReadsRedactedTokenRecoveryTask(t *testing.T) {
 	handler := newTestHandler(t)
-	body := []byte(`{"fileName":"physical account.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex","observedAtMs":123}`)
+	body := []byte(`{"fileName":"physical account.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex","observedAtMs":123,"observedStatusCode":401}`)
 	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/signals", bytes.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
 	recorder := httptest.NewRecorder()
@@ -225,9 +226,38 @@ func newTestHandler(t *testing.T) *Handler {
 		t.Fatalf("save admin credential: %v", err)
 	}
 	recovery := tokenrecoverysvc.NewWithOptions(tokenrecoverysvc.Options{Tasks: st})
+	automaticSignal := tokenrecoverysvc.NewAutomaticSignalGate(tokenrecoverysvc.AutomaticSignalGateOptions{
+		Recovery:      recovery,
+		SetupResolver: handlerAutomaticSignalSetupResolver{},
+		AuthFiles:     handlerAutomaticSignalAuthFiles{},
+		Enabled:       func(context.Context) bool { return true },
+	})
 	return &Handler{App: &app.Context{
-		Config:               config.Config{},
-		AdminAuthService:     adminauthsvc.New(config.Config{}, st),
-		TokenRecoveryService: recovery,
+		Config:                       config.Config{},
+		AdminAuthService:             adminauthsvc.New(config.Config{}, st),
+		TokenRecoveryService:         recovery,
+		TokenRecoveryAutomaticSignal: automaticSignal,
 	}}
+}
+
+type handlerAutomaticSignalSetupResolver struct{}
+
+func (handlerAutomaticSignalSetupResolver) ResolveSetup(context.Context) (store.Setup, bool, error) {
+	return store.Setup{CPAUpstreamURL: "https://core.example.test", ManagementKey: "management-key"}, true, nil
+}
+
+type handlerAutomaticSignalAuthFiles struct{}
+
+func (handlerAutomaticSignalAuthFiles) Verify(
+	_ context.Context,
+	_ string,
+	_ string,
+	identity cpaauthfiles.Identity,
+) (cpaauthfiles.File, error) {
+	return cpaauthfiles.File{
+		Name:            identity.AuthFileName,
+		AuthIndex:       identity.AuthIndex,
+		Provider:        identity.Provider,
+		AccountSnapshot: identity.AccountSnapshot,
+	}, nil
 }

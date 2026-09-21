@@ -61,6 +61,7 @@ type Context struct {
 	DashboardService               *dashboardsvc.Service
 	CodexInspectionService         *codexinspectionsvc.Service
 	TokenRecoveryService           *tokenrecoverysvc.Service
+	TokenRecoveryAutomaticSignal   *tokenrecoverysvc.AutomaticSignalGate
 	CredentialRuntimeService       *credentialruntimesvc.Service
 	MonitoringService              *monitoringsvc.Service
 	QuotaSnapshotService           *quotasnapshotsvc.Service
@@ -167,6 +168,17 @@ func fromExisting(
 			BaseURL: cfg.TokenAcquisitionBaseURL,
 			APIKey:  cfg.TokenAcquisitionAPIKey,
 		}),
+		AutomaticEnabled: func(ctx context.Context) bool {
+			return accountProcessingPolicyService.RuntimeSettings(ctx).CodexReauthAutoUpdateEnabled
+		},
+	})
+	automaticTokenRecoverySignal := tokenrecoverysvc.NewAutomaticSignalGate(tokenrecoverysvc.AutomaticSignalGateOptions{
+		Recovery:      tokenRecoveryService,
+		SetupResolver: managerConfigService,
+		AuthFiles:     authFiles,
+		Enabled: func(ctx context.Context) bool {
+			return accountProcessingPolicyService.RuntimeSettings(ctx).CodexReauthAutoUpdateEnabled
+		},
 	})
 	credentialRuntimeService := credentialruntimesvc.NewWithOptions(credentialruntimesvc.Options{
 		SetupResolver:  managerConfigService,
@@ -191,15 +203,16 @@ func fromExisting(
 			managerConfigService,
 			codexinspectionsvc.ServiceOptions{
 				AuthFileMutationCoordinator: authFileMutationCoordinator,
-				ReauthRecoveryNotifier:      tokenRecoveryService,
+				ReauthRecoveryNotifier:      automaticTokenRecoverySignal,
 			},
 		),
-		TokenRecoveryService:     tokenRecoveryService,
-		CredentialRuntimeService: credentialRuntimeService,
-		MonitoringService:        monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
-		QuotaSnapshotService:     quotasnapshotsvc.New(st),
-		ModelPriceService:        modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
-		APIKeyAliasService:       apikeyaliassvc.New(st),
+		TokenRecoveryService:         tokenRecoveryService,
+		TokenRecoveryAutomaticSignal: automaticTokenRecoverySignal,
+		CredentialRuntimeService:     credentialRuntimeService,
+		MonitoringService:            monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
+		QuotaSnapshotService:         quotasnapshotsvc.New(st),
+		ModelPriceService:            modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
+		APIKeyAliasService:           apikeyaliassvc.New(st),
 		AccountActionService: accountactionsvc.NewWithMutationCoordinator(
 			st,
 			managerConfigService,

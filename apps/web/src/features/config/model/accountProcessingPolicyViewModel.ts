@@ -4,6 +4,7 @@ export type AccountPolicyCapabilityKey =
   | 'providerQuotaCooldown'
   | 'authIssueQueue'
   | 'authIssueAutoDisable'
+  | 'codexReauthAutoUpdate'
   | 'serverErrorPriorityDemotion';
 
 export type AccountPolicyGroupKey = 'quota' | 'authIssues' | 'serverErrors';
@@ -45,16 +46,18 @@ const capabilityKeys: AccountPolicyCapabilityKey[] = [
   'providerQuotaCooldown',
   'authIssueQueue',
   'authIssueAutoDisable',
+  'codexReauthAutoUpdate',
   'serverErrorPriorityDemotion',
 ];
 
 const capabilitySourceKey: Record<
   AccountPolicyCapabilityKey,
-  'codexQuotaCooldown' | 'authIssueQueue' | 'authIssueAutoDisable' | 'serverErrorPriorityDemotion'
+  'codexQuotaCooldown' | 'authIssueQueue' | 'authIssueAutoDisable' | 'codexReauthAutoUpdate' | 'serverErrorPriorityDemotion'
 > = {
   providerQuotaCooldown: 'codexQuotaCooldown',
   authIssueQueue: 'authIssueQueue',
   authIssueAutoDisable: 'authIssueAutoDisable',
+  codexReauthAutoUpdate: 'codexReauthAutoUpdate',
   serverErrorPriorityDemotion: 'serverErrorPriorityDemotion',
 };
 
@@ -89,6 +92,14 @@ const capabilityMetadata: Record<
     toggleLabelKey: 'accountPolicy.authIssueAutoDisable_toggle',
     nested: true,
   },
+  codexReauthAutoUpdate: {
+    titleKey: 'accountPolicy.codexReauthAutoUpdate_title',
+    descriptionKey: 'accountPolicy.codexReauthAutoUpdate_description',
+    behaviorKey: 'accountPolicy.codexReauthAutoUpdate_behavior',
+    summaryKey: 'accountPolicy.codexReauthAutoUpdate_summary',
+    toggleLabelKey: 'accountPolicy.codexReauthAutoUpdate_toggle',
+    nested: false,
+  },
   serverErrorPriorityDemotion: {
     titleKey: 'accountPolicy.serverErrorPriorityDemotion_title',
     descriptionKey: 'accountPolicy.serverErrorPriorityDemotion_description',
@@ -115,7 +126,7 @@ const groupDefinitions: Array<{
     key: 'authIssues',
     titleKey: 'accountPolicy.group_auth_issues_title',
     descriptionKey: 'accountPolicy.group_auth_issues_description',
-    itemKeys: ['authIssueQueue', 'authIssueAutoDisable'],
+    itemKeys: ['authIssueQueue', 'authIssueAutoDisable', 'codexReauthAutoUpdate'],
   },
   {
     key: 'serverErrors',
