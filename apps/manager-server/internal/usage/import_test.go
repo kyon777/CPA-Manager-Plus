@@ -137,6 +137,16 @@ func TestImportCacheAccountingUsesStructuredSemantics(t *testing.T) {
 			payload:  `{"event_hash":"raw-explicit","timestamp_ms":1,"timestamp":"2026-07-15T00:00:00Z","executor_type":"XAIExecutor","model":"grok-4","tokens":{"input_tokens":100,"cache_read_tokens":20},"raw_json":"{\"tokens\":{\"total_tokens\":888}}"}`,
 			wantMode: CacheInputModeIncluded, wantInput: 100, wantTotal: 888, wantUncache: 80,
 		},
+		{
+			name:     "devin executor with claude alias preserves read included creation separate",
+			payload:  `{"event_hash":"devin-import","timestamp_ms":1,"timestamp":"2026-07-15T00:00:00Z","executor_type":"DevinExecutor","provider":"devin","alias":"claude-fable-5-1","model":"claude-fable-5-1","tokens":{"input_tokens":229788,"cache_read_tokens":228021,"cache_creation_tokens":0,"total_tokens":231563}}`,
+			wantMode: CacheInputModeReadIncludedCreationSeparate, wantInput: 229788, wantTotal: 231563, wantUncache: 1767,
+		},
+		{
+			name:     "explicit read_included_creation_separate mode is preserved on import",
+			payload:  `{"event_hash":"devin-explicit","timestamp_ms":1,"timestamp":"2026-07-15T00:00:00Z","executor_type":"ClaudeExecutor","model":"claude-3-7-sonnet","tokens":{"input_tokens":53,"cache_read_tokens":50,"cache_creation_tokens":14361,"cache_input_mode":"read_included_creation_separate","total_tokens":99999}}`,
+			wantMode: CacheInputModeReadIncludedCreationSeparate, wantInput: 14414, wantTotal: 99999, wantUncache: 3,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

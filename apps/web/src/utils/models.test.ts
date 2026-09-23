@@ -62,4 +62,36 @@ describe('classifyModels', () => {
     const devinGroup = groups.find((g) => g.id === 'devin');
     expect(devinGroup).toBeUndefined();
   });
+
+  it('classifies muse models into Muse group without altering model names', () => {
+    const input = [
+      { name: 'muse-spark-1.3' },
+      { name: 'muse-spark-1.2' },
+      { name: 'meta/muse-spark-1.3' },
+      { name: 'meta/random-model' },
+      { name: 'devin/muse-spark-1.3' },
+    ];
+
+    const groups = classifyModels(input);
+
+    const museGroup = groups.find((g) => g.id === 'muse');
+    expect(museGroup).toBeDefined();
+    expect(museGroup?.label).toBe('Muse');
+    expect(museGroup?.items.map((m) => m.name)).toEqual([
+      'muse-spark-1.3',
+      'muse-spark-1.2',
+      'meta/muse-spark-1.3',
+    ]);
+
+    const otherGroup = groups.find((g) => g.id === 'other');
+    expect(otherGroup).toBeDefined();
+    expect(otherGroup?.items.map((m) => m.name)).toContain('meta/random-model');
+
+    const devinGroup = groups.find((g) => g.id === 'devin');
+    expect(devinGroup).toBeDefined();
+    expect(devinGroup?.items.map((m) => m.name)).toContain('devin/muse-spark-1.3');
+
+    // Verify original model names are not stripped or altered
+    expect(museGroup?.items.find((m) => m.name === 'meta/muse-spark-1.3')?.name).toBe('meta/muse-spark-1.3');
+  });
 });

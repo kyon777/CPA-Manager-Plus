@@ -544,6 +544,13 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
       .filter(Boolean) as ProviderKeyConfig[];
   }
 
+  const metaList = raw['meta-api-key'] ?? raw.metaApiKey ?? raw.metaApiKeys;
+  if (Array.isArray(metaList)) {
+    config.metaApiKeys = metaList
+      .map((item) => normalizeProviderKeyConfig(item))
+      .filter(Boolean) as ProviderKeyConfig[];
+  }
+
   const claudeList = raw['claude-api-key'] ?? raw.claudeApiKey ?? raw.claudeApiKeys;
   if (Array.isArray(claudeList)) {
     config.claudeApiKeys = claudeList

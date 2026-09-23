@@ -5,6 +5,7 @@ import type {
   CodexQuotaState,
   DevinQuotaState,
   KimiQuotaState,
+  MetaQuotaState,
   QuotaResetAccuracy,
   XaiBillingSummary,
   XaiQuotaState,
@@ -78,6 +79,7 @@ export interface AccountQuotaStores {
   codexQuota: Record<string, CodexQuotaState>;
   devinQuota: Record<string, DevinQuotaState>;
   kimiQuota: Record<string, KimiQuotaState>;
+  metaQuota: Record<string, MetaQuotaState>;
   xaiQuota: Record<string, XaiQuotaState>;
 }
 
@@ -249,6 +251,7 @@ export const normalizeAccountProvider = (file: AuthFileItem): string => {
   const raw = readString(file.provider) || readString(file.type) || 'unknown';
   const key = raw.toLowerCase().replace(/_/g, '-');
   if (key === 'x-ai' || key === 'grok') return 'xai';
+  if (key === 'muse') return 'meta';
   return key || 'unknown';
 };
 
@@ -1121,6 +1124,34 @@ export const resolveAccountQuota = (
       })),
       planType,
       { fetchedAtMs: quota.fetchedAtMs }
+    );
+  }
+
+  if (provider === 'meta') {
+    const quota = getCredentialScopedQuotaState(stores.metaQuota, file);
+    if (!quota) return emptyQuota(filePlanType);
+    const planType = quota.plan ?? filePlanType;
+    if (quota.status === 'loading') return loadingQuota(planType);
+    if (quota.status === 'error')
+      return quotaFromError(quota.error, planType, quota.errorStatus, quota.failedAtMs);
+    return quotaFromRemainingWindows(
+      quota.windows.map((window) => ({
+        remainingPercent:
+          typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent)
+            ? Math.max(0, Math.min(100, 100 - window.usedPercent))
+            : null,
+        usedPercent: window.usedPercent,
+        resetAtMs: window.resetAtMs,
+        resetAccuracy: window.resetAccuracy ?? 'unknown',
+      })),
+      planType,
+      {
+        fetchedAtMs: quota.fetchedAtMs,
+        observedAtMs: quota.observedAtMs,
+        observedQuotaAtMs:
+          quota.windows.find((w) => w.quotaProgressObservedAtMs !== null)
+            ?.quotaProgressObservedAtMs ?? undefined,
+      }
     );
   }
 

@@ -87,8 +87,8 @@ See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/gui
 
 ### CPA Gateway Management
 
-- Manage CPA provider configurations, including Gemini, Codex, Claude, Vertex, xAI, Devin, and OpenAI-compatible providers.
-- Maintain auth files, OAuth logins, API keys, model aliases, priorities, plugins, logs, and system settings.
+- Manage CPA provider configurations, including Gemini, Codex, Claude, Vertex, xAI, Devin, Muse / Meta, and OpenAI-compatible providers.
+- Maintain auth files, OAuth logins, API keys, model aliases, priorities, plugins, logs, and system settings. Muse / Meta supports Device Flow credentials separately from `meta-api-key` inference providers.
 - Import official Sub2API OpenAI OAuth exports and split multiple accounts into separate CPA Codex auth files.
 
 ### Request Monitoring And Failure Diagnosis
@@ -186,7 +186,7 @@ docker run -d \
   seakee/cpa-manager-plus:latest
 ```
 
-Recommended CPA version: `v7.1.39+`. The HTTP usage queue needs `v6.10.8+`.
+Recommended CPA version: `v7.3.4+`. The HTTP usage queue needs `v6.10.8+`.
 
 ## Documentation
 

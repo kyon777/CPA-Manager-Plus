@@ -5,6 +5,7 @@ export {
   CODEX_SUMMARY_CONFIG,
   DEVIN_CONFIG,
   KIMI_CONFIG,
+  META_CONFIG,
   XAI_CONFIG,
   buildObservedCodexQuotaState,
   buildQuotaFailureState,

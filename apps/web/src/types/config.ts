@@ -49,6 +49,7 @@ export interface Config {
   interactionsApiKeys?: GeminiKeyConfig[];
   codexApiKeys?: ProviderKeyConfig[];
   xaiApiKeys?: ProviderKeyConfig[];
+  metaApiKeys?: ProviderKeyConfig[];
   claudeApiKeys?: ProviderKeyConfig[];
   vertexApiKeys?: ProviderKeyConfig[];
   openaiCompatibility?: OpenAIProviderConfig[];
@@ -75,6 +76,7 @@ export type RawConfigSection =
   | 'interactions-api-key'
   | 'codex-api-key'
   | 'xai-api-key'
+  | 'meta-api-key'
   | 'claude-api-key'
   | 'vertex-api-key'
   | 'openai-compatibility'

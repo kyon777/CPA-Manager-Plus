@@ -16,6 +16,7 @@ const GENERIC_PROVIDER_LABELS = new Set([
   'x-ai',
   'grok',
   'devin',
+  'meta',
 ]);
 
 const hasReadableValue = (value: string | null | undefined) => {

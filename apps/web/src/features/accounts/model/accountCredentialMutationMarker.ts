@@ -50,6 +50,7 @@ const normalizeProvider = (value: string): string => {
   const provider = value.trim().toLowerCase().replace(/_/g, '-');
   if (provider === 'x-ai' || provider === 'grok') return 'xai';
   if (provider === 'anthropic') return 'claude';
+  if (provider === 'muse') return 'meta';
   return provider;
 };
 

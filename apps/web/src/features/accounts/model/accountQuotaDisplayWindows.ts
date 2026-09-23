@@ -45,6 +45,7 @@ export type AccountQuotaWindowSource =
   | 'antigravity'
   | 'devin'
   | 'kimi'
+  | 'meta'
   | 'xai'
   | 'summary';
 
@@ -657,13 +658,21 @@ const buildXaiQuotaDisplayWindows = (
     billing.periodType === 'weekly' &&
     typeof billing.usagePercent === 'number' &&
     Number.isFinite(billing.usagePercent);
+  const hasObservedWeeklyPeriod =
+    billing.periodType === 'weekly' &&
+    Boolean(billing.periodStart || billing.periodEnd);
   const hasObservedProductUsage =
     Array.isArray(billing.productUsage) &&
     billing.productUsage.some(
       (product) => typeof product.usagePercent === 'number' && Number.isFinite(product.usagePercent)
     );
 
-  if (!confirmedBillingEntitlement && !hasObservedWeeklyUsage && !hasObservedProductUsage) {
+  if (
+    !confirmedBillingEntitlement &&
+    !hasObservedWeeklyUsage &&
+    !hasObservedWeeklyPeriod &&
+    !hasObservedProductUsage
+  ) {
     return [];
   }
 
@@ -671,7 +680,7 @@ const buildXaiQuotaDisplayWindows = (
     ? formatDisplayResetTime(billing.billingPeriodEnd)
     : '-';
   const billingReset = resolveAbsoluteQuotaReset(billing.billingPeriodEnd);
-  const periodResetValue = billing.periodEnd ?? billing.billingPeriodEnd;
+  const periodResetValue = billing.periodEnd;
   const periodResetLabel = periodResetValue ? formatDisplayResetTime(periodResetValue) : '-';
   const periodReset = resolveAbsoluteQuotaReset(periodResetValue);
   const periodStart = resolveAbsoluteQuotaReset(billing.periodStart);
@@ -689,11 +698,15 @@ const buildXaiQuotaDisplayWindows = (
     typeof billing.usedPercent === 'number' && Number.isFinite(billing.usedPercent)
       ? clampDisplayPercent(billing.usedPercent)
       : null;
-  const hasLegacyMonthlyWindow = monthlyUsedPercent !== null || billing.monthlyLimitCents !== null;
+  const hasPositiveMonthlyLimit =
+    typeof billing.monthlyLimitCents === 'number' &&
+    Number.isFinite(billing.monthlyLimitCents) &&
+    billing.monthlyLimitCents > 0;
+  const hasLegacyMonthlyWindow = monthlyUsedPercent !== null || hasPositiveMonthlyLimit;
 
   const showCreditsPeriod = confirmedBillingEntitlement
     ? billing.periodType === 'weekly' || (billing.productUsage?.length ?? 0) > 0
-    : hasObservedWeeklyUsage;
+    : hasObservedWeeklyUsage || hasObservedWeeklyPeriod;
 
   if (showCreditsPeriod) {
     windows.push(
@@ -847,6 +860,11 @@ export const buildAccountQuotaDisplayWindows = (
     if (windows.length) return windows;
   }
 
+  if (row.provider === 'meta') {
+    const windows = buildMetaQuotaDisplayWindows(row, options);
+    if (windows.length) return windows;
+  }
+
   return buildSummaryQuotaDisplayWindow(row, options);
 };
 
@@ -884,6 +902,48 @@ const buildDevinQuotaDisplayWindows = (
       source: 'devin',
       modelScope: { kind: 'all', complete: true },
       observedAtMs: quota.observedAtMs ?? quota.fetchedAtMs ?? null,
+      nowMs: options.nowMs,
+    });
+  });
+};
+
+const buildMetaQuotaDisplayWindows = (
+  row: AccountRow,
+  options: BuildAccountQuotaDisplayWindowsOptions
+): AccountQuotaDisplayWindow[] => {
+  const quota = getCredentialScopedQuotaState(options.stores.metaQuota, row.raw);
+  if (!quota || !quota.windows?.length) return [];
+  return quota.windows.map((window) => {
+    const remainingPercent =
+      typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent)
+        ? clampDisplayPercent(100 - window.usedPercent)
+        : null;
+    const usedPercent =
+      typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent)
+        ? clampDisplayPercent(window.usedPercent)
+        : null;
+    const hasReset = isValidQuotaResetAtMs(window.resetAtMs);
+    const resetLabel =
+      hasReset && window.resetAtMs !== null
+        ? formatQuotaResetTime(window.resetAtMs)
+        : '-';
+    const labelKey = window.id === 'window' ? 'meta_quota.window' : 'meta_quota.weekly';
+    const label = options.translateQuotaWindowLabel(undefined, labelKey);
+
+    return buildAccountQuotaDisplayWindow({
+      key: `meta:${window.id}`,
+      label,
+      remainingPercent,
+      usedPercent,
+      resetLabel,
+      resetAtMs: window.resetAtMs,
+      resetAccuracy: hasReset && window.resetAccuracy ? window.resetAccuracy : 'unknown',
+      limitWindowSeconds: window.id === 'weekly' ? null : (window.limitWindowSeconds ?? null),
+      windowMode: window.id === 'weekly' ? 'unknown' : undefined,
+      source: 'meta',
+      modelScope: { kind: 'all', complete: true },
+      observedAtMs: quota.observedAtMs ?? quota.fetchedAtMs ?? null,
+      quotaProgressObservedAtMs: window.quotaProgressObservedAtMs ?? null,
       nowMs: options.nowMs,
     });
   });

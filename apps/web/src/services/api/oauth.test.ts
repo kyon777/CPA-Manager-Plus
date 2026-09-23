@@ -117,4 +117,22 @@ describe('oauthApi', () => {
     });
     expect(result).toEqual({ status: 'ok', cancelled: true });
   });
+
+  it('starts Meta OAuth without is_webui flag and preserves device flow fields', async () => {
+    const metaResponse = {
+      url: 'https://auth.example/device',
+      state: 'state-meta-1',
+      user_code: 'ABCD-EFGH',
+      flow: 'device',
+      expires_in: 600,
+    };
+    mocks.get.mockResolvedValue(metaResponse);
+
+    const result = await oauthApi.startAuth('meta');
+
+    expect(mocks.get).toHaveBeenCalledWith('/meta-auth-url', {
+      params: undefined,
+    });
+    expect(result).toEqual(metaResponse);
+  });
 });

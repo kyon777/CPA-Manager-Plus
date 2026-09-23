@@ -13,7 +13,7 @@ import type { AccountDetailViewModel } from '@/features/accounts/model/accountDe
 import {
   formatPercent,
   formatQuotaResetTimestamp,
-  getQuotaResetRemainingDays,
+  getQuotaResetRemainingDuration,
 } from '@/features/accounts/model/accountsPagePresentation';
 import {
   getAccountQuotaSemanticGroup,
@@ -104,6 +104,34 @@ interface AccountQuotaTabProps {
   resetQuotaDisabled: boolean;
 }
 
+const renderResetCreditRemainingText = (
+  expiresAtMs: number,
+  nowMs: number,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string => {
+  const duration = getQuotaResetRemainingDuration(expiresAtMs, nowMs);
+  if (!duration) return '';
+  switch (duration.unit) {
+    case 'day':
+      return t('codex_quota.reset_credit_expiry_remaining_days', {
+        count: duration.value,
+        days: duration.value,
+      });
+    case 'hour':
+      return t('codex_quota.reset_credit_expiry_remaining_hours', {
+        count: duration.value,
+        hours: duration.value,
+      });
+    case 'minute':
+      return t('codex_quota.reset_credit_expiry_remaining_minutes', {
+        count: duration.value,
+        minutes: duration.value,
+      });
+    case 'subminute':
+      return t('codex_quota.reset_credit_expiry_remaining_less_than_minute');
+  }
+};
+
 export function AccountQuotaTab({
   detailView,
   windowUsageError,
@@ -144,6 +172,9 @@ export function AccountQuotaTab({
   const shouldShowResetRecords = detailView.identity.provider === 'codex' && hasResetRecords;
   const [nowMs, setNowMs] = useState(() => Date.now());
   useInterval(() => setNowMs(Date.now()), shouldShowResetRecords ? 60_000 : null);
+  const visibleResetCreditExpiries = detailView.quota.resetCreditExpiries.filter(
+    (item) => item.expiresAtMs > nowMs
+  );
 
   return (
     <div className={styles.quotaTab} data-account-quota-tab="true">
@@ -336,22 +367,20 @@ export function AccountQuotaTab({
                 {t('codex_quota.reset_credits_unavailable_label')}
               </div>
             ) : null}
-            {detailView.quota.resetCreditExpiries.length > 0 ? (
+            {visibleResetCreditExpiries.length > 0 ? (
               <div className={styles.quotaResetExpirySection}>
                 <span className={styles.quotaResetExpiryLabel}>
                   {t('codex_quota.reset_credits_expected_expiry_label')}
                 </span>
                 <div className={styles.quotaResetExpiryList}>
-                  {detailView.quota.resetCreditExpiries.map((item, index) => (
+                  {visibleResetCreditExpiries.map((item, index) => (
                     <div
                       key={`${item.id}:${item.expiresAtMs}`}
                       className={styles.quotaResetExpiryItem}
                     >
                       <span>{t('codex_quota.reset_credit_expiry_item', { index: index + 1 })}</span>
                       <strong data-quota-reset-credit-expiry={item.id}>
-                        {t('codex_quota.reset_credit_expiry_remaining_days', {
-                          days: getQuotaResetRemainingDays(item.expiresAtMs, nowMs) ?? 0,
-                        })}{' '}
+                        {renderResetCreditRemainingText(item.expiresAtMs, nowMs, t)}{' '}
                         · {formatQuotaResetTimestamp(item.expiresAtMs, i18n.language)}
                       </strong>
                     </div>

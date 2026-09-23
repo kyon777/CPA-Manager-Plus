@@ -15,6 +15,7 @@ const emptyStores = (): AccountQuotaStores => ({
   codexQuota: {},
   devinQuota: {},
   kimiQuota: {},
+  metaQuota: {},
   xaiQuota: {},
 });
 
@@ -705,6 +706,80 @@ describe('resolveAccountQuota', () => {
     expect(reverseSummary.remainingPercent).toBe(35);
     expect(reverseSummary.usedPercent).toBe(65);
     expect(reverseSummary.planType).toBe('Pro');
+  });
+
+  it('resolves Meta quota summary choosing the limiting window and preserving live plan', () => {
+    const file = { name: 'meta.json', type: 'meta', authIndex: 'm-1' } as AuthFileItem;
+    const stores = emptyStores();
+    stores.metaQuota['meta.json::m-1'] = {
+      status: 'success',
+      authFileKey: 'meta.json::m-1',
+      authFileName: 'meta.json',
+      authIndex: 'm-1',
+      authFileIdentityVerified: true,
+      windows: [
+        {
+          id: 'window',
+          usedPercent: 15,
+          resetAtMs: 1726400000000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 3600,
+          quotaProgressObservedAtMs: 1726398000000,
+        },
+        {
+          id: 'weekly',
+          usedPercent: 60,
+          resetAtMs: 1726900000000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: null,
+          quotaProgressObservedAtMs: 1726398000000,
+        },
+      ],
+      plan: 'Meta Pro',
+      isSubscriptionActive: true,
+      quotaInventoryObserved: true,
+      observedAtMs: 1726398000000,
+      fetchedAtMs: 1726398000000,
+    };
+
+    // weekly (40) < window (85) -> limiting window is weekly (40)
+    const summary = resolveAccountQuota(file, stores);
+    expect(summary.status).toBe('ok');
+    expect(summary.remainingPercent).toBe(40);
+    expect(summary.usedPercent).toBe(60);
+    expect(summary.planType).toBe('Meta Pro');
+    expect(summary.resetAccuracy).toBe('exact');
+    expect(summary.resetAtMs).toBe(1726900000000);
+
+    // exhausted when remaining is 0
+    stores.metaQuota['meta.json::m-1'].windows[0].usedPercent = 100;
+    const exhaustedSummary = resolveAccountQuota(file, stores);
+    expect(exhaustedSummary.status).toBe('exhausted');
+    expect(exhaustedSummary.remainingPercent).toBe(0);
+    expect(exhaustedSummary.usedPercent).toBe(100);
+
+    // unknown when usedPercent is null
+    stores.metaQuota['meta.json::m-1'].windows[0].usedPercent = null;
+    stores.metaQuota['meta.json::m-1'].windows[1].usedPercent = null;
+    const unknownSummary = resolveAccountQuota(file, stores);
+    expect(unknownSummary.status).toBe('unknown');
+    expect(unknownSummary.remainingPercent).toBeNull();
+    expect(unknownSummary.usedPercent).toBeNull();
+
+    // error state
+    stores.metaQuota['meta.json::m-1'].status = 'error';
+    stores.metaQuota['meta.json::m-1'].error = 'Quota fetch failed';
+    const errorSummary = resolveAccountQuota(file, stores);
+    expect(errorSummary.status).toBe('error');
+
+    // credential identity mismatch resolves to unknown
+    const otherStores = emptyStores();
+    otherStores.metaQuota['meta.json::other'] = {
+      ...stores.metaQuota['meta.json::m-1'],
+      authFileKey: 'meta.json::other',
+    };
+    const mismatchSummary = resolveAccountQuota(file, otherStores);
+    expect(mismatchSummary.status).toBe('unknown');
   });
 });
 

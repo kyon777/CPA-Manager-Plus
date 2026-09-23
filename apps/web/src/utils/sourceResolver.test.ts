@@ -321,4 +321,37 @@ describe('source resolver', () => {
     expect(resolvedHashed.displayName).toBe(resolvedLegacy.displayName);
     expect(resolvedHashed.type).toBe(resolvedLegacy.type);
   });
+
+  it('resolves Meta API key sources independently from Meta DCA OAuth credentials', () => {
+    const apiKey = 'meta-1234567890abcdef';
+    const sourceInfoMap = buildSourceInfoMap({
+      metaApiKeys: [
+        {
+          apiKey,
+          authIndex: 'meta-api-key-1',
+          prefix: 'Muse Team API',
+          baseUrl: 'https://api.meta.ai/v1',
+        },
+      ],
+    });
+
+    const authFileMap = new Map([
+      ['meta-oauth-1', { name: 'Muse OAuth Account', type: 'meta' }],
+    ]);
+
+    const resolvedByAuthIndex = resolveSourceDisplay('', 'meta-api-key-1', sourceInfoMap, authFileMap);
+    expect(resolvedByAuthIndex.displayName).toBe('Muse Team API');
+    expect(resolvedByAuthIndex.type).toBe('meta');
+    expect(resolvedByAuthIndex.identityKey).toBe('meta:0');
+
+    const resolvedByHash = resolveSourceDisplay(`h:${sha256Hex(apiKey)}`, '', sourceInfoMap, authFileMap);
+    expect(resolvedByHash.displayName).toBe('Muse Team API');
+    expect(resolvedByHash.type).toBe('meta');
+    expect(resolvedByHash.identityKey).toBe('meta:0');
+
+    const resolvedOAuth = resolveSourceDisplay('', 'meta-oauth-1', sourceInfoMap, authFileMap);
+    expect(resolvedOAuth.displayName).toBe('Muse OAuth Account');
+    expect(resolvedOAuth.type).toBe('meta');
+    expect(resolvedOAuth.identityKey).toBe('auth:meta-oauth-1');
+  });
 });

@@ -30,6 +30,10 @@ import {
   inferCodexQuotaScopeFromProviderWindowId,
   shouldClearInheritedCodexQuotaProgress,
 } from '@/utils/quota/codexQuota';
+import {
+  resolveCodexResetCreditsCountEvidenceAtMs,
+  resolveCodexResetCreditsDetailEvidenceAtMs,
+} from '@/utils/quota';
 
 const INCOMPLETE_MODEL_SCOPE_KIND = 'feature';
 const INCOMPLETE_MODEL_SCOPE_KEY = 'scope_unknown';
@@ -190,14 +194,42 @@ export const mergeCodexResetCreditsFromQuotaSnapshots = (
   quota: CodexQuotaState | undefined,
   snapshots: AccountQuotaSnapshotWindow[]
 ): CodexQuotaState | undefined => {
-  const hasLocalResetCreditsEvidence =
+  const hasLocalCountEvidence =
+    typeof quota?.resetCreditsCountEvidenceAtMs === 'number' &&
+    Number.isFinite(quota.resetCreditsCountEvidenceAtMs) &&
+    quota.resetCreditsCountEvidenceAtMs > 0;
+  const localCountEvidenceAtMs =
+    resolveCodexResetCreditsCountEvidenceAtMs(quota) ?? 0;
+
+  const hasLocalDetailEvidence =
+    typeof quota?.resetCreditsDetailEvidenceAtMs === 'number' &&
+    Number.isFinite(quota.resetCreditsDetailEvidenceAtMs) &&
+    quota.resetCreditsDetailEvidenceAtMs > 0;
+  const localDetailEvidenceAtMs =
+    resolveCodexResetCreditsDetailEvidenceAtMs(quota) ?? 0;
+
+  const localResetInvalidationAtMs =
+    quota?.resetCreditsDetailStale === true &&
     typeof quota?.resetCreditsEvidenceAtMs === 'number' &&
     Number.isFinite(quota.resetCreditsEvidenceAtMs) &&
-    quota.resetCreditsEvidenceAtMs > 0;
-  const localResetCreditsEvidenceAtMs =
-    hasLocalResetCreditsEvidence && typeof quota?.resetCreditsEvidenceAtMs === 'number'
+    quota.resetCreditsEvidenceAtMs > 0
       ? quota.resetCreditsEvidenceAtMs
-      : quota?.fetchedAtMs ?? quota?.observedAtMs ?? 0;
+      : 0;
+
+  const localCountInvalidationBoundaryAtMs = Math.max(
+    localCountEvidenceAtMs,
+    localResetInvalidationAtMs
+  );
+
+  const localDetailInvalidationBoundaryAtMs =
+    quota?.resetCreditsDetailStale === true
+      ? Math.max(
+          localDetailEvidenceAtMs,
+          localCountEvidenceAtMs,
+          localResetInvalidationAtMs
+        )
+      : localDetailEvidenceAtMs;
+
   const usableSnapshots = snapshots.filter(
     (snapshot) =>
       snapshot.stale !== true &&
@@ -221,43 +253,94 @@ export const mergeCodexResetCreditsFromQuotaSnapshots = (
   const creditsObservedAt = creditsSnapshot
     ? snapshotFieldObservedAt(creditsSnapshot, 'reset_credits')
     : 0;
+
+  const localIsZeroCountAtOrAfterSnapshot =
+    quota?.rateLimitResetCreditsAvailableCount === 0 &&
+    localCountEvidenceAtMs >= creditsObservedAt;
+
   const useSnapshotCount =
     countSnapshot !== undefined &&
-    (quota?.rateLimitResetCreditsAvailableCount === undefined && !hasLocalResetCreditsEvidence
+    ((quota?.rateLimitResetCreditsAvailableCount === undefined ||
+      quota?.rateLimitResetCreditsAvailableCount === null) &&
+    !hasLocalCountEvidence &&
+    localCountInvalidationBoundaryAtMs === 0
       ? true
-      : countObservedAt >= localResetCreditsEvidenceAtMs);
+      : countObservedAt >= localCountInvalidationBoundaryAtMs);
+
   const useSnapshotCredits =
     creditsSnapshot !== undefined &&
-    (quota?.rateLimitResetCredits === undefined && !hasLocalResetCreditsEvidence
-      ? true
-      : creditsObservedAt >= localResetCreditsEvidenceAtMs);
+    !localIsZeroCountAtOrAfterSnapshot &&
+    (quota?.resetCreditsDetailStale === true
+      ? creditsObservedAt >= localDetailInvalidationBoundaryAtMs
+      : quota?.rateLimitResetCredits === undefined &&
+        !hasLocalDetailEvidence &&
+        localDetailInvalidationBoundaryAtMs === 0
+        ? true
+        : creditsObservedAt >= localDetailInvalidationBoundaryAtMs);
+
   if (!useSnapshotCount && !useSnapshotCredits) return quota;
 
-  const clearCreditsFromNewZeroCount =
-    useSnapshotCount &&
-    countSnapshot?.reset_credits_available === 0 &&
-    countObservedAt >= creditsObservedAt;
+  const activeCount = useSnapshotCount
+    ? (countSnapshot.reset_credits_available ?? null)
+    : (quota?.rateLimitResetCreditsAvailableCount ?? null);
+  const activeCountObservedAt = useSnapshotCount ? countObservedAt : localCountEvidenceAtMs;
+  const activeCreditsObservedAt = useSnapshotCredits ? creditsObservedAt : localDetailEvidenceAtMs;
+
+  const clearCreditsFromZeroCount =
+    activeCount === 0 && activeCountObservedAt >= activeCreditsObservedAt;
+
+  const finalCredits = clearCreditsFromZeroCount
+    ? []
+    : useSnapshotCredits
+      ? (creditsSnapshot.reset_credits ?? []).map((credit) => ({
+          id: credit.id,
+          status: 'available',
+          grantedAt: '',
+          expiresAt: new Date(credit.expires_at_ms).toISOString(),
+        }))
+      : (quota?.rateLimitResetCredits ?? []);
+
+  const detailSupersedesCount =
+    useSnapshotCredits &&
+    !clearCreditsFromZeroCount &&
+    creditsObservedAt > 0 &&
+    creditsObservedAt > activeCountObservedAt;
+
+  const finalCount = detailSupersedesCount ? finalCredits.length : activeCount;
+  const finalCountEvidenceAtMs = detailSupersedesCount
+    ? creditsObservedAt
+    : Math.max(
+        localCountEvidenceAtMs,
+        useSnapshotCount ? countObservedAt : 0
+      );
+
+  const finalDetailEvidenceAtMs = clearCreditsFromZeroCount
+    ? null
+    : useSnapshotCredits
+      ? creditsObservedAt
+      : localDetailEvidenceAtMs > 0
+        ? localDetailEvidenceAtMs
+        : null;
 
   const base: CodexQuotaState = quota ?? { status: 'success', windows: [] };
   const next: CodexQuotaState = {
     ...base,
-    rateLimitResetCreditsAvailableCount: useSnapshotCount
-      ? (countSnapshot.reset_credits_available ?? null)
-      : base.rateLimitResetCreditsAvailableCount,
-    rateLimitResetCredits: clearCreditsFromNewZeroCount
-      ? []
+    rateLimitResetCreditsAvailableCount: finalCount,
+    rateLimitResetCredits: finalCredits,
+    resetCreditsCountEvidenceAtMs: finalCountEvidenceAtMs > 0 ? finalCountEvidenceAtMs : null,
+    resetCreditsDetailEvidenceAtMs: finalDetailEvidenceAtMs,
+    resetCreditsDetailStale: clearCreditsFromZeroCount
+      ? false
       : useSnapshotCredits
-        ? (creditsSnapshot.reset_credits ?? []).map((credit) => ({
-            id: credit.id,
-            status: 'available',
-            grantedAt: '',
-            expiresAt: new Date(credit.expires_at_ms).toISOString(),
-          }))
-        : base.rateLimitResetCredits,
+        ? false
+        : (quota?.resetCreditsDetailStale ?? false),
     resetCreditsEvidenceAtMs: Math.max(
-      localResetCreditsEvidenceAtMs,
+      localCountEvidenceAtMs,
+      localDetailEvidenceAtMs,
+      localResetInvalidationAtMs,
       useSnapshotCount ? countObservedAt : 0,
-      useSnapshotCredits ? creditsObservedAt : 0
+      useSnapshotCredits ? creditsObservedAt : 0,
+      finalCountEvidenceAtMs
     ),
   };
   return next;
@@ -302,6 +385,21 @@ const toSnapshotWindow = (
     isFiniteQuotaProgress(definition.remainingPercent) &&
     isValidQuotaProgressObservedAtMs(definition.observedAtMs) &&
     definition.observedAtMs === snapshotObservedAtMs;
+  const countEvidenceAtMs = resolveCodexResetCreditsCountEvidenceAtMs(codexQuota);
+  const countBelongsToObservation =
+    definition.provider === 'codex' &&
+    typeof codexQuota?.rateLimitResetCreditsAvailableCount === 'number' &&
+    countEvidenceAtMs !== null &&
+    countEvidenceAtMs >= snapshotObservedAtMs;
+
+  const detailEvidenceAtMs = codexQuota?.resetCreditsDetailEvidenceAtMs ?? null;
+  const detailIsStale = codexQuota?.resetCreditsDetailStale === true;
+  const detailBelongsToObservation =
+    definition.provider === 'codex' &&
+    !detailIsStale &&
+    detailEvidenceAtMs !== null &&
+    detailEvidenceAtMs >= snapshotObservedAtMs;
+
   return {
     provider_window_id: definition.providerWindowId,
     provider_window_aliases: definition.providerWindowAliases,
@@ -325,11 +423,10 @@ const toSnapshotWindow = (
       : remainingOnlyBelongsToObservation
         ? { remaining_percent: definition.remainingPercent ?? undefined }
         : {}),
-    reset_credits_available:
-      definition.provider === 'codex'
-        ? (codexQuota?.rateLimitResetCreditsAvailableCount ?? undefined)
-        : undefined,
-    reset_credits: resetCredits.length > 0 ? resetCredits : undefined,
+    reset_credits_available: countBelongsToObservation
+      ? (codexQuota?.rateLimitResetCreditsAvailableCount ?? undefined)
+      : undefined,
+    reset_credits: detailBelongsToObservation ? resetCredits : undefined,
     plan_type: definition.provider === 'codex' ? (codexQuota?.planType ?? undefined) : undefined,
     relationship_kind: definition.relationshipKind,
     container_provider_window_id: definition.containerProviderWindowId,
@@ -476,7 +573,7 @@ export const buildAccountQuotaSnapshotQueryAccounts = (
   );
   return rows.flatMap((row) => {
     const target = targets.get(row.selectionKey);
-    if (!target || !['codex', 'claude', 'antigravity', 'kimi', 'xai', 'devin'].includes(row.provider)) {
+    if (!target || !['codex', 'claude', 'antigravity', 'kimi', 'xai', 'devin', 'meta'].includes(row.provider)) {
       return [];
     }
     return [
@@ -716,10 +813,21 @@ export const mergeAccountQuotaSnapshotWindows = (
     const snapshotQuotaProgressObservedAtMs = resolveSnapshotQuotaProgressObservedAtMs(snapshot);
     const snapshotQuotaEvidenceObservedAtMs = resolveSnapshotQuotaEvidenceObservedAtMs(snapshot);
     const liveQuotaEvidenceObservedAtMs = definitionQuotaProgressObservedAtMs;
+    const isMeta = definition.provider === 'meta' || options.provider === 'meta';
+    const liveObservedAtMs = definition.observedAtMs;
+    const isMetaNewerLiveUnknown =
+      isMeta &&
+      definition.quotaProgressObservedAtMs === null &&
+      typeof liveObservedAtMs === 'number' &&
+      Number.isFinite(liveObservedAtMs) &&
+      snapshotQuotaEvidenceObservedAtMs !== null &&
+      liveObservedAtMs > snapshotQuotaEvidenceObservedAtMs;
+
     const snapshotQuotaIsAtLeastLive =
-      liveQuotaEvidenceObservedAtMs === null ||
-      (snapshotQuotaEvidenceObservedAtMs !== null &&
-        snapshotQuotaEvidenceObservedAtMs >= liveQuotaEvidenceObservedAtMs);
+      !isMetaNewerLiveUnknown &&
+      (liveQuotaEvidenceObservedAtMs === null ||
+        (snapshotQuotaEvidenceObservedAtMs !== null &&
+          snapshotQuotaEvidenceObservedAtMs >= liveQuotaEvidenceObservedAtMs));
     const differentCodexCycle = cycleRelationship === 'different';
     const snapshotCanSupersedeDifferentCycle = differentCodexCycle && snapshotMetadataIsNewer;
     const quotaEvidenceKind = snapshotQuotaEvidenceKind(snapshot);
@@ -934,6 +1042,7 @@ const snapshotDefinition = (
     options.provider === 'claude' ||
     options.provider === 'antigravity' ||
     options.provider === 'kimi' ||
+    options.provider === 'meta' ||
     options.provider === 'xai' ||
     options.provider === 'devin'
       ? options.provider

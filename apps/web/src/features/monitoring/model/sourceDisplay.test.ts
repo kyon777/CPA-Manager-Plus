@@ -24,6 +24,8 @@ describe('isGenericMonitoringProviderLabel', () => {
     expect(isGenericMonitoringProviderLabel('antigravity')).toBe(true);
     expect(isGenericMonitoringProviderLabel('devin')).toBe(true);
     expect(isGenericMonitoringProviderLabel('Devin')).toBe(true);
+    expect(isGenericMonitoringProviderLabel('meta')).toBe(true);
+    expect(isGenericMonitoringProviderLabel('Meta')).toBe(true);
     expect(isGenericMonitoringProviderLabel('anyrouter.top #1')).toBe(false);
   });
 });

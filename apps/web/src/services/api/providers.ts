@@ -88,6 +88,26 @@ const CLAUDE_KEY_FIELDS = [
 ] as const;
 const GEMINI_KEY_FIELDS = COOLING_PROVIDER_KEY_FIELDS;
 const VERTEX_KEY_FIELDS = COOLING_PROVIDER_KEY_FIELDS;
+export const META_KEY_FIELDS = [
+  'api-key',
+  'apiKey',
+  ...AUTH_INDEX_FIELDS,
+  'priority',
+  'weight',
+  'prefix',
+  'base-url',
+  'baseUrl',
+  'base_url',
+  'proxy-url',
+  'proxyUrl',
+  'proxy_url',
+  'headers',
+  'models',
+  'excluded-models',
+  'excludedModels',
+  'excluded_models',
+  ...DISABLE_COOLING_FIELDS,
+] as const;
 
 const OPENAI_PROVIDER_FIELDS = [
   'name',
@@ -167,6 +187,7 @@ const RAW_SECTION_ALIASES: Record<string, readonly string[]> = {
   'interactions-api-key': ['interactions-api-key', 'interactionsApiKey', 'interactionsApiKeys'],
   'codex-api-key': ['codex-api-key', 'codexApiKey', 'codexApiKeys'],
   'xai-api-key': ['xai-api-key', 'xaiApiKey', 'xaiApiKeys'],
+  'meta-api-key': ['meta-api-key', 'metaApiKey', 'metaApiKeys'],
   'claude-api-key': ['claude-api-key', 'claudeApiKey', 'claudeApiKeys'],
   'vertex-api-key': ['vertex-api-key', 'vertexApiKey', 'vertexApiKeys'],
   'openai-compatibility': ['openai-compatibility', 'openaiCompatibility', 'openAICompatibility'],
@@ -417,6 +438,14 @@ const mergeProviderKeyPayload = (
     ]);
     next.cloak = cloak;
   }
+  return next;
+};
+
+const mergeMetaProviderKeyPayload = (raw: unknown, payload: Record<string, unknown>) => {
+  const next = mergeKnownFields(raw, payload, META_KEY_FIELDS);
+  preserveOmittedRawField(raw, payload, next, DISABLE_COOLING_FIELDS);
+  const models = mergeModelPayloads(raw, payload.models);
+  if (models) next.models = models;
   return next;
 };
 
@@ -833,6 +862,43 @@ const serializeClaudeUpdatePayload = (original: ProviderKeyConfig, value: Provid
   return payload;
 };
 
+export const serializeMetaProviderKey = (config: ProviderKeyConfig) => {
+  const payload: Record<string, unknown> = {};
+  const apiKey = config.apiKey?.trim();
+  if (apiKey) payload['api-key'] = apiKey;
+  const authIndex = serializeAuthIndex(config.authIndex);
+  if (authIndex) payload['auth-index'] = authIndex;
+  if (config.priority !== undefined) payload.priority = config.priority;
+  if (config.weight !== undefined) payload.weight = config.weight;
+  if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
+  if (config.baseUrl) payload['base-url'] = config.baseUrl;
+  if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;
+  const headers = serializeHeaders(config.headers);
+  if (headers) payload.headers = headers;
+  const models = serializeModelAliases(config.models);
+  if (models && models.length) payload.models = models;
+  if (config.excludedModels && config.excludedModels.length) {
+    payload['excluded-models'] = config.excludedModels;
+  }
+  if (config.disableCooling !== undefined) payload['disable-cooling'] = config.disableCooling;
+  return payload;
+};
+
+import {
+  assertValidMetaApiKey,
+  assertValidMetaProviderConfig,
+  hasMetaDcaAuthorizationHeader,
+  isMetaDcaCredential,
+} from '@/utils/metaProvider';
+
+export {
+  assertValidMetaApiKey,
+  assertValidMetaProviderConfig,
+  hasMetaDcaAuthorizationHeader,
+  isMetaDcaCredential,
+};
+
+
 const serializeVertexKey = (config: ProviderKeyConfig) => {
   const payload: Record<string, unknown> = {};
   const apiKey = config.apiKey?.trim();
@@ -1056,6 +1122,52 @@ export const providersApi = {
 
   deleteXAIConfig: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/xai-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
+
+  async getMetaConfigs(): Promise<ProviderKeyConfig[]> {
+    const data = await apiClient.get('/meta-api-key');
+    const list = extractArrayPayload(data, 'meta-api-key');
+    return list
+      .map((item) => normalizeProviderKeyConfig(item))
+      .filter(Boolean) as ProviderKeyConfig[];
+  },
+
+  saveMetaConfigs: async (configs: ProviderKeyConfig[]) => {
+    configs.forEach((c) => assertValidMetaProviderConfig(c));
+    return apiClient.put(
+      '/meta-api-key',
+      await buildPreservedList(
+        'meta-api-key',
+        configs,
+        serializeMetaProviderKey,
+        (raw, payload) => mergeMetaProviderKeyPayload(raw, payload),
+        providerKeyIdentity
+      )
+    );
+  },
+
+  createMetaConfig: (config: ProviderKeyConfig) => {
+    assertValidMetaProviderConfig(config);
+    return mutateLatestProviderList('meta-api-key', (latestItems) =>
+      appendLatestProviderRecord(latestItems, serializeMetaProviderKey(config), (raw, payload) =>
+        mergeMetaProviderKeyPayload(raw, payload)
+      )
+    );
+  },
+
+  updateMetaConfig: (original: ProviderKeyConfig, value: ProviderKeyConfig) => {
+    assertValidMetaProviderConfig(value);
+    return mutateLatestProviderList('meta-api-key', (latestItems) =>
+      replaceLatestProviderRecord(
+        latestItems,
+        (record) => matchesProviderConfig(record, original),
+        serializeMetaProviderKey(value),
+        (raw, payload) => mergeMetaProviderKeyPayload(raw, payload)
+      )
+    );
+  },
+
+  deleteMetaConfig: (apiKey: string, baseUrl?: string) =>
+    apiClient.delete(`/meta-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
   async getClaudeConfigs(): Promise<ProviderKeyConfig[]> {
     const data = await apiClient.get('/claude-api-key');

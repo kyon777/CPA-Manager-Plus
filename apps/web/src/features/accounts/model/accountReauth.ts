@@ -19,6 +19,12 @@ const OAUTH_PROVIDER_BY_ACCOUNT_PROVIDER: Record<string, string> = {
 export const resolveAccountReauthAction = (file: AuthFileItem): AccountReauthAction => {
   const provider = normalizeAccountProvider(file);
   if (provider === 'codex') return { kind: 'codex-dialog' };
+  if (provider === 'meta') {
+    return {
+      kind: 'unsupported',
+      provider: 'meta',
+    };
+  }
 
   const oauthProvider = OAUTH_PROVIDER_BY_ACCOUNT_PROVIDER[provider];
   if (oauthProvider) {

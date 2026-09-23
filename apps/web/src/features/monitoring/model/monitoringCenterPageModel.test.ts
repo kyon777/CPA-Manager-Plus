@@ -2043,6 +2043,62 @@ describe('monitoringCenterPageModel account quota', () => {
     expect(entry.windows).toEqual([]);
   });
 
+  it('creates weekly quota window with unknown usage label when usagePercent is null but boundary exists', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'weekly',
+      usagePercent: null,
+      periodStart: '2026-08-13T00:00:00Z',
+      periodEnd: '2026-08-20T00:00:00Z',
+      productUsage: [],
+      monthlyLimitCents: 0,
+      usedCents: 0,
+      includedUsedCents: 0,
+      onDemandCapCents: 0,
+      onDemandUsedCents: 0,
+      onDemandUsedPercent: null,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await buildEntryFromMockedProviderFetch(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows).toHaveLength(1);
+    expect(entry.windows?.[0]).toMatchObject({
+      id: 'weekly-limit',
+      label: 'Weekly limit',
+      remainingPercent: null,
+      resetAtMs: Date.parse('2026-08-20T00:00:00Z'),
+      resetAccuracy: 'exact',
+      usageLabel: 'Used --',
+    });
+  });
+
+  it('does not synthesize monthly credits when monthlyLimitCents is 0 and usedPercent is null', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'monthly',
+      usagePercent: null,
+      productUsage: [],
+      monthlyLimitCents: 0,
+      usedCents: 0,
+      includedUsedCents: 0,
+      onDemandCapCents: 0,
+      onDemandUsedCents: 0,
+      onDemandUsedPercent: null,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await buildEntryFromMockedProviderFetch(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows).toEqual([]);
+  });
+
   it('maps official API health without synthesizing quota windows', async () => {
     vi.mocked(fetchXaiQuota).mockResolvedValue({
       periodType: 'unknown',

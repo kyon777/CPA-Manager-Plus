@@ -84,7 +84,19 @@ func TestInferCacheInputModeUsesStrictFieldPriority(t *testing.T) {
 		want    string
 	}{
 		{name: "explicit wins", context: CacheInputContext{ExplicitMode: CacheInputModeSeparate, ExecutorType: "OpenAICompatExecutor"}, want: CacheInputModeSeparate},
+		{name: "explicit devin wins over claude executor", context: CacheInputContext{ExplicitMode: CacheInputModeReadIncludedCreationSeparate, ExecutorType: "ClaudeExecutor"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "explicit included wins over devin executor", context: CacheInputContext{ExplicitMode: CacheInputModeIncluded, ExecutorType: "DevinExecutor"}, want: CacheInputModeIncluded},
 		{name: "invalid explicit is ignored", context: CacheInputContext{ExplicitMode: "legacy", ExecutorType: "XAIExecutor"}, want: CacheInputModeIncluded},
+		{name: "devin executor standalone", context: CacheInputContext{ExecutorType: "DevinExecutor"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "devin executor beats claude alias", context: CacheInputContext{ExecutorType: "DevinExecutor", ResolvedModel: "claude-fable-5-1"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "executor contains devin does not match DevinExecutor", context: CacheInputContext{ExecutorType: "SomeDevinLikeExecutor", ResolvedModel: "claude-fable-5-1"}, want: CacheInputModeSeparate},
+		{name: "executor contains devin falls back to model", context: CacheInputContext{ExecutorType: "SomeDevinLikeExecutor", ResolvedModel: "gpt-5"}, want: CacheInputModeIncluded},
+		{name: "devin provider beats claude alias", context: CacheInputContext{Provider: "devin", RequestedModel: "claude-fable-5-1"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "devin provider prefix", context: CacheInputContext{Provider: "devin/custom"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "devin snapshot beats claude alias", context: CacheInputContext{ProviderSnapshot: "devin", DisplayModel: "claude-fable-5-1"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "devin exact model", context: CacheInputContext{ResolvedModel: "devin"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "devin swe-2 model", context: CacheInputContext{ResolvedModel: "devin/swe-2"}, want: CacheInputModeReadIncludedCreationSeparate},
+		{name: "devin claude hybrid model", context: CacheInputContext{ResolvedModel: "devin/claude-3-7-sonnet"}, want: CacheInputModeReadIncludedCreationSeparate},
 		{name: "openai compat executor beats claude alias", context: CacheInputContext{ExecutorType: "OpenAICompatExecutor", ResolvedModel: "claude-sonnet-4"}, want: CacheInputModeIncluded},
 		{name: "claude executor beats grok alias", context: CacheInputContext{ExecutorType: "ClaudeExecutor", ResolvedModel: "grok-4"}, want: CacheInputModeSeparate},
 		{name: "claude executor beats kimi alias", context: CacheInputContext{ExecutorType: "ClaudeExecutor", RequestedModel: "kimi-k2"}, want: CacheInputModeSeparate},
@@ -115,6 +127,7 @@ func TestRawCacheAccountingHintsFromJSON(t *testing.T) {
 	}{
 		{name: "tokens snake case", raw: `{"tokens":{"cache_input_mode":"included_in_input","total_tokens":123}}`, wantMode: CacheInputModeIncluded, wantTotal: 123, hasTotal: true},
 		{name: "usage camel case", raw: `{"usage":{"cacheInputMode":"separate_from_input","totalTokens":"456"}}`, wantMode: CacheInputModeSeparate, wantTotal: 456, hasTotal: true},
+		{name: "devin mixed mode", raw: `{"tokens":{"cache_input_mode":"read_included_creation_separate","total_tokens":789}}`, wantMode: CacheInputModeReadIncludedCreationSeparate, wantTotal: 789, hasTotal: true},
 		{name: "legacy detail wrapper", raw: `{"detail":{"tokens":{"cache_input_mode":"included_in_input","total_tokens":789}}}`, wantMode: CacheInputModeIncluded, wantTotal: 789, hasTotal: true},
 		{name: "nested raw json", raw: `{"raw_json":"{\"tokens\":{\"cache_input_mode\":\"separate_from_input\",\"total_tokens\":321}}"}`, wantMode: CacheInputModeSeparate, wantTotal: 321, hasTotal: true},
 		{name: "invalid values", raw: `{"cache_input_mode":"legacy","total_tokens":0}`, wantMode: "", hasTotal: false},
@@ -340,4 +353,93 @@ func TestReadOptionalBool(t *testing.T) {
 
 func ptrBool(b bool) *bool {
 	return &b
+}
+
+func TestNormalizeRawIssue838DevinRegression(t *testing.T) {
+	raw := []byte(`{
+		"provider": "devin",
+		"executor_type": "DevinExecutor",
+		"alias": "claude-fable-5-1",
+		"tokens": {
+			"input_tokens": 229788,
+			"output_tokens": 1775,
+			"cached_tokens": 228021,
+			"cache_read_tokens": 228021,
+			"cache_creation_tokens": 0,
+			"total_tokens": 231563
+		}
+	}`)
+
+	event, err := NormalizeRaw(raw)
+	if err != nil {
+		t.Fatalf("normalize raw: %v", err)
+	}
+
+	if event.CacheInputMode != CacheInputModeReadIncludedCreationSeparate {
+		t.Errorf("CacheInputMode = %q, want %q", event.CacheInputMode, CacheInputModeReadIncludedCreationSeparate)
+	}
+	if event.NormalizedUncachedInputTokens != 1767 {
+		t.Errorf("NormalizedUncachedInputTokens = %d, want 1767", event.NormalizedUncachedInputTokens)
+	}
+	if event.NormalizedTotalInputTokens != 229788 {
+		t.Errorf("NormalizedTotalInputTokens = %d, want 229788", event.NormalizedTotalInputTokens)
+	}
+	if event.NormalizedCacheReadTokens != 228021 {
+		t.Errorf("NormalizedCacheReadTokens = %d, want 228021", event.NormalizedCacheReadTokens)
+	}
+	if event.NormalizedCacheCreationTokens != 0 {
+		t.Errorf("NormalizedCacheCreationTokens = %d, want 0", event.NormalizedCacheCreationTokens)
+	}
+	if event.TotalTokens != 231563 {
+		t.Errorf("TotalTokens = %d, want 231563", event.TotalTokens)
+	}
+}
+
+func TestDevinRepositoryRoundTrip(t *testing.T) {
+	raw := []byte(`{
+		"provider": "devin",
+		"executor_type": "DevinExecutor",
+		"alias": "claude-fable-5-1",
+		"tokens": {
+			"input_tokens": 229788,
+			"output_tokens": 1775,
+			"cached_tokens": 228021,
+			"cache_read_tokens": 228021,
+			"cache_creation_tokens": 0,
+			"total_tokens": 231563
+		}
+	}`)
+
+	event, err := NormalizeRaw(raw)
+	if err != nil {
+		t.Fatalf("normalize raw: %v", err)
+	}
+
+	// Simulating repository prepareUsageEvent二次归一化:
+	// ExplicitMode 使用第一次归一化产生的 event.CacheInputMode
+	recalculated := NormalizeCacheAccounting(CacheInputContext{
+		ExplicitMode:     event.CacheInputMode,
+		ExecutorType:     event.ExecutorType,
+		Provider:         event.Provider,
+		ProviderSnapshot: event.AuthProviderSnapshot,
+		ResolvedModel:    event.ResolvedModel,
+		RequestedModel:   event.RequestedModel,
+		DisplayModel:     event.Model,
+	}, event.InputTokens, event.CachedTokens, event.CacheTokens, event.CacheReadTokens, event.CacheCreationTokens)
+
+	if recalculated.Mode != CacheInputModeReadIncludedCreationSeparate {
+		t.Errorf("recalculated Mode = %q, want %q", recalculated.Mode, CacheInputModeReadIncludedCreationSeparate)
+	}
+	if recalculated.UncachedInputTokens != event.NormalizedUncachedInputTokens {
+		t.Errorf("recalculated UncachedInputTokens = %d, want %d", recalculated.UncachedInputTokens, event.NormalizedUncachedInputTokens)
+	}
+	if recalculated.TotalInputTokens != event.NormalizedTotalInputTokens {
+		t.Errorf("recalculated TotalInputTokens = %d, want %d", recalculated.TotalInputTokens, event.NormalizedTotalInputTokens)
+	}
+	if recalculated.CacheReadTokens != event.NormalizedCacheReadTokens {
+		t.Errorf("recalculated CacheReadTokens = %d, want %d", recalculated.CacheReadTokens, event.NormalizedCacheReadTokens)
+	}
+	if recalculated.CacheCreationTokens != event.NormalizedCacheCreationTokens {
+		t.Errorf("recalculated CacheCreationTokens = %d, want %d", recalculated.CacheCreationTokens, event.NormalizedCacheCreationTokens)
+	}
 }

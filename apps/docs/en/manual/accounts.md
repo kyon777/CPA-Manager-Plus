@@ -53,7 +53,7 @@ Account state may come from:
 - Failure summaries such as `usage_limit_reached`, HTTP `401`, `402`, or `429`.
 - Manager Server quota cooldowns and account-action candidates.
 
-Provider quota refresh remains explicit. Opening Accounts, reading history, or passively loading Header evidence does not poll upstream quota endpoints.
+Provider quota refresh remains explicit. Opening Accounts, reading history, or passively loading Header evidence does not poll upstream quota endpoints. Muse / Meta quota refresh reads the DCA from the current physical auth file and asks Meta through CPA; the DCA is never used as an inference API key.
 
 CPAMP reconciles evidence by credential identity and observation time. Newer healthy evidence can supersede older reauth, quota-limit, cooldown, and action-candidate state; a newer `401` or explicit quota exhaustion remains authoritative. After reauthentication, inspection and quota evidence from the replaced credential cannot reattach to the new credential.
 
@@ -62,6 +62,7 @@ CPAMP reconciles evidence by credential identity and observation time. Newer hea
 | Codex           | Five-hour/weekly windows, reset, Headers, workspace, and inspection state      | Fields depend on plan and API responses.                                                            |
 | Claude          | Base quota, weekly quota, and model-scoped limits                              | Scoped limits can be duplicated, missing, or inactive; CPAMP groups them by identity and freshness. |
 | xAI/Grok OAuth  | CLI billing weekly/monthly data, official API identity, and request exhaustion | Official API identity does not provide queryable cost or remaining percentages.                     |
+| Muse / Meta     | `meta:window`, `meta:weekly`, and reset/period metadata                         | Missing usage percentages remain unknown rather than becoming `0%`; DCA is limited to account/quota flows. |
 | Other providers | CPA credential metadata or recent response Headers                             | No common active quota API is assumed.                                                              |
 
 ## Quota Cooldown And Account Actions

@@ -1223,9 +1223,14 @@ const buildXaiAccountQuotaWindows = (
   const hasWeeklyData =
     billing.periodType === 'weekly' &&
     (billing.usagePercent !== null ||
+      Boolean(billing.periodStart) ||
       Boolean(billing.periodEnd) ||
       billing.productUsage.length > 0);
-  const hasMonthlyData = billing.usedPercent !== null || billing.monthlyLimitCents !== null;
+  const hasMonthlyData =
+    billing.usedPercent !== null ||
+    (typeof billing.monthlyLimitCents === 'number' &&
+      Number.isFinite(billing.monthlyLimitCents) &&
+      billing.monthlyLimitCents > 0);
 
   if (hasWeeklyData) {
     windows.push({

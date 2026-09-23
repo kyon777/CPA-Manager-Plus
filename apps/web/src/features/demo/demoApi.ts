@@ -75,6 +75,7 @@ const providerEndpointKeys: Record<string, string> = {
   '/gemini-api-key': 'gemini-api-key',
   '/codex-api-key': 'codex-api-key',
   '/xai-api-key': 'xai-api-key',
+  '/meta-api-key': 'meta-api-key',
   '/claude-api-key': 'claude-api-key',
   '/vertex-api-key': 'vertex-api-key',
   '/openai-compatibility': 'openai-compatibility',

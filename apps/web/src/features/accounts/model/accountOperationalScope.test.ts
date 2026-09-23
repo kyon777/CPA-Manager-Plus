@@ -9,6 +9,7 @@ const emptyStores = () => ({
   codexQuota: {},
   kimiQuota: {},
   devinQuota: {},
+  metaQuota: {},
   xaiQuota: {},
 });
 

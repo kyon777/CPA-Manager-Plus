@@ -85,8 +85,8 @@ CPA / CLIProxyAPI 可以在 `:8317` 直接托管官方 Management Center，也�
 
 ### CPA 网关管理
 
-- 管理 CPA Provider 配置，包括 Gemini、Codex、Claude、Vertex、xAI、Devin 和 OpenAI-compatible Provider。
-- 维护认证文件、OAuth 登录、API Key、模型别名、优先级、插件、日志和系统配置。
+- 管理 CPA Provider 配置，包括 Gemini、Codex、Claude、Vertex、xAI、Devin、Muse / Meta 和 OpenAI-compatible Provider。
+- 维护认证文件、OAuth 登录、API Key、模型别名、优先级、插件、日志和系统配置。Muse / Meta 的 Device Flow 凭证与 `meta-api-key` 推理 Provider 分离管理。
 - 导入官方 Sub2API OpenAI OAuth 导出，并把多账号拆分为独立的 CPA Codex 认证文件。
 
 ### 请求监控与失败诊断
@@ -184,7 +184,7 @@ docker run -d \
   seakee/cpa-manager-plus:latest
 ```
 
-推荐 CPA 版本：`v7.1.39+`，HTTP usage queue 至少需要 `v6.10.8+`。
+推荐 CPA 版本：`v7.3.4+`，以完整支持 Muse / Meta；HTTP usage queue 至少需要 `v6.10.8+`。
 
 ## 文档
 

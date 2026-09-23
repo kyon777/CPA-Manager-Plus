@@ -219,4 +219,37 @@ describe('account credential mutation markers', () => {
       ])
     ).toBe(false);
   });
+
+  it('normalizes muse to meta and recognizes new Meta credential evidence after OAuth', () => {
+    const existing = [
+      {
+        id: 'runtime-meta-1',
+        name: 'meta-1.json',
+        provider: 'meta',
+        authIndex: 'auth-1',
+      },
+    ] as AuthFileItem[];
+    const baseline = createAccountCredentialMutationBaseline(existing, 'muse');
+    expect(baseline?.provider).toBe('meta');
+
+    const marker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'connection-a',
+      provider: 'muse',
+      baseline,
+      requireObservedMutation: true,
+      createdAtMs: Date.now(),
+    });
+    expect(marker?.provider).toBe('meta');
+
+    const newCredential = {
+      id: 'runtime-meta-2',
+      name: 'meta-2.json',
+      provider: 'meta',
+      authIndex: 'auth-2',
+    } as AuthFileItem;
+
+    expect(hasAccountCredentialMutationEvidence(marker!, existing)).toBe(false);
+    expect(hasAccountCredentialMutationEvidence(marker!, [...existing, newCredential])).toBe(true);
+    expect(resolveAccountCredentialMutationFiles(marker!, [...existing, newCredential])).toEqual([newCredential]);
+  });
 });

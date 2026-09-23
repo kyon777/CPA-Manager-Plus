@@ -1,10 +1,22 @@
 import type { TFunction } from 'i18next';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AuthFileItem, DevinQuotaData } from '@/types';
-import { fetchClaudeQuota, fetchCodexQuota, fetchDevinQuota } from '@/utils/quota';
+import type { AuthFileItem, DevinQuotaData, MetaQuotaData } from '@/types';
+import {
+  fetchClaudeQuota,
+  fetchCodexQuota,
+  fetchDevinQuota,
+  fetchMetaQuota,
+  type CodexQuotaData,
+} from '@/utils/quota';
 import { getQuotaCredentialStoreKey } from '@/utils/quota/credentialScope';
 import { useQuotaStore } from '@/stores/useQuotaStore';
-import { CLAUDE_CONFIG, CODEX_CONFIG, DEVIN_CONFIG, type QuotaConfig } from './quotaConfigs';
+import {
+  CLAUDE_CONFIG,
+  CODEX_CONFIG,
+  DEVIN_CONFIG,
+  META_CONFIG,
+  type QuotaConfig,
+} from './quotaConfigs';
 import { refreshQuotaWithConfig, type QuotaSetter } from './quotaRefresh';
 
 vi.mock('@/utils/quota', async (importOriginal) => {
@@ -14,6 +26,7 @@ vi.mock('@/utils/quota', async (importOriginal) => {
     fetchClaudeQuota: vi.fn(),
     fetchCodexQuota: vi.fn(),
     fetchDevinQuota: vi.fn(),
+    fetchMetaQuota: vi.fn(),
   };
 });
 
@@ -33,7 +46,7 @@ const claudeFile = {
   authIndex: '1',
 } as AuthFileItem;
 
-const codexData = (usedPercent: number) => ({
+const codexData = (usedPercent: number): CodexQuotaData => ({
   planType: 'plus',
   windows: [
     {
@@ -353,5 +366,129 @@ describe('refreshQuotaWithConfig', () => {
     expect(result).toBeNull();
     const devinStoreKey = getQuotaCredentialStoreKey(devinFile);
     expect(useQuotaStore.getState().devinQuota[devinStoreKey]).toBeUndefined();
+  });
+
+  it('preserves reset-credit detail evidence updated in-flight when committing successful refresh', async () => {
+    const storeKey = getQuotaCredentialStoreKey(codexFile);
+    const initialQuotaState = CODEX_CONFIG.buildSuccessState(codexData(20), codexFile);
+    useQuotaStore.getState().setCodexQuota({ [storeKey]: initialQuotaState });
+
+    const codexDeferred = deferred<ReturnType<typeof codexData>>();
+    vi.mocked(fetchCodexQuota).mockReturnValueOnce(codexDeferred.promise);
+
+    const refreshPromise = runRefresh(
+      CODEX_CONFIG,
+      codexFile,
+      useQuotaStore.getState().setCodexQuota,
+      initialQuotaState
+    );
+
+    // In-flight: reset-credit detail evidence is updated in the store
+    const updatedResetCredits = [
+      {
+        id: 'credit-in-flight-1',
+        status: 'available',
+        grantedAt: '2026-09-01T00:00:00Z',
+        expiresAt: '2026-10-01T00:00:00Z',
+      },
+    ];
+    const intermediateState = {
+      ...initialQuotaState,
+      rateLimitResetCreditsAvailableCount: 1,
+      rateLimitResetCredits: updatedResetCredits,
+      resetCreditsCountEvidenceAtMs: 2500,
+      resetCreditsDetailEvidenceAtMs: 2500,
+      resetCreditsDetailStale: false,
+    };
+    useQuotaStore.getState().setCodexQuota({ [storeKey]: intermediateState });
+
+    // Quota response arrives with count but no detail (e.g. summary or empty detail payload)
+    const incomingData = {
+      ...codexData(30),
+      rateLimitResetCreditsAvailableCount: 1,
+      rateLimitResetCredits: [],
+      rateLimitResetCreditsError: null,
+      observedAtMs: 3000,
+    };
+    codexDeferred.resolve(incomingData);
+
+    const result = await refreshPromise;
+    expect(result).toMatchObject({ status: 'success' });
+
+    const finalState = useQuotaStore.getState().codexQuota[storeKey];
+    // Must preserve the in-flight detail evidence, proving commit reads latest previousState
+    expect(finalState.rateLimitResetCredits).toEqual(updatedResetCredits);
+    expect(finalState.rateLimitResetCreditsAvailableCount).toBe(1);
+    expect(finalState.resetCreditsDetailEvidenceAtMs).toBe(2500);
+    expect(finalState.windows[0]?.usedPercent).toBe(30);
+  });
+
+  it('does not commit late Meta quota response when context becomes stale in-flight', async () => {
+    useQuotaStore.getState().activateQuotaCacheScope('connection-meta-a');
+
+    const metaFile = {
+      name: 'meta.json',
+      type: 'meta',
+      provider: 'meta',
+      authIndex: 'meta-1',
+    } as AuthFileItem;
+
+    const metaDeferred = deferred<MetaQuotaData>();
+    let observedContextIsCurrent: (() => boolean) | undefined;
+
+    vi.mocked(fetchMetaQuota).mockImplementationOnce(async (_file, _t, _scope, context) => {
+      observedContextIsCurrent = context?.isCurrent;
+      return metaDeferred.promise;
+    });
+
+    let connectionIsCurrent = true;
+    const refreshPromise = runRefresh(
+      META_CONFIG,
+      metaFile,
+      useQuotaStore.getState().setMetaQuota,
+      undefined,
+      () => connectionIsCurrent
+    );
+
+    expect(observedContextIsCurrent).toBeDefined();
+    expect(observedContextIsCurrent!()).toBe(true);
+
+    // Switch connection / invalidate cache generation while request is in-flight
+    connectionIsCurrent = false;
+    useQuotaStore.getState().activateQuotaCacheScope('connection-meta-b');
+
+    expect(observedContextIsCurrent!()).toBe(false);
+
+    const metaData: MetaQuotaData = {
+      windows: [
+        {
+          id: 'window',
+          usedPercent: 40,
+          resetAtMs: 1726000000000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 18000,
+          quotaProgressObservedAtMs: 1725900000000,
+        },
+        {
+          id: 'weekly',
+          usedPercent: null,
+          resetAtMs: 1726500000000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: null,
+          quotaProgressObservedAtMs: null,
+        },
+      ],
+      observedAtMs: 1725900000000,
+      plan: 'pro',
+      isSubscriptionActive: true,
+      quotaInventoryObserved: true,
+    };
+
+    metaDeferred.resolve(metaData);
+    const result = await refreshPromise;
+
+    expect(result).toBeNull();
+    const metaStoreKey = getQuotaCredentialStoreKey(metaFile);
+    expect(useQuotaStore.getState().metaQuota[metaStoreKey]).toBeUndefined();
   });
 });

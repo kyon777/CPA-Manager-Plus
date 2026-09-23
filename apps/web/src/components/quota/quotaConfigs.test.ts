@@ -88,6 +88,152 @@ describe('getCodexQuotaStoreKey', () => {
     expect(successState.rateLimitResetCreditsAvailableCount).toBe(2);
     expect(successState.fetchedAtMs).toBe(1_000);
   });
+
+  describe('full refresh state regression with count-only reset evidence', () => {
+    const file = { name: 'codex.json', type: 'codex', authIndex: 'auth-1' };
+    const creditA = { id: 'A', status: 'available', grantedAt: '', expiresAt: '2026-10-01' };
+    const creditB = { id: 'B', status: 'available', grantedAt: '', expiresAt: '2026-10-02' };
+
+    it('preserves trusted details and old detail timestamp when full refresh receives same count without credits', () => {
+      const currentState: CodexQuotaState = {
+        status: 'success',
+        windows: [],
+        rateLimitResetCreditsAvailableCount: 2,
+        rateLimitResetCredits: [creditA, creditB],
+        rateLimitResetCreditsError: null,
+        resetCreditsCountEvidenceAtMs: 1_000,
+        resetCreditsDetailEvidenceAtMs: 1_000,
+        resetCreditsDetailStale: false,
+      };
+
+      const incomingData = {
+        planType: 'plus',
+        windows: [],
+        quotaInventoryObserved: true,
+        subscriptionActiveUntil: null,
+        rateLimitResetCreditsAvailableCount: 2,
+        rateLimitResetCredits: [],
+        rateLimitResetCreditsError: null,
+        resetCreditsEvidenceAtMs: 2_000,
+        resetCreditsCountEvidenceAtMs: 2_000,
+        resetCreditsDetailEvidenceAtMs: null,
+        observedAtMs: 2_000,
+      };
+
+      const nextState = CODEX_CONFIG.buildSuccessState(incomingData, file, currentState);
+
+      expect(nextState.rateLimitResetCreditsAvailableCount).toBe(2);
+      expect(nextState.resetCreditsCountEvidenceAtMs).toBe(2_000);
+      expect(nextState.rateLimitResetCredits).toEqual([creditA, creditB]);
+      expect(nextState.resetCreditsDetailEvidenceAtMs).toBe(1_000);
+      expect(nextState.resetCreditsDetailStale).toBe(false);
+    });
+
+    it('marks detail stale and clears display credits when full refresh receives changed count without credits', () => {
+      const currentState: CodexQuotaState = {
+        status: 'success',
+        windows: [],
+        rateLimitResetCreditsAvailableCount: 2,
+        rateLimitResetCredits: [creditA, creditB],
+        rateLimitResetCreditsError: null,
+        resetCreditsCountEvidenceAtMs: 1_000,
+        resetCreditsDetailEvidenceAtMs: 1_000,
+        resetCreditsDetailStale: false,
+      };
+
+      const incomingData = {
+        planType: 'plus',
+        windows: [],
+        quotaInventoryObserved: true,
+        subscriptionActiveUntil: null,
+        rateLimitResetCreditsAvailableCount: 1,
+        rateLimitResetCredits: [],
+        rateLimitResetCreditsError: null,
+        resetCreditsEvidenceAtMs: 2_000,
+        resetCreditsCountEvidenceAtMs: 2_000,
+        resetCreditsDetailEvidenceAtMs: null,
+        observedAtMs: 2_000,
+      };
+
+      const nextState = CODEX_CONFIG.buildSuccessState(incomingData, file, currentState);
+
+      expect(nextState.rateLimitResetCreditsAvailableCount).toBe(1);
+      expect(nextState.resetCreditsCountEvidenceAtMs).toBe(2_000);
+      expect(nextState.rateLimitResetCredits).toEqual([]);
+      expect(nextState.resetCreditsDetailEvidenceAtMs).toBe(1_000);
+      expect(nextState.resetCreditsDetailStale).toBe(true);
+    });
+
+    it('clears credits and detail evidence when full refresh receives count=0 without credits', () => {
+      const currentState: CodexQuotaState = {
+        status: 'success',
+        windows: [],
+        rateLimitResetCreditsAvailableCount: 2,
+        rateLimitResetCredits: [creditA, creditB],
+        rateLimitResetCreditsError: null,
+        resetCreditsCountEvidenceAtMs: 1_000,
+        resetCreditsDetailEvidenceAtMs: 1_000,
+        resetCreditsDetailStale: false,
+      };
+
+      const incomingData = {
+        planType: 'plus',
+        windows: [],
+        quotaInventoryObserved: true,
+        subscriptionActiveUntil: null,
+        rateLimitResetCreditsAvailableCount: 0,
+        rateLimitResetCredits: [],
+        rateLimitResetCreditsError: null,
+        resetCreditsEvidenceAtMs: 2_000,
+        resetCreditsCountEvidenceAtMs: 2_000,
+        resetCreditsDetailEvidenceAtMs: null,
+        observedAtMs: 2_000,
+      };
+
+      const nextState = CODEX_CONFIG.buildSuccessState(incomingData, file, currentState);
+
+      expect(nextState.rateLimitResetCreditsAvailableCount).toBe(0);
+      expect(nextState.resetCreditsCountEvidenceAtMs).toBe(2_000);
+      expect(nextState.rateLimitResetCredits).toEqual([]);
+      expect(nextState.resetCreditsDetailEvidenceAtMs).toBeNull();
+      expect(nextState.resetCreditsDetailStale).toBe(false);
+    });
+
+    it('authoritatively clears conflicting credits when full detail receives available_count=0 with credits', () => {
+      const currentState: CodexQuotaState = {
+        status: 'success',
+        windows: [],
+        rateLimitResetCreditsAvailableCount: 1,
+        rateLimitResetCredits: [creditA],
+        rateLimitResetCreditsError: null,
+        resetCreditsCountEvidenceAtMs: 1_000,
+        resetCreditsDetailEvidenceAtMs: 1_000,
+        resetCreditsDetailStale: false,
+      };
+
+      const incomingData = {
+        planType: 'plus',
+        windows: [],
+        quotaInventoryObserved: true,
+        subscriptionActiveUntil: null,
+        rateLimitResetCreditsAvailableCount: 0,
+        rateLimitResetCredits: [creditA],
+        rateLimitResetCreditsError: null,
+        resetCreditsEvidenceAtMs: 2_000,
+        resetCreditsCountEvidenceAtMs: 2_000,
+        resetCreditsDetailEvidenceAtMs: 2_000,
+        observedAtMs: 2_000,
+      };
+
+      const nextState = CODEX_CONFIG.buildSuccessState(incomingData, file, currentState);
+
+      expect(nextState.rateLimitResetCreditsAvailableCount).toBe(0);
+      expect(nextState.resetCreditsCountEvidenceAtMs).toBe(2_000);
+      expect(nextState.rateLimitResetCredits).toEqual([]);
+      expect(nextState.resetCreditsDetailEvidenceAtMs).toBe(2_000);
+      expect(nextState.resetCreditsDetailStale).toBe(false);
+    });
+  });
 });
 
 type TestQuotaState = {

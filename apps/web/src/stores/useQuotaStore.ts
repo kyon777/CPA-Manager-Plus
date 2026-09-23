@@ -11,6 +11,7 @@ import type {
   CredentialScopedQuotaState,
   DevinQuotaState,
   KimiQuotaState,
+  MetaQuotaState,
   XaiQuotaState,
 } from '@/types';
 import { obfuscatedStorage } from '@/services/storage/secureStorage';
@@ -26,12 +27,14 @@ interface QuotaStoreState {
   codexQuota: Record<string, CodexQuotaState>;
   devinQuota: Record<string, DevinQuotaState>;
   kimiQuota: Record<string, KimiQuotaState>;
+  metaQuota: Record<string, MetaQuotaState>;
   xaiQuota: Record<string, XaiQuotaState>;
   setAntigravityQuota: (updater: QuotaUpdater<Record<string, AntigravityQuotaState>>) => void;
   setClaudeQuota: (updater: QuotaUpdater<Record<string, ClaudeQuotaState>>) => void;
   setCodexQuota: (updater: QuotaUpdater<Record<string, CodexQuotaState>>) => void;
   setDevinQuota: (updater: QuotaUpdater<Record<string, DevinQuotaState>>) => void;
   setKimiQuota: (updater: QuotaUpdater<Record<string, KimiQuotaState>>) => void;
+  setMetaQuota: (updater: QuotaUpdater<Record<string, MetaQuotaState>>) => void;
   setXaiQuota: (updater: QuotaUpdater<Record<string, XaiQuotaState>>) => void;
   activateQuotaCacheScope: (scope: string) => void;
   clearQuotaCache: () => void;
@@ -50,6 +53,7 @@ const emptyQuotaState = {
   codexQuota: {},
   devinQuota: {},
   kimiQuota: {},
+  metaQuota: {},
   xaiQuota: {},
 };
 
@@ -127,6 +131,10 @@ export const useQuotaStore = create<QuotaStoreState>()(
         set((state) => ({
           kimiQuota: resolveUpdater(updater, state.kimiQuota),
         })),
+      setMetaQuota: (updater) =>
+        set((state) => ({
+          metaQuota: resolveUpdater(updater, state.metaQuota),
+        })),
       setXaiQuota: (updater) =>
         set((state) => ({
           xaiQuota: resolveUpdater(updater, state.xaiQuota),
@@ -163,6 +171,7 @@ export const useQuotaStore = create<QuotaStoreState>()(
         codexQuota: filterPersistableCodexQuota(state.codexQuota),
         devinQuota: filterPersistableQuotaStates(state.devinQuota),
         kimiQuota: filterPersistableQuotaStates(state.kimiQuota),
+        metaQuota: filterPersistableQuotaStates(state.metaQuota),
         xaiQuota: filterPersistableQuotaStates(state.xaiQuota),
       }),
       merge: (persistedState, currentState) => {
@@ -175,6 +184,7 @@ export const useQuotaStore = create<QuotaStoreState>()(
           codexQuota: filterPersistableCodexQuota(persisted?.codexQuota),
           devinQuota: filterPersistableQuotaStates(persisted?.devinQuota),
           kimiQuota: filterPersistableQuotaStates(persisted?.kimiQuota),
+          metaQuota: filterPersistableQuotaStates(persisted?.metaQuota),
           xaiQuota: filterPersistableQuotaStates(persisted?.xaiQuota),
         };
       },
@@ -183,6 +193,9 @@ export const useQuotaStore = create<QuotaStoreState>()(
 );
 
 export const captureQuotaCacheGeneration = (): number => useQuotaStore.getState().cacheGeneration;
+
+export const isQuotaCacheGenerationCurrent = (generation: number): boolean =>
+  useQuotaStore.getState().cacheGeneration === generation;
 
 export const commitIfQuotaCacheCurrent = (generation: number, commit: () => void): boolean => {
   if (useQuotaStore.getState().cacheGeneration !== generation) return false;

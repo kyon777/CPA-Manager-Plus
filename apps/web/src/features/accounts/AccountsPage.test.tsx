@@ -13,6 +13,7 @@ import {
   CLAUDE_CONFIG,
   CODEX_CONFIG,
   CODEX_SUMMARY_CONFIG,
+  META_CONFIG,
   XAI_CONFIG,
 } from '@/components/quota';
 import { accountQuotaSnapshotApi, type ApiCallResult } from '@/services/api';
@@ -20,6 +21,7 @@ import type {
   AuthFileItem,
   CodexQuotaState,
   CodexRateLimitResetCredit,
+  MetaQuotaData,
   OAuthModelAliasEntry,
 } from '@/types';
 import type {
@@ -249,6 +251,32 @@ const makeCodexQuotaData = (
   rateLimitResetCreditsAvailableCount: resetCreditsAvailableCount,
   rateLimitResetCredits: credits,
   rateLimitResetCreditsError: null,
+});
+
+const makeMetaQuotaData = (overrides: Partial<MetaQuotaData> = {}): MetaQuotaData => ({
+  windows: [
+    {
+      id: 'window',
+      usedPercent: 15,
+      resetAtMs: Date.now() + 3600_000,
+      resetAccuracy: 'exact',
+      limitWindowSeconds: 3600,
+      quotaProgressObservedAtMs: Date.now(),
+    },
+    {
+      id: 'weekly',
+      usedPercent: 10,
+      resetAtMs: Date.now() + 7 * 86400_000,
+      resetAccuracy: 'exact',
+      limitWindowSeconds: null,
+      quotaProgressObservedAtMs: Date.now(),
+    },
+  ],
+  observedAtMs: Date.now(),
+  plan: 'Meta Pro',
+  isSubscriptionActive: true,
+  quotaInventoryObserved: true,
+  ...overrides,
 });
 
 const makeCodexQuotaWindow = (
@@ -543,12 +571,16 @@ const { mocks } = vi.hoisted(() => {
         antigravityQuota: {},
         claudeQuota: {},
         codexQuota: {},
+        devinQuota: {},
         kimiQuota: {},
+        metaQuota: {},
         xaiQuota: {},
         setAntigravityQuota: vi.fn(),
         setClaudeQuota: vi.fn(),
         setCodexQuota: vi.fn(),
+        setDevinQuota: vi.fn(),
         setKimiQuota: vi.fn(),
+        setMetaQuota: vi.fn(),
         setXaiQuota: vi.fn(),
       },
       t: (key: string, options?: Record<string, unknown>) => {
@@ -920,6 +952,7 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
 
 vi.mock('@/stores', () => ({
   captureQuotaCacheGeneration: () => 0,
+  isQuotaCacheGenerationCurrent: () => true,
   publishAccountCredentialMutationRevision: vi.fn(),
   commitIfQuotaCacheCurrent: (_generation: number, commit: () => void) => {
     commit();
@@ -954,15 +987,19 @@ vi.mock('@/stores', () => ({
       antigravityQuota: Record<string, never>;
       claudeQuota: Record<string, never>;
       codexQuota: Record<string, never>;
+      devinQuota: Record<string, never>;
       kimiQuota: Record<string, never>;
+      metaQuota: Record<string, never>;
       xaiQuota: Record<string, never>;
       setAntigravityQuota: () => void;
       setClaudeQuota: () => void;
       setCodexQuota: () => void;
+      setDevinQuota: () => void;
       setKimiQuota: () => void;
+      setMetaQuota: () => void;
       setXaiQuota: () => void;
     }) => unknown
-  ) => selector(mocks.quotaState),
+  ) => selector(mocks.quotaState as Parameters<typeof selector>[0]),
   useThemeStore: (selector: (state: { resolvedTheme: 'light' | 'dark' }) => unknown) =>
     selector({ resolvedTheme: 'light' }),
 }));
@@ -1428,13 +1465,17 @@ describe('AccountsPage replacement flows', () => {
     mocks.quotaState.antigravityQuota = {};
     mocks.quotaState.claudeQuota = {};
     mocks.quotaState.codexQuota = {};
+    mocks.quotaState.devinQuota = {};
     mocks.quotaState.kimiQuota = {};
+    mocks.quotaState.metaQuota = {};
     mocks.quotaState.xaiQuota = {};
     mocks.quotaDisplayWindowsOverride = null;
     mocks.quotaState.setAntigravityQuota.mockReset();
     mocks.quotaState.setClaudeQuota.mockReset();
     mocks.quotaState.setCodexQuota.mockReset();
+    mocks.quotaState.setDevinQuota.mockReset();
     mocks.quotaState.setKimiQuota.mockReset();
+    mocks.quotaState.setMetaQuota.mockReset();
     mocks.quotaState.setXaiQuota.mockReset();
     mocks.loadFiles.mockReset();
     mocks.loadFiles.mockImplementation(async () => mocks.files);
@@ -6239,7 +6280,7 @@ describe('AccountsPage replacement flows', () => {
       }),
     };
     const quotaResult = createDeferred<CodexQuotaData>();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
     const renderer = await renderAccountsPage();
 
     let refreshPromise!: Promise<void>;
@@ -6362,7 +6403,7 @@ describe('AccountsPage replacement flows', () => {
     mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(original, oldQuota);
     installCodexQuotaStoreMutationMock();
     const quotaResult = createDeferred<CodexQuotaData>();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
     const originalSelectionKey = getAuthFileSelectionKey(original);
     const replacementSelectionKey = getAuthFileSelectionKey(replacement);
     const replacementStoreKey = getQuotaCredentialStoreKey(replacement);
@@ -8922,6 +8963,183 @@ describe('AccountsPage replacement flows', () => {
     expect(readText(otherGroup)).not.toContain('extra-usage');
   });
 
+  it('localizes snapshot-only Meta window and weekly quota details', async () => {
+    const file = {
+      name: 'meta-snapshot-only.json',
+      type: 'meta',
+      provider: 'meta',
+      authIndex: 'meta-snapshot-only-1',
+      account: 'meta-snapshot-only@example.com',
+      priority: 0,
+      disabled: false,
+    } as AuthFileItem;
+    mocks.files = [file];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(selectionKey)}&tab=quota`,
+    };
+    vi.mocked(accountQuotaSnapshotApi.query).mockResolvedValue({
+      generated_at_ms: 2_000,
+      items: [
+        {
+          row_key: selectionKey,
+          account_key: selectionKey,
+          provider: 'meta',
+          windows: [
+            {
+              provider_window_id: 'meta:window',
+              window_kind: 'five_hour',
+              window_mode: 'fixed',
+              model_scope_kind: 'all',
+              source: 'api_query',
+              observed_at_ms: 2_000,
+              boundary_accuracy: 'exact',
+              used_percent: 25,
+              remaining_percent: 75,
+              stale: false,
+            },
+            {
+              provider_window_id: 'meta:weekly',
+              window_kind: 'weekly',
+              window_mode: 'unknown',
+              model_scope_kind: 'all',
+              source: 'api_query',
+              observed_at_ms: 2_000,
+              boundary_accuracy: 'exact',
+              used_percent: 40,
+              remaining_percent: 60,
+              stale: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await flushPromises();
+
+    const quotaTab = renderer.root.findByType(AccountQuotaTab);
+    const quotaText = readText(quotaTab);
+    expect(quotaText).toContain('meta_quota.window');
+    expect(quotaText).not.toContain('accounts.detail_snapshot_window_five_hour');
+    expect(quotaText).toContain('meta_quota.weekly');
+    expect(quotaText).not.toContain('accounts.detail_snapshot_window_weekly');
+
+    const windows = quotaTab.props.detailView.quota.windows;
+    expect(windows.find((w: { providerWindowId: string }) => w.providerWindowId === 'meta:window')?.label).toBe('meta_quota.window');
+    expect(windows.find((w: { providerWindowId: string }) => w.providerWindowId === 'meta:weekly')?.label).toBe('meta_quota.weekly');
+  });
+
+  it('renders live Meta quota window and weekly in accounts list', async () => {
+    const file = {
+      name: 'meta-live.json',
+      type: 'meta',
+      provider: 'meta',
+      authIndex: 'meta-live-1',
+      account: 'meta-live@example.com',
+      priority: 0,
+      disabled: false,
+    } as AuthFileItem;
+    mocks.files = [file];
+    mocks.quotaState.metaQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      observedAtMs: 2_000,
+      plan: 'free',
+      isSubscriptionActive: null,
+      quotaInventoryObserved: true,
+      windows: [
+        {
+          id: 'window',
+          usedPercent: 20,
+          resetAtMs: 1_700_000_000_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 3600,
+          quotaProgressObservedAtMs: 2_000,
+        },
+        {
+          id: 'weekly',
+          usedPercent: 40,
+          resetAtMs: 1_700_500_000_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: null,
+          quotaProgressObservedAtMs: 2_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    const selectionKey = getAuthFileSelectionKey(file);
+    const card = findAccountCardByKey(renderer, selectionKey);
+    expect(card).toBeDefined();
+
+    const windowSpans = card.findAll((node) => Boolean(node.props['data-account-quota-window']));
+    expect(windowSpans).toHaveLength(2);
+    expect(windowSpans[0].props['data-account-quota-window']).toBe('meta:window');
+    expect(windowSpans[1].props['data-account-quota-window']).toBe('meta:weekly');
+
+    const cardText = readText(card);
+    expect(cardText).toContain('80%');
+    expect(cardText).toContain('Weekly');
+    expect(cardText).toContain('60%');
+    expect(cardText).not.toContain('accounts.quota_details_only');
+  });
+
+  it('renders Meta quota windows in accounts list when both windowMode are unknown', async () => {
+    const file = {
+      name: 'meta-unknown.json',
+      type: 'meta',
+      provider: 'meta',
+      authIndex: 'meta-unknown-1',
+      account: 'meta-unknown@example.com',
+      priority: 0,
+      disabled: false,
+    } as AuthFileItem;
+    mocks.files = [file];
+    mocks.quotaState.metaQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      observedAtMs: 2_000,
+      plan: 'free',
+      isSubscriptionActive: null,
+      quotaInventoryObserved: true,
+      windows: [
+        {
+          id: 'window',
+          usedPercent: 25,
+          resetAtMs: 1_700_000_000_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: null,
+          quotaProgressObservedAtMs: 2_000,
+        },
+        {
+          id: 'weekly',
+          usedPercent: 50,
+          resetAtMs: 1_700_500_000_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: null,
+          quotaProgressObservedAtMs: 2_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    const selectionKey = getAuthFileSelectionKey(file);
+    const card = findAccountCardByKey(renderer, selectionKey);
+    expect(card).toBeDefined();
+
+    const windowSpans = card.findAll((node) => Boolean(node.props['data-account-quota-window']));
+    expect(windowSpans).toHaveLength(2);
+    expect(windowSpans[0].props['data-account-quota-window']).toBe('meta:window');
+    expect(windowSpans[1].props['data-account-quota-window']).toBe('meta:weekly');
+
+    const cardText = readText(card);
+    expect(cardText).toContain('75%');
+    expect(cardText).toContain('Weekly');
+    expect(cardText).toContain('50%');
+    expect(cardText).not.toContain('accounts.quota_details_only');
+  });
+
   it('keeps Kimi standard windows alongside top-level summary data', async () => {
     const file = {
       name: 'kimi-standard.json',
@@ -10880,7 +11098,7 @@ describe('AccountsPage replacement flows', () => {
       requestMonitoringAvailable: true,
       serverCodexInspectionAvailable: false,
     };
-    const quotaFetch = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+    const quotaFetch = vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
 
     const renderer = await renderAccountsPage();
     await flushPromises();
@@ -10907,7 +11125,7 @@ describe('AccountsPage replacement flows', () => {
     const firstQuota = createDeferred<CodexQuotaData>();
     const secondQuota = createDeferred<CodexQuotaData>();
     const quotaFetch = vi
-      .spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota')
+      .spyOn(CODEX_CONFIG, 'fetchQuota')
       .mockReturnValueOnce(firstQuota.promise)
       .mockReturnValueOnce(secondQuota.promise);
     const renderer = await renderAccountsPage();
@@ -10977,7 +11195,7 @@ describe('AccountsPage replacement flows', () => {
       disabled: true,
     } as AuthFileItem;
     mocks.files = [file];
-    const quotaFetch = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+    const quotaFetch = vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
 
     const renderer = await renderAccountsPage();
     const refreshButton = findAccountCardButtonByAriaLabel(
@@ -10997,7 +11215,7 @@ describe('AccountsPage replacement flows', () => {
 
   it('shows an action-level success notification for a single quota refresh', async () => {
     const file = mocks.files[0];
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
     const renderer = await renderAccountsPage();
 
     await act(async () => {
@@ -11059,7 +11277,7 @@ describe('AccountsPage replacement flows', () => {
   it('masks the account name in a single quota success notification', async () => {
     mocks.location = { pathname: '/accounts', search: '?display=masked' };
     const file = mocks.files[0];
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
     const renderer = await renderAccountsPage();
 
     await act(async () => {
@@ -11083,7 +11301,7 @@ describe('AccountsPage replacement flows', () => {
   it('keeps the provider error in a single quota refresh notification', async () => {
     const file = mocks.files[0];
     installCodexQuotaStoreMutationMock();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockRejectedValue(new Error('401 Unauthorized'));
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockRejectedValue(new Error('401 Unauthorized'));
     const renderer = await renderAccountsPage();
 
     await act(async () => {
@@ -11108,7 +11326,7 @@ describe('AccountsPage replacement flows', () => {
     mocks.location = { pathname: '/accounts', search: '?display=masked' };
     const file = mocks.files[0];
     installCodexQuotaStoreMutationMock();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockRejectedValue(new Error('401 Unauthorized'));
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockRejectedValue(new Error('401 Unauthorized'));
     const renderer = await renderAccountsPage();
 
     await act(async () => {
@@ -11917,7 +12135,7 @@ describe('AccountsPage replacement flows', () => {
       ],
     });
     installCodexQuotaStoreMutationMock();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue({
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue({
       ...makeCodexQuotaData(),
       windows: [
         {
@@ -12034,7 +12252,7 @@ describe('AccountsPage replacement flows', () => {
       ],
     });
     installCodexQuotaStoreMutationMock();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue({
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue({
       ...makeCodexQuotaData(),
       windows: [
         {
@@ -12146,7 +12364,7 @@ describe('AccountsPage replacement flows', () => {
       items: [makeCandidate(5, 'reauth', oldReauthAtMs), disableCandidate],
     });
     installCodexQuotaStoreMutationMock();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue({
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue({
       ...makeCodexQuotaData(),
       windows: [
         {
@@ -12203,7 +12421,7 @@ describe('AccountsPage replacement flows', () => {
   it('turns a manual quota 401 into a reauth state', async () => {
     const file = mocks.files[0];
     installCodexQuotaStoreMutationMock();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockRejectedValue(
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockRejectedValue(
       Object.assign(new Error('unauthorized'), { status: 401 })
     );
     const renderer = await renderAccountsPage();
@@ -12245,7 +12463,7 @@ describe('AccountsPage replacement flows', () => {
     };
     mocks.quotaState.codexQuota = { [storeKey]: previousQuota };
     const quotaResult = createDeferred<CodexQuotaData>();
-    vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
     const renderer = await renderAccountsPage();
 
     let refreshPromise!: Promise<void>;
@@ -14375,6 +14593,60 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
   });
 
+  it('renders metadata-only weekly quota window for unknown-plan xAI credential in quota tab', async () => {
+    const periodStartMs = Date.parse('2026-09-05T00:00:00Z');
+    const periodEndMs = Date.parse('2026-09-12T00:00:00Z');
+    const file = {
+      name: 'xai-unknown.json',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'xai-unknown-1',
+      account: 'xai-unknown@example.com',
+      disabled: false,
+      planType: null,
+    } as AuthFileItem;
+    mocks.files = [file];
+    mocks.quotaState.xaiQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      fetchedAtMs: Date.now(),
+      billing: {
+        periodType: 'weekly',
+        usagePercent: null,
+        periodStart: '2026-09-05T00:00:00Z',
+        periodEnd: '2026-09-12T00:00:00Z',
+        productUsage: [],
+        monthlyLimitCents: 0,
+        usedCents: null,
+        includedUsedCents: null,
+        onDemandCapCents: null,
+        onDemandUsedCents: null,
+        onDemandUsedPercent: null,
+        billingPeriodEnd: '2026-09-12T00:00:00Z',
+        usedPercent: null,
+      },
+    });
+
+    const renderer = await renderAccountsPage();
+    await act(async () => {
+      findDetailButtonByName(renderer, 'xai-unknown.json').props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    await flushPromises();
+
+    const text = treeText(renderer);
+    expect(text).not.toContain('accounts.detail_no_quota_windows');
+    expect(renderer.root.findAllByType(QuotaWindowCard)).toHaveLength(1);
+    const card = renderer.root.findByType(QuotaWindowCard);
+    expect(card.props.window.kind).toBe('weekly');
+    expect(card.props.window.usedPercent).toBeNull();
+    expect(card.props.window.remainingPercent).toBeNull();
+    expect(card.props.window.resetAtMs).toBe(periodEndMs);
+    expect(card.props.window.cycleStartMs).toBe(periodStartMs);
+    expect(card.props.window.cycleEndMs).toBe(periodEndMs);
+  });
+
   it('associates credential detail tabs with their active panel', async () => {
     const renderer = await renderAccountsPage();
 
@@ -14418,7 +14690,7 @@ describe('AccountsPage replacement flows', () => {
 
   it('uses the unified quota timestamp format for cooldown and reset-credit expiry', async () => {
     const cooldownRecoverAtMs = new Date(2026, 6, 30, 10, 5, 0, 0).getTime();
-    const resetCreditExpiresAtMs = Date.now() + 24 * 60 * 60 * 1000;
+    const resetCreditExpiresAtMs = Date.now() + 2 * 24 * 60 * 60 * 1000;
     mocks.quotaState.codexQuota = {
       'codex.json': {
         status: 'success',
@@ -14490,6 +14762,40 @@ describe('AccountsPage replacement flows', () => {
       expect.objectContaining({ title: 'codex_quota.reset_confirm_title' })
     );
     expect(mocks.consumeResetCredit).not.toHaveBeenCalled();
+  });
+
+  it('renders granular hours remaining for reset credits with less than 24 hours to expiry (Issue #845)', async () => {
+    const resetCreditExpiresAtMs = Date.now() + 12 * 60 * 60 * 1000;
+    mocks.quotaState.codexQuota = {
+      'codex.json': {
+        status: 'success',
+        authFileKey: 'codex.json::auth-1',
+        windows: [],
+        rateLimitResetCreditsAvailableCount: 1,
+        rateLimitResetCredits: [
+          {
+            id: 'reset-credit-12h',
+            status: 'available',
+            grantedAt: new Date(resetCreditExpiresAtMs - 24 * 60 * 60 * 1000).toISOString(),
+            expiresAt: new Date(resetCreditExpiresAtMs).toISOString(),
+          },
+        ],
+      },
+    };
+
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findDetailButtonByName(renderer, 'codex.json').props.onClick();
+    });
+    await flushPromises();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    await flushPromises();
+
+    expect(treeText(renderer)).toContain('codex_quota.reset_credit_expiry_remaining_hours');
+    expect(treeText(renderer)).not.toContain('codex_quota.reset_credit_expiry_remaining_days');
   });
 
   it('keeps reset records visible but disables reset when no credits remain', async () => {
@@ -14634,6 +14940,8 @@ describe('AccountsPage replacement flows', () => {
         authFileKey: 'codex.json::auth-1',
         windows: [],
         rateLimitResetCreditsAvailableCount: 1,
+        resetCreditsDetailEvidenceAtMs: Date.now(),
+        rateLimitResetCredits: [makeResetCredit('credit-1')],
       },
     };
     mocks.apiRequest.mockResolvedValueOnce({
@@ -14669,6 +14977,8 @@ describe('AccountsPage replacement flows', () => {
         authFileKey: 'codex.json::auth-1',
         windows: [],
         rateLimitResetCreditsAvailableCount: 1,
+        resetCreditsDetailEvidenceAtMs: Date.now(),
+        rateLimitResetCredits: [makeResetCredit('credit-1')],
       },
     };
     mocks.apiRequest.mockRejectedValueOnce(new Error('reset endpoint unavailable'));
@@ -14804,6 +15114,8 @@ describe('AccountsPage replacement flows', () => {
         authFileKey: 'codex.json::auth-1',
         windows: [],
         rateLimitResetCreditsAvailableCount: 1,
+        resetCreditsDetailEvidenceAtMs: Date.now(),
+        rateLimitResetCredits: [makeResetCredit('credit-1')],
       },
     };
     const renderer = await renderAccountsPage();
@@ -18171,6 +18483,7 @@ describe('AccountsPage replacement flows', () => {
           ],
         }),
       };
+      vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
       vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
 
       let callCount = 0;
@@ -18485,11 +18798,11 @@ describe('AccountsPage replacement flows', () => {
   });
 
   describe('responsive quota presentation and split codex refresh flows', () => {
-    it('calls summary only on single row refresh for Codex (1 usage, 0 reset credits)', async () => {
-      const file = makeCodexFile('codex-row-summary.json', 'auth-summary-1', 'summary@example.com');
+    it('calls full detail refresh on single row refresh for Codex', async () => {
+      const file = makeCodexFile('codex-row-summary.json', 'auth-detail-1', 'detail@example.com');
       mocks.files = [file];
-      const summarySpy = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
-      const detailSpy = vi.spyOn(CODEX_CONFIG, 'fetchQuota');
+      const detailSpy = vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+      const summarySpy = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota');
 
       const renderer = await renderAccountsPage();
       await flushPromises();
@@ -18504,8 +18817,8 @@ describe('AccountsPage replacement flows', () => {
       });
       await flushPromises();
 
-      expect(summarySpy).toHaveBeenCalledTimes(1);
-      expect(detailSpy).not.toHaveBeenCalled();
+      expect(detailSpy).toHaveBeenCalledTimes(1);
+      expect(summarySpy).not.toHaveBeenCalled();
     });
 
     it('calls full refresh on credential detail quota refresh for Codex (1 usage, 1 reset credits)', async () => {
@@ -18554,6 +18867,115 @@ describe('AccountsPage replacement flows', () => {
 
       expect(summarySpy).toHaveBeenCalledTimes(2);
       expect(detailSpy).not.toHaveBeenCalled();
+    });
+
+    it('schedules Meta credentials during batch quota refresh', async () => {
+      const fileCodex = makeCodexFile('codex-batch-1.json', 'auth-b-1', 'b1@example.com');
+      const fileMeta: AuthFileItem = {
+        name: 'meta-batch.json',
+        type: 'meta',
+        provider: 'meta',
+        auth_index: 'auth-m-1',
+        authIndex: 'auth-m-1',
+        account: 'meta-batch@example.com',
+        auth_kind: 'oauth',
+        runtimeOnly: false,
+      };
+      mocks.files = [fileCodex, fileMeta];
+      mocks.selectedFiles = new Set([getAuthFileSelectionKey(fileCodex), getAuthFileSelectionKey(fileMeta)]);
+
+      const summarySpy = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+      const metaSpy = vi.spyOn(META_CONFIG, 'fetchQuota').mockResolvedValue(makeMetaQuotaData());
+      const showNotificationSpy = mocks.showNotification;
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+
+      const batchRefreshButton = findButtonByText(renderer, 'accounts.refresh_quota');
+      await act(async () => {
+        batchRefreshButton.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(summarySpy).toHaveBeenCalledTimes(1);
+      expect(metaSpy).toHaveBeenCalledTimes(1);
+      expect(showNotificationSpy).toHaveBeenCalledWith(
+        'accounts.quota_refresh_result:2:2',
+        'success'
+      );
+      expect(showNotificationSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('common.unknown_error'),
+        expect.anything()
+      );
+    });
+
+    it('renders quota refresh button for Meta credentials in row actions and detail drawer', async () => {
+      const fileMeta: AuthFileItem = {
+        name: 'meta-card.json',
+        type: 'meta',
+        provider: 'meta',
+        auth_index: 'auth-m-card',
+        authIndex: 'auth-m-card',
+        account: 'meta-card@example.com',
+        auth_kind: 'oauth',
+        runtimeOnly: false,
+      };
+      mocks.files = [fileMeta];
+      const metaSpy = vi.spyOn(META_CONFIG, 'fetchQuota').mockResolvedValue(makeMetaQuotaData());
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+
+      const rowButtons = renderer.root.findAllByType(Button);
+      const rowRefreshButton = rowButtons.find(
+        (b) => typeof b.props.className === 'string' && b.props.className.includes('accountIconButtonRefresh')
+      );
+      expect(rowRefreshButton).toBeDefined();
+
+      await act(async () => {
+        rowRefreshButton!.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+      expect(metaSpy).toHaveBeenCalledTimes(1);
+
+      const detailButton = rowButtons.find(
+        (b) => b.props.title === 'accounts.open_detail' || b.props['aria-label'] === 'accounts.open_detail'
+      );
+      if (detailButton) {
+        await act(async () => {
+          detailButton.props.onClick();
+          await Promise.resolve();
+        });
+        await flushPromises();
+
+        const drawer = renderer.root.findByType(Drawer);
+        const drawerRefresh = drawer
+          .findAllByType(Button)
+          .find((b) => readText(b.props.children).includes('accounts.refresh_quota'));
+        expect(drawerRefresh).toBeDefined();
+      }
+    });
+
+    it('does not render quota refresh button for runtimeOnly Meta credentials', async () => {
+      const fileMeta: AuthFileItem = {
+        name: 'meta-runtime.json',
+        type: 'meta',
+        provider: 'meta',
+        auth_kind: 'oauth',
+        runtimeOnly: true,
+      };
+      mocks.files = [fileMeta];
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+
+      const rowButtons = renderer.root.findAllByType(Button);
+      const rowRefreshButton = rowButtons.find(
+        (b) => typeof b.props.className === 'string' && b.props.className.includes('accountIconButtonRefresh')
+      );
+      expect(rowRefreshButton).toBeUndefined();
     });
 
     it('triggers account detail parity check once when open credential succeeds in batch refresh', async () => {
@@ -18667,6 +19089,453 @@ describe('AccountsPage replacement flows', () => {
 
       expect(mocks.consumeResetCredit).toHaveBeenCalledTimes(1);
       expect(fullSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats empty credits payload without available_count as valid 0 count during reset live verification', async () => {
+      const file = makeCodexFile('codex-empty-credits.json', 'auth-ec-1', 'empty@example.com');
+      mocks.files = [file];
+      const storeKey = CODEX_CONFIG.getStoreKey?.(file) ?? file.name;
+      mocks.quotaState.codexQuota = {
+        [storeKey]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          rateLimitResetCreditsAvailableCount: 1,
+          rateLimitResetCredits: [makeResetCredit('cred-1')],
+          ...buildQuotaCredentialIdentity(file),
+          fetchedAtMs: 1,
+          resetCreditsDetailEvidenceAtMs: Date.now(),
+        },
+      };
+
+      installCodexQuotaStoreMutationMock();
+      mocks.apiRequest.mockImplementation(async (call?: { url?: string }) => {
+        if (call?.url === CODEX_RATE_LIMIT_RESET_CREDITS_URL) {
+          return {
+            statusCode: 200,
+            hasStatusCode: true,
+            header: {},
+            body: { credits: [] },
+            bodyText: JSON.stringify({ credits: [] }),
+          };
+        }
+        return { statusCode: 200, hasStatusCode: true, header: {}, body: {}, bodyText: '{}' };
+      });
+
+      const renderer = await renderAccountsPage();
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+
+      const resetAction = renderer.root.findByProps({ 'data-quota-reset-action': 'true' });
+      await act(async () => {
+        resetAction.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(mocks.showConfirmation).not.toHaveBeenCalled();
+      expect(mocks.consumeResetCredit).not.toHaveBeenCalled();
+      const committed = applyCodexQuotaCommits();
+      expect(committed[storeKey]?.rateLimitResetCreditsAvailableCount).toBe(0);
+      expect(committed[storeKey]?.rateLimitResetCredits).toEqual([]);
+      expect(committed[storeKey]?.resetCreditsDetailStale).toBe(false);
+      expect(mocks.showNotification).toHaveBeenCalledWith(
+        'codex_quota.reset_no_credits:empty@example.com',
+        'info'
+      );
+      expect(
+        mocks.showNotification.mock.calls.some(
+          ([message, type]) =>
+            type === 'error' &&
+            typeof message === 'string' &&
+            (message.includes('reset_verify_failed') || message.includes('reset_credits_invalid_payload'))
+        )
+      ).toBe(false);
+    });
+
+    it('resolves count from credits array length when available_count is omitted during reset live verification', async () => {
+      const file = makeCodexFile('codex-inferred-count.json', 'auth-ic-1', 'inferred@example.com');
+      mocks.files = [file];
+      const storeKey = CODEX_CONFIG.getStoreKey?.(file) ?? file.name;
+      mocks.quotaState.codexQuota = {
+        [storeKey]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          rateLimitResetCreditsAvailableCount: 1,
+          rateLimitResetCredits: [makeResetCredit('cred-0')],
+          ...buildQuotaCredentialIdentity(file),
+          fetchedAtMs: 1,
+          resetCreditsDetailEvidenceAtMs: Date.now(),
+        },
+      };
+
+      installCodexQuotaStoreMutationMock();
+      const rawCreditA = {
+        id: 'cred-a',
+        reset_type: 'codex_rate_limits',
+        status: 'available',
+        granted_at: new Date(Date.now() - 60_000).toISOString(),
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      };
+      mocks.apiRequest.mockImplementation(async (call?: { url?: string }) => {
+        if (call?.url === CODEX_RATE_LIMIT_RESET_CREDITS_URL) {
+          return {
+            statusCode: 200,
+            hasStatusCode: true,
+            header: {},
+            body: { credits: [rawCreditA] },
+            bodyText: JSON.stringify({ credits: [rawCreditA] }),
+          };
+        }
+        return { statusCode: 200, hasStatusCode: true, header: {}, body: {}, bodyText: '{}' };
+      });
+
+      const renderer = await renderAccountsPage();
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+
+      const resetAction = renderer.root.findByProps({ 'data-quota-reset-action': 'true' });
+      await act(async () => {
+        resetAction.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(mocks.showConfirmation).toHaveBeenCalledTimes(1);
+      const confirmationArgs = mocks.showConfirmation.mock.calls[0]?.[0] as {
+        message: string;
+        confirmText: string;
+      };
+      expect(confirmationArgs.message).toBe('codex_quota.reset_confirm_message:inferred@example.com:1');
+      expect(confirmationArgs.confirmText).toBe('codex_quota.reset_button:1');
+      const committed = applyCodexQuotaCommits();
+      expect(committed[storeKey]?.rateLimitResetCreditsAvailableCount).toBe(1);
+      expect(committed[storeKey]?.rateLimitResetCredits).toHaveLength(1);
+      expect(committed[storeKey]?.rateLimitResetCredits?.[0].id).toBe('cred-a');
+      expect(committed[storeKey]?.resetCreditsDetailStale).toBe(false);
+    });
+
+    it('prioritizes explicit available_count when provider returns both count and credits during live verification', async () => {
+      const file = makeCodexFile('codex-explicit-count.json', 'auth-exc-1', 'explicit@example.com');
+      mocks.files = [file];
+      const storeKey = CODEX_CONFIG.getStoreKey?.(file) ?? file.name;
+      mocks.quotaState.codexQuota = {
+        [storeKey]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          rateLimitResetCreditsAvailableCount: 1,
+          rateLimitResetCredits: [makeResetCredit('cred-0')],
+          ...buildQuotaCredentialIdentity(file),
+          fetchedAtMs: 1,
+          resetCreditsDetailEvidenceAtMs: Date.now(),
+        },
+      };
+
+      installCodexQuotaStoreMutationMock();
+      const rawCreditA = {
+        id: 'cred-a',
+        reset_type: 'codex_rate_limits',
+        status: 'available',
+        granted_at: new Date(Date.now() - 60_000).toISOString(),
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      };
+      mocks.apiRequest.mockImplementation(async (call?: { url?: string }) => {
+        if (call?.url === CODEX_RATE_LIMIT_RESET_CREDITS_URL) {
+          return {
+            statusCode: 200,
+            hasStatusCode: true,
+            header: {},
+            body: { available_count: 5, credits: [rawCreditA] },
+            bodyText: JSON.stringify({ available_count: 5, credits: [rawCreditA] }),
+          };
+        }
+        return { statusCode: 200, hasStatusCode: true, header: {}, body: {}, bodyText: '{}' };
+      });
+
+      const renderer = await renderAccountsPage();
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+
+      const resetAction = renderer.root.findByProps({ 'data-quota-reset-action': 'true' });
+      await act(async () => {
+        resetAction.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(mocks.showConfirmation).toHaveBeenCalledTimes(1);
+      const confirmationArgs = mocks.showConfirmation.mock.calls[0]?.[0] as {
+        message: string;
+        confirmText: string;
+      };
+      expect(confirmationArgs.message).toBe('codex_quota.reset_confirm_message:explicit@example.com:5');
+      expect(confirmationArgs.confirmText).toBe('codex_quota.reset_button:5');
+      const committed = applyCodexQuotaCommits();
+      expect(committed[storeKey]?.rateLimitResetCreditsAvailableCount).toBe(5);
+      expect(committed[storeKey]?.rateLimitResetCredits).toHaveLength(1);
+    });
+
+    it('authoritatively clears conflicting detail records to empty when live verification returns available_count=0 with credits', async () => {
+      const file = makeCodexFile('codex-zero-with-credits.json', 'auth-zwc-1', 'zero-credits@example.com');
+      mocks.files = [file];
+      const storeKey = CODEX_CONFIG.getStoreKey?.(file) ?? file.name;
+      const initialDetailEvidence = Date.now() - 60_000;
+      const oldCredit = makeResetCredit('old-cred-1');
+      mocks.quotaState.codexQuota = {
+        [storeKey]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          rateLimitResetCreditsAvailableCount: 1,
+          rateLimitResetCredits: [oldCredit],
+          ...buildQuotaCredentialIdentity(file),
+          fetchedAtMs: 1,
+          resetCreditsCountEvidenceAtMs: initialDetailEvidence,
+          resetCreditsDetailEvidenceAtMs: initialDetailEvidence,
+        },
+      };
+
+      installCodexQuotaStoreMutationMock();
+      const rawCreditA = {
+        id: 'cred-a',
+        reset_type: 'codex_rate_limits',
+        status: 'available',
+        granted_at: new Date(Date.now() - 60_000).toISOString(),
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      };
+      mocks.apiRequest.mockImplementation(async (call?: { url?: string }) => {
+        if (call?.url === CODEX_RATE_LIMIT_RESET_CREDITS_URL) {
+          return {
+            statusCode: 200,
+            hasStatusCode: true,
+            header: {},
+            body: { available_count: 0, credits: [rawCreditA] },
+            bodyText: JSON.stringify({ available_count: 0, credits: [rawCreditA] }),
+          };
+        }
+        return { statusCode: 200, hasStatusCode: true, header: {}, body: {}, bodyText: '{}' };
+      });
+
+      const renderer = await renderAccountsPage();
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+
+      const resetAction = renderer.root.findByProps({ 'data-quota-reset-action': 'true' });
+      await act(async () => {
+        resetAction.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(mocks.showConfirmation).not.toHaveBeenCalled();
+      expect(mocks.consumeResetCredit).not.toHaveBeenCalled();
+      const committed = applyCodexQuotaCommits();
+      expect(committed[storeKey]?.rateLimitResetCreditsAvailableCount).toBe(0);
+      expect(committed[storeKey]?.rateLimitResetCredits).toEqual([]);
+      expect(committed[storeKey]?.resetCreditsCountEvidenceAtMs).toBeGreaterThan(initialDetailEvidence);
+      expect(committed[storeKey]?.resetCreditsDetailEvidenceAtMs).toBeGreaterThan(initialDetailEvidence);
+      expect(committed[storeKey]?.resetCreditsCountEvidenceAtMs).toBe(committed[storeKey]?.resetCreditsDetailEvidenceAtMs);
+      expect(committed[storeKey]?.resetCreditsDetailStale).toBe(false);
+      expect(mocks.showNotification).toHaveBeenCalledWith(
+        'codex_quota.reset_no_credits:zero-credits@example.com',
+        'info'
+      );
+      expect(
+        mocks.showNotification.mock.calls.some(
+          ([message, type]) =>
+            type === 'error' &&
+            typeof message === 'string' &&
+            (message.includes('reset_verify_failed') || message.includes('reset_credits_invalid_payload'))
+        )
+      ).toBe(false);
+    });
+
+    it('Test 11: live verification succeeds on count-only payload and preserves existing trusted details when count is unchanged', async () => {
+      const file = makeCodexFile('codex-live-count-only.json', 'auth-lco-1', 'livecount@example.com');
+      mocks.files = [file];
+      const storeKey = CODEX_CONFIG.getStoreKey?.(file) ?? file.name;
+      const initialDetailEvidence = 10_000;
+      const creditA = makeResetCredit('trusted-cred-1');
+      mocks.quotaState.codexQuota = {
+        [storeKey]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          rateLimitResetCreditsAvailableCount: 1,
+          rateLimitResetCredits: [creditA],
+          ...buildQuotaCredentialIdentity(file),
+          fetchedAtMs: 1,
+          resetCreditsCountEvidenceAtMs: initialDetailEvidence,
+          resetCreditsDetailEvidenceAtMs: initialDetailEvidence,
+          resetCreditsDetailStale: false,
+        },
+      };
+
+      installCodexQuotaStoreMutationMock();
+      mocks.apiRequest.mockImplementation(async (call?: { url?: string }) => {
+        if (call?.url === CODEX_RATE_LIMIT_RESET_CREDITS_URL) {
+          return {
+            statusCode: 200,
+            hasStatusCode: true,
+            header: {},
+            body: { available_count: 1 },
+            bodyText: JSON.stringify({ available_count: 1 }),
+          };
+        }
+        return { statusCode: 200, hasStatusCode: true, header: {}, body: {}, bodyText: '{}' };
+      });
+
+      const renderer = await renderAccountsPage();
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+
+      const resetAction = renderer.root.findByProps({ 'data-quota-reset-action': 'true' });
+      await act(async () => {
+        resetAction.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(mocks.showConfirmation).toHaveBeenCalledTimes(1);
+      const confirmationArgs = mocks.showConfirmation.mock.calls[0]?.[0] as {
+        message: string;
+        confirmText: string;
+      };
+      expect(confirmationArgs.message).toBe('codex_quota.reset_confirm_message:livecount@example.com:1');
+      expect(confirmationArgs.confirmText).toBe('codex_quota.reset_button:1');
+      const committed = applyCodexQuotaCommits();
+      expect(committed[storeKey]?.rateLimitResetCreditsAvailableCount).toBe(1);
+      expect(committed[storeKey]?.rateLimitResetCredits).toEqual([creditA]);
+      expect(committed[storeKey]?.resetCreditsDetailEvidenceAtMs).toBe(initialDetailEvidence);
+      expect(committed[storeKey]?.resetCreditsDetailStale).toBe(false);
+    });
+
+    it('Test 12: live verification fails closed when credits field is malformed and no valid count exists', async () => {
+      const file = makeCodexFile('codex-live-malformed.json', 'auth-lm-1', 'malformed@example.com');
+      mocks.files = [file];
+      const storeKey = CODEX_CONFIG.getStoreKey?.(file) ?? file.name;
+      const initialDetailEvidence = 10_000;
+      const creditA = makeResetCredit('trusted-cred-2');
+      mocks.quotaState.codexQuota = {
+        [storeKey]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          rateLimitResetCreditsAvailableCount: 1,
+          rateLimitResetCredits: [creditA],
+          ...buildQuotaCredentialIdentity(file),
+          fetchedAtMs: 1,
+          resetCreditsCountEvidenceAtMs: initialDetailEvidence,
+          resetCreditsDetailEvidenceAtMs: initialDetailEvidence,
+          resetCreditsDetailStale: false,
+        },
+      };
+
+      installCodexQuotaStoreMutationMock();
+      mocks.apiRequest.mockImplementation(async (call?: { url?: string }) => {
+        if (call?.url === CODEX_RATE_LIMIT_RESET_CREDITS_URL) {
+          return {
+            statusCode: 200,
+            hasStatusCode: true,
+            header: {},
+            body: { credits: 'invalid' },
+            bodyText: JSON.stringify({ credits: 'invalid' }),
+          };
+        }
+        return { statusCode: 200, hasStatusCode: true, header: {}, body: {}, bodyText: '{}' };
+      });
+
+      const renderer = await renderAccountsPage();
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+
+      const resetAction = renderer.root.findByProps({ 'data-quota-reset-action': 'true' });
+      await act(async () => {
+        resetAction.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(mocks.showConfirmation).not.toHaveBeenCalled();
+      expect(mocks.consumeResetCredit).not.toHaveBeenCalled();
+      expect(
+        mocks.showNotification.mock.calls.some(
+          ([message, type]) => type === 'error' && typeof message === 'string' && message.includes('reset_verify_failed')
+        )
+      ).toBe(true);
+      const preservedState = (mocks.quotaState.codexQuota as Record<string, CodexQuotaState>)[storeKey];
+      expect(preservedState?.rateLimitResetCreditsAvailableCount).toBe(1);
+      expect(preservedState?.rateLimitResetCredits).toEqual([creditA]);
+    });
+
+    it('does not loop auto-fetch when detail endpoint returns count-only response and allows manual anchor retry', async () => {
+      mocks.location = { pathname: '/accounts', search: '?layout=grid' };
+      const file = makeCodexFile('codex-autofetch-countonly.json', 'auth-af-1', 'autofetch@example.com');
+      mocks.files = [file];
+      const storeKey = CODEX_CONFIG.getStoreKey?.(file) ?? file.name;
+      mocks.quotaState.codexQuota = {
+        [storeKey]: {
+          status: 'success',
+          windows: [],
+          quotaInventoryObserved: true,
+          rateLimitResetCreditsAvailableCount: 2,
+          rateLimitResetCredits: [],
+          ...buildQuotaCredentialIdentity(file),
+          fetchedAtMs: 1,
+          resetCreditsCountEvidenceAtMs: 1_000,
+          resetCreditsDetailEvidenceAtMs: null,
+          resetCreditsDetailStale: false,
+        },
+      };
+
+      installCodexQuotaStoreMutationMock();
+      let callCount = 0;
+      mocks.apiRequest.mockImplementation(async (call?: { url?: string }) => {
+        if (call?.url === CODEX_RATE_LIMIT_RESET_CREDITS_URL) {
+          callCount++;
+          return {
+            statusCode: 200,
+            hasStatusCode: true,
+            header: {},
+            body: { available_count: 2 },
+            bodyText: JSON.stringify({ available_count: 2 }),
+          };
+        }
+        return { statusCode: 200, hasStatusCode: true, header: {}, body: {}, bodyText: '{}' };
+      });
+
+      const renderer = await renderAccountsPage();
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await flushPromises();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(callCount).toBe(1);
+      const committed = applyCodexQuotaCommits();
+      expect(committed[storeKey]?.rateLimitResetCreditsAvailableCount).toBe(2);
+      expect(committed[storeKey]?.resetCreditsDetailEvidenceAtMs).toBeNull();
+      expect(committed[storeKey]?.rateLimitResetCredits).toEqual([]);
+
+      const anchorButtons = renderer.root
+        .findAll((node) => node.props['data-detail-anchor'] === 'reset-records');
+      expect(anchorButtons).toHaveLength(1);
+
+      await act(async () => {
+        anchorButtons[0].props.onClick({ stopPropagation: () => {}, preventDefault: () => {} });
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(callCount).toBe(2);
     });
 
     it('requests reset credits only on reset records anchor click with single-flight control', async () => {

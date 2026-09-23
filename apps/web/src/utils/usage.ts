@@ -77,7 +77,10 @@ export interface UsageTokens {
   cacheInputMode?: CacheInputMode | string;
 }
 
-export type CacheInputMode = 'included_in_input' | 'separate_from_input';
+export type CacheInputMode =
+  | 'included_in_input'
+  | 'separate_from_input'
+  | 'read_included_creation_separate';
 
 export interface UsageResponseHeaderQuotaWindow {
   used_percent?: number;
@@ -481,6 +484,7 @@ const normalizeCacheIdentity = (value: unknown): string =>
 const classifyExecutorCacheInputMode = (value: unknown): CacheInputMode | undefined => {
   const executor = normalizeCacheIdentity(value);
   if (!executor) return undefined;
+  if (executor === 'devinexecutor') return 'read_included_creation_separate';
   if (executor.includes('claude')) return 'separate_from_input';
   if (
     [
@@ -506,6 +510,9 @@ const classifyExecutorCacheInputMode = (value: unknown): CacheInputMode | undefi
 const classifyProviderCacheInputMode = (value: unknown): CacheInputMode | undefined => {
   const provider = normalizeCacheIdentity(value);
   if (!provider) return undefined;
+  if (provider === 'devin' || provider.startsWith('devin/')) {
+    return 'read_included_creation_separate';
+  }
   if (provider.includes('anthropic') || provider.includes('claude')) {
     return 'separate_from_input';
   }
@@ -533,6 +540,9 @@ const classifyProviderCacheInputMode = (value: unknown): CacheInputMode | undefi
 const classifyModelCacheInputMode = (value: unknown): CacheInputMode | undefined => {
   const model = normalizeCacheIdentity(value);
   if (!model) return undefined;
+  if (model === 'devin' || model.startsWith('devin/')) {
+    return 'read_included_creation_separate';
+  }
   if (model.includes('anthropic') || model.includes('claude')) {
     return 'separate_from_input';
   }
@@ -564,6 +574,7 @@ export const inferCacheInputMode = (
   const normalizedMode = normalizeCacheIdentity(context.explicitMode);
   if (normalizedMode === 'separate_from_input') return 'separate_from_input';
   if (normalizedMode === 'included_in_input') return 'included_in_input';
+  if (normalizedMode === 'read_included_creation_separate') return 'read_included_creation_separate';
   const executorMode = classifyExecutorCacheInputMode(context.executorType);
   if (executorMode) return executorMode;
   for (const provider of [context.provider, context.providerSnapshot]) {
@@ -598,14 +609,22 @@ export const normalizeCacheAccounting = (input: {
   );
   const read = legacyRead + rawRead;
   const mode = inferCacheInputMode(input.context, rawRead, creation);
+  let totalInputTokens = rawInput;
+  let uncachedInputTokens = Math.max(rawInput - read - creation, 0);
+  if (mode === 'separate_from_input') {
+    totalInputTokens = rawInput + read + creation;
+    uncachedInputTokens = rawInput;
+  } else if (mode === 'read_included_creation_separate') {
+    totalInputTokens = rawInput + creation;
+    uncachedInputTokens = Math.max(rawInput - read, 0);
+  }
   return {
     mode,
     legacyRead,
     cacheReadTokens: rawRead,
     cacheCreationTokens: creation,
-    totalInputTokens: mode === 'separate_from_input' ? rawInput + read + creation : rawInput,
-    uncachedInputTokens:
-      mode === 'separate_from_input' ? rawInput : Math.max(rawInput - read - creation, 0),
+    totalInputTokens,
+    uncachedInputTokens,
   };
 };
 

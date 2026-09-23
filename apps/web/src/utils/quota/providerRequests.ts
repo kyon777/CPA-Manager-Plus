@@ -84,7 +84,10 @@ import {
   buildCodexResetCreditsRequestHeaders,
   buildCodexUsageRequestHeaders,
 } from './codexRequestHeaders';
-import { normalizeCodexResetCreditsPayload } from './resetCredits';
+import {
+  normalizeCodexResetCreditsPayload,
+  resolveCodexResetCreditsObservationCount,
+} from './resetCredits';
 import { classifyXaiProbe, parseXaiErrorEnvelope, XaiProbeError } from './xaiErrors';
 
 const DEFAULT_ANTIGRAVITY_PROJECT_ID = 'bamboo-precept-lgxtn';
@@ -109,6 +112,9 @@ export type CodexQuotaData = {
   rateLimitResetCredits: CodexRateLimitResetCredit[];
   rateLimitResetCreditsError: string | null;
   resetCreditsEvidenceAtMs?: number | null;
+  resetCreditsCountEvidenceAtMs?: number | null;
+  resetCreditsDetailEvidenceAtMs?: number | null;
+  resetCreditsDetailStale?: boolean;
 };
 
 const isCodexRateLimitInventory = (value: unknown): boolean =>
@@ -458,19 +464,14 @@ const resolveCodexSpendControlInfo = (payload: CodexUsagePayload) => {
 export type CodexResetCreditsData = {
   availableCount: number | null;
   credits: CodexRateLimitResetCredit[];
+  creditsObserved: boolean;
   error: string | null;
   observedAtMs?: number;
   resetCreditsEvidenceAtMs?: number | null;
+  resetCreditsCountEvidenceAtMs?: number | null;
+  resetCreditsDetailEvidenceAtMs?: number | null;
 };
 
-const resolveCodexResetCreditsAvailableCount = (
-  resetCredits: CodexResetCreditsData,
-  usageAvailableCount: number | null
-): number | null => {
-  if (resetCredits.availableCount !== null) return resetCredits.availableCount;
-  if (resetCredits.credits.length > 0) return resetCredits.credits.length;
-  return usageAvailableCount;
-};
 
 export const fetchCodexResetCredits = async (
   file: AuthFileItem,
@@ -501,6 +502,7 @@ export const fetchCodexResetCredits = async (
       return {
         availableCount: null,
         credits: [],
+        creditsObserved: false,
         error: getApiCallErrorMessage(result),
       };
     }
@@ -510,22 +512,32 @@ export const fetchCodexResetCredits = async (
       return {
         availableCount: null,
         credits: [],
+        creditsObserved: false,
         error: t('codex_quota.reset_credits_invalid_payload'),
       };
     }
 
     const observedAtMs = Date.now();
+    const hasCountObservation =
+      payload.availableCount !== null || payload.creditsObserved;
+    const hasDetailObservation = payload.creditsObserved;
+
     return {
       availableCount: payload.availableCount,
       credits: payload.credits,
+      creditsObserved: payload.creditsObserved,
       error: null,
       observedAtMs,
-      resetCreditsEvidenceAtMs: observedAtMs,
+      resetCreditsEvidenceAtMs:
+        hasCountObservation || hasDetailObservation ? observedAtMs : null,
+      resetCreditsCountEvidenceAtMs: hasCountObservation ? observedAtMs : null,
+      resetCreditsDetailEvidenceAtMs: hasDetailObservation ? observedAtMs : null,
     };
   } catch (err: unknown) {
     return {
       availableCount: null,
       credits: [],
+      creditsObserved: false,
       error: err instanceof Error ? err.message : 'Failed to fetch Codex reset credits',
     };
   }
@@ -582,6 +594,9 @@ export const fetchCodexQuotaSummary = async (
     rateLimitResetCredits: [],
     rateLimitResetCreditsError: null,
     resetCreditsEvidenceAtMs: usageResetCreditsAvailableCount !== null ? observedAtMs : null,
+    resetCreditsCountEvidenceAtMs: usageResetCreditsAvailableCount !== null ? observedAtMs : null,
+    resetCreditsDetailEvidenceAtMs: null,
+    resetCreditsDetailStale: false,
   };
 };
 
@@ -593,22 +608,39 @@ export const fetchCodexQuota = async (
   const summary = await fetchCodexQuotaSummary(file, t, requestScope);
   const resetCredits = await fetchCodexResetCredits(file, t, requestScope);
 
-  const hasValidResetDetail = !resetCredits.error && resetCredits.resetCreditsEvidenceAtMs != null;
-  const rateLimitResetCreditsAvailableCount = hasValidResetDetail
-    ? resolveCodexResetCreditsAvailableCount(
-        resetCredits,
-        summary.rateLimitResetCreditsAvailableCount
-      )
+  const hasResetDetailObservation =
+    !resetCredits.error &&
+    resetCredits.creditsObserved &&
+    resetCredits.resetCreditsDetailEvidenceAtMs != null;
+
+  const detailCount = resolveCodexResetCreditsObservationCount(
+    resetCredits.availableCount,
+    resetCredits.credits,
+    resetCredits.creditsObserved
+  );
+  const hasResetCountObservation = !resetCredits.error && detailCount !== null;
+
+  const rateLimitResetCreditsAvailableCount = hasResetCountObservation
+    ? detailCount
     : summary.rateLimitResetCreditsAvailableCount;
 
   return {
     ...summary,
     rateLimitResetCreditsAvailableCount,
-    rateLimitResetCredits: resetCredits.credits,
+    rateLimitResetCredits: hasResetDetailObservation ? resetCredits.credits : [],
     rateLimitResetCreditsError: resetCredits.error,
-    resetCreditsEvidenceAtMs: hasValidResetDetail
+    resetCreditsEvidenceAtMs: hasResetDetailObservation
       ? resetCredits.resetCreditsEvidenceAtMs
-      : summary.resetCreditsEvidenceAtMs,
+      : hasResetCountObservation
+        ? (resetCredits.resetCreditsCountEvidenceAtMs ?? resetCredits.observedAtMs ?? summary.resetCreditsEvidenceAtMs)
+        : summary.resetCreditsEvidenceAtMs,
+    resetCreditsCountEvidenceAtMs: hasResetCountObservation
+      ? (resetCredits.resetCreditsCountEvidenceAtMs ?? resetCredits.observedAtMs ?? summary.resetCreditsCountEvidenceAtMs)
+      : summary.resetCreditsCountEvidenceAtMs,
+    resetCreditsDetailEvidenceAtMs: hasResetDetailObservation
+      ? (resetCredits.resetCreditsDetailEvidenceAtMs ?? resetCredits.observedAtMs ?? null)
+      : null,
+    resetCreditsDetailStale: hasResetDetailObservation ? false : undefined,
   };
 };
 

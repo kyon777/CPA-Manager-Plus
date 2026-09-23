@@ -20,6 +20,7 @@ const emptyStores = (): AccountQuotaStores => ({
   codexQuota: {},
   kimiQuota: {},
   devinQuota: {},
+  metaQuota: {},
   xaiQuota: {},
 });
 
