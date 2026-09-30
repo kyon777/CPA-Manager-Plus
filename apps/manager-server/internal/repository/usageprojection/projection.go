@@ -155,6 +155,31 @@ end`,
 	)
 }
 
+// HeaderQuotaEvidencePredicate selects rows suitable for the per-account
+// Header quota snapshot. Trace-, routing-, and error-only metadata remains in
+// immutable usage_events for diagnostics, but must not replace the last
+// response that actually carried quota or credit evidence.
+func HeaderQuotaEvidencePredicate(prefix string) string {
+	column := func(name string) string { return prefix + name }
+	metadata := column("response_metadata_json")
+	validMetadata := fmt.Sprintf("case when json_valid(coalesce(%s, '')) then %s else '{}' end", metadata, metadata)
+	return fmt.Sprintf(`(
+	%s is not null
+	or %s is not null
+	or coalesce(%s, '') <> ''
+	or json_type(%s, '$.quota') is not null
+	or json_type(%s, '$.rate_limit') is not null
+	or json_type(%s, '$.provider_usage') is not null
+)`,
+		column("header_quota_recover_at_ms"),
+		column("header_quota_used_percent"),
+		column("header_quota_plan_type"),
+		validMetadata,
+		validMetadata,
+		validMetadata,
+	)
+}
+
 func UpsertEventRange(ctx context.Context, tx *sql.Tx, afterID, throughID, nowMS int64) error {
 	if throughID <= afterID {
 		return nil
@@ -314,15 +339,7 @@ func upsertHeaders(ctx context.Context, tx *sql.Tx, whereClause string, whereArg
 			%s as snapshot_key
 		from usage_events
 		where %s
-		and (
-			coalesce(response_metadata_json, '') <> ''
-			or header_quota_recover_at_ms is not null
-			or header_quota_used_percent is not null
-			or coalesce(header_quota_plan_type, '') <> ''
-			or coalesce(header_error_kind, '') <> ''
-			or coalesce(header_error_code, '') <> ''
-			or coalesce(header_trace_id, '') <> ''
-		)
+		and %s
 		and (
 			coalesce(auth_file_snapshot, '') <> ''
 			or coalesce(auth_index, '') <> ''
@@ -377,7 +394,7 @@ func upsertHeaders(ctx context.Context, tx *sql.Tx, whereClause string, whereArg
 		or (
 			excluded.timestamp_ms = %s.timestamp_ms
 			and excluded.event_id > %s.event_id
-		)`, SnapshotKeyExpression(""), whereClause, HeaderTable, HeaderTable, HeaderTable, HeaderTable, HeaderTable)
+		)`, SnapshotKeyExpression(""), whereClause, HeaderQuotaEvidencePredicate(""), HeaderTable, HeaderTable, HeaderTable, HeaderTable, HeaderTable)
 	args := make([]any, 0, len(whereArgs)+1)
 	args = append(args, whereArgs...)
 	args = append(args, nowMS)

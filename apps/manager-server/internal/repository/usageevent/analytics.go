@@ -2824,15 +2824,7 @@ func (r *repository) LatestHeaderSnapshots(ctx context.Context, sinceMS int64, l
 		end as snapshot_key
 	from usage_events
 	where timestamp_ms >= ?
-	and (
-		coalesce(response_metadata_json, '') <> ''
-		or header_quota_recover_at_ms is not null
-		or header_quota_used_percent is not null
-		or coalesce(header_quota_plan_type, '') <> ''
-		or coalesce(header_error_kind, '') <> ''
-		or coalesce(header_error_code, '') <> ''
-		or coalesce(header_trace_id, '') <> ''
-	)
+	and `+usageprojection.HeaderQuotaEvidencePredicate("")+`
 	and (
 		coalesce(auth_file_snapshot, '') <> ''
 		or coalesce(auth_index, '') <> ''

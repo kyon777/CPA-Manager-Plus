@@ -1,6 +1,14 @@
 package usageprojection
 
-import "testing"
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	_ "modernc.org/sqlite"
+)
 
 func TestSearchIndexLikePatternKeepsExactFallbackBoundary(t *testing.T) {
 	tests := []struct {
@@ -26,5 +34,119 @@ func TestSearchIndexLikePatternKeepsExactFallbackBoundary(t *testing.T) {
 				t.Fatalf("SearchIndexLikePattern(%q) = %q, %v; want %q, %v", test.query, pattern, ok, test.wantPattern, test.wantOK)
 			}
 		})
+	}
+}
+
+func TestUpsertHeaderRangeKeepsQuotaSnapshotWhenNewerEventHasOnlyTraceMetadata(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "header-projection.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, statement := range []string{
+		`create table usage_events (
+			id integer primary key,
+			event_hash text not null,
+			timestamp_ms integer not null,
+			provider text,
+			auth_file_snapshot text,
+			auth_index text,
+			account_snapshot text,
+			auth_label_snapshot text,
+			auth_provider_snapshot text,
+			auth_account_id_snapshot text,
+			auth_project_id_snapshot text,
+			source text,
+			source_hash text,
+			response_metadata_json text,
+			header_quota_recover_at_ms integer,
+			header_quota_used_percent real,
+			header_quota_plan_type text,
+			header_error_kind text,
+			header_error_code text,
+			header_trace_id text
+		)`,
+		`create table usage_monitoring_header_latest_v1 (
+			snapshot_key text primary key,
+			event_id integer not null,
+			event_hash text not null,
+			timestamp_ms integer not null,
+			auth_file_snapshot text not null,
+			auth_index text not null,
+			account_snapshot text not null,
+			auth_label_snapshot text not null,
+			auth_provider_snapshot text not null,
+			auth_account_id_snapshot text not null,
+			auth_project_id_snapshot text not null,
+			source text not null,
+			source_hash text not null,
+			response_metadata_json text not null,
+			header_quota_recover_at_ms integer,
+			header_quota_used_percent real,
+			header_quota_plan_type text not null,
+			header_error_kind text not null,
+			header_error_code text not null,
+			header_trace_id text not null,
+			updated_at_ms integer not null
+		)`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("create projection test table: %v", err)
+		}
+	}
+
+	insertEvent := `insert into usage_events (
+		id, event_hash, timestamp_ms, provider, auth_file_snapshot, auth_index,
+		account_snapshot, auth_label_snapshot, auth_provider_snapshot,
+		auth_account_id_snapshot, auth_project_id_snapshot, source, source_hash,
+		response_metadata_json, header_quota_recover_at_ms,
+		header_quota_used_percent, header_quota_plan_type, header_error_kind,
+		header_error_code, header_trace_id
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if _, err := db.ExecContext(ctx, insertEvent,
+		1, "quota-event", 1_000, "codex", "accounts/demo.json", "0",
+		"demo@example.test", "demo", "codex", "", "", "proxy", "source-a",
+		`{"quota":{"credits_balance":42.5,"credits_has_credits":true}}`, nil,
+		100.0, "free", "", "", "",
+	); err != nil {
+		t.Fatalf("insert quota event: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, insertEvent,
+		2, "trace-only-event", 2_000, "codex", "accounts/demo.json", "0",
+		"demo@example.test", "demo", "codex", "", "", "proxy", "source-a",
+		`{"routing":{"provider":"codex"},"trace":{"primary_trace_id":"unsupported-model"}}`, nil,
+		nil, nil, "", "", "unsupported-model",
+	); err != nil {
+		t.Fatalf("insert trace-only event: %v", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	if err := UpsertHeaderRange(ctx, tx, 0, 2, 3_000); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("upsert header range: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit transaction: %v", err)
+	}
+
+	var eventID int64
+	var metadata string
+	var quotaUsed sql.NullFloat64
+	if err := db.QueryRowContext(ctx, `select event_id, response_metadata_json, header_quota_used_percent from usage_monitoring_header_latest_v1`).Scan(&eventID, &metadata, &quotaUsed); err != nil {
+		t.Fatalf("read projected header: %v", err)
+	}
+	if eventID != 1 {
+		t.Fatalf("projected event_id = %d; want the prior quota-bearing event 1", eventID)
+	}
+	if !strings.Contains(metadata, `"credits_balance":42.5`) {
+		t.Fatalf("projected metadata lost credits: %s", metadata)
+	}
+	if !quotaUsed.Valid || quotaUsed.Float64 != 100 {
+		t.Fatalf("projected quota used = %#v; want 100", quotaUsed)
 	}
 }
