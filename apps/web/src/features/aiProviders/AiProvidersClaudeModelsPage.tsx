@@ -8,7 +8,7 @@ import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { modelsApi } from '@/services/api';
-import type { ModelInfo } from '@/utils/models';
+import { modelDisplayLabel, type ModelInfo } from '@/utils/models';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { buildHeaderObject } from '@/utils/headers';
 import type { ClaudeEditOutletContext } from './AiProvidersClaudeEditLayout';
@@ -45,9 +45,9 @@ export function AiProvidersClaudeModelsPage() {
     if (!filter) return models;
     return models.filter((model) => {
       const name = (model.name || '').toLowerCase();
-      const alias = (model.alias || '').toLowerCase();
+      const label = modelDisplayLabel(model).toLowerCase();
       const desc = (model.description || '').toLowerCase();
-      return name.includes(filter) || alias.includes(filter) || desc.includes(filter);
+      return name.includes(filter) || label.includes(filter) || desc.includes(filter);
     });
   }, [models, search]);
   const configuredModelNames = useMemo(
@@ -325,6 +325,7 @@ export function AiProvidersClaudeModelsPage() {
             <div className={styles.modelDiscoveryList}>
               {filteredModels.map((model) => {
                 const checked = selected.has(model.name);
+                const discoveryLabel = modelDisplayLabel(model);
                 const alreadyConfigured = configuredModelNames.has(model.name.trim().toLowerCase());
                 return (
                   <SelectionCheckbox
@@ -342,8 +343,8 @@ export function AiProvidersClaudeModelsPage() {
                         <div className={styles.modelDiscoveryName}>
                           <div className={styles.modelDiscoveryNameText}>
                             {model.name}
-                            {model.alias && (
-                              <span className={styles.modelDiscoveryAlias}>{model.alias}</span>
+                            {discoveryLabel && (
+                              <span className={styles.modelDiscoveryAlias}>{discoveryLabel}</span>
                             )}
                           </div>
                           {alreadyConfigured && (
