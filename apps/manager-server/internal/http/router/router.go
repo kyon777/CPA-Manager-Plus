@@ -63,6 +63,8 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/usage-service/proxy-filter", middleware.WithCORS(appCtx.Config, proxyFilterHandler.Handle))
 	mux.HandleFunc("/setup", middleware.WithCORS(appCtx.Config, setupHandler.Setup))
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
+	mux.HandleFunc("/favicon.ico", panelHandler.Favicon)
+	mux.HandleFunc("/apple-touch-icon.png", panelHandler.AppleTouchIcon)
 	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, managerConfigHandler, proxyHandler))
 
 	return middleware.Recovery(middleware.RequestLogger(mux))
