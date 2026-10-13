@@ -204,8 +204,9 @@ func runServer() {
 		serverApp.AppContext().AuthFileMutationCoordinator,
 		runtimeSettings.AccountActionsAutoDisable,
 	)
-	serverErrorPriorityDemotionWorker := worker.NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(
+	serverErrorPriorityDemotionWorker := worker.NewServerErrorPriorityDemotionWorkerWithMutationCoordinatorAndSetupResolver(
 		serverApp.AppContext().AuthFileMutationCoordinator,
+		serverApp.AppContext().ManagerConfigService,
 	)
 	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryAutomaticSignal)
 	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)

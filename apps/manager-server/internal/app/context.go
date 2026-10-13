@@ -14,6 +14,7 @@ import (
 	accountactionsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/accountaction"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	apikeyaliassvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/apikeyalias"
+	authfilesbatchsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbatch"
 	automationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/automation"
 	bootstrapsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
 	codexinspectionsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/codexinspection"
@@ -76,6 +77,7 @@ type Context struct {
 	AuthFileMutationCoordinator    *cpaauthfiles.MutationCoordinator
 	QuotaCooldownRecoveryService   QuotaCooldownRecoveryService
 	ProxyService                   *proxysvc.Service
+	AuthFileBatchUploadService     *authfilesbatchsvc.Service
 	PanelService                   *panelsvc.Service
 	AutomationRuntimeService       AutomationRuntimeService
 	DatabaseMaintenance            DatabaseMaintenanceStatusProvider
@@ -197,6 +199,11 @@ func fromExisting(
 		AuthFiles:      authFiles,
 		RecoveryLookup: tokenRecoveryService,
 	})
+	proxyService := proxysvc.NewWithMutationCoordinator(
+		managerConfigService,
+		authFileMutationCoordinator,
+		st,
+	)
 	return &Context{
 		UpdateCheckService:   updatechecksvc.New(st, buildinfo.Version, buildinfo.SourceCommit, os.Getenv("CPAMP_UPDATE_CHECK_ENABLED") != "false"),
 		Config:               cfg,
@@ -232,10 +239,10 @@ func fromExisting(
 		),
 		AccountProcessingPolicyService: accountProcessingPolicyService,
 		AuthFileMutationCoordinator:    authFileMutationCoordinator,
-		ProxyService: proxysvc.NewWithMutationCoordinator(
+		ProxyService:                   proxyService,
+		AuthFileBatchUploadService: authfilesbatchsvc.NewWithInventoryInvalidator(
 			managerConfigService,
-			authFileMutationCoordinator,
-			st,
+			proxyService,
 		),
 		PanelService:             panelsvc.New(cfg.PanelPath, embeddedPanel),
 		AutomationRuntimeService: runtimeService,

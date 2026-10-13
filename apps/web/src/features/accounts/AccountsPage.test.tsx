@@ -187,9 +187,24 @@ type AccountHistoryResponseForTest = {
   }>;
 };
 
+type AccountHistoryTargetForTest = {
+  row_key?: string;
+  [key: string]: unknown;
+};
+
 type AccountHistoryRequestForTest = {
-  accounts: unknown[];
+  accounts: AccountHistoryTargetForTest[];
   catch_up?: boolean;
+};
+
+type AccountRecentIndexResponseForTest = {
+  generated_at_ms: number;
+  items: Array<{
+    row_key: string;
+    latest_request?: AccountHistoryResponseForTest['items'][number]['latest_request'];
+    recent_requests?: AccountHistoryResponseForTest['items'][number]['recent_requests'];
+    sync_status: string;
+  }>;
 };
 
 type AccountWindowUsageResponseForTest = {
@@ -512,6 +527,17 @@ const { mocks } = vi.hoisted(() => {
             pending: false,
             processed: 0,
           },
+          items: [],
+        })
+      ),
+      getAccountRecentIndex: vi.fn(
+        async (
+          _base: string,
+          _managementKey: string | undefined,
+          _request: AccountHistoryRequestForTest,
+          _signal?: AbortSignal
+        ): Promise<AccountRecentIndexResponseForTest> => ({
+          generated_at_ms: 1,
           items: [],
         })
       ),
@@ -924,6 +950,7 @@ vi.mock('@/services/api', () => ({
     getAnalytics: mocks.getAnalytics,
     getHeaderSnapshots: mocks.getHeaderSnapshots,
     getAccountHistory: mocks.getAccountHistory,
+    getAccountRecentIndex: mocks.getAccountRecentIndex,
     getAccountWindowUsage: mocks.getAccountWindowUsage,
   },
   usageServiceApi: {
@@ -1424,6 +1451,8 @@ describe('AccountsPage replacement flows', () => {
     });
     mocks.getAccountHistory.mockReset();
     mocks.getAccountHistory.mockResolvedValue(makeAccountHistoryResponse([]));
+    mocks.getAccountRecentIndex.mockReset();
+    mocks.getAccountRecentIndex.mockResolvedValue({ generated_at_ms: 1, items: [] });
     mocks.getAccountWindowUsage.mockReset();
     mocks.getAccountWindowUsage.mockResolvedValue({ generated_at_ms: 1, items: [] });
     mocks.credentialRuntimeItemsByClientKey = new Map();
@@ -3774,7 +3803,7 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
   });
 
-  it('does not restart an in-flight full history load on passive refresh', async () => {
+  it('does not restart an in-flight current-page history load on passive refresh', async () => {
     vi.useFakeTimers();
     mocks.files = Array.from({ length: 401 }, (_, index) =>
       makeCodexFile(
@@ -3789,48 +3818,45 @@ describe('AccountsPage replacement flows', () => {
       requestMonitoringAvailable: true,
       serverCodexInspectionAvailable: false,
     };
-    const firstBatches = [
-      createDeferred<AccountHistoryResponseForTest>(),
-      createDeferred<AccountHistoryResponseForTest>(),
-    ];
+    const firstBatch = createDeferred<AccountHistoryResponseForTest>();
     let requestIndex = 0;
     mocks.getAccountHistory.mockImplementation(() => {
       const currentIndex = requestIndex;
       requestIndex += 1;
-      return currentIndex < firstBatches.length
-        ? firstBatches[currentIndex].promise
+      return currentIndex === 0
+        ? firstBatch.promise
         : Promise.resolve(makeAccountHistoryResponse([]));
     });
 
     await renderAccountsPage();
     await flushPromises();
 
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
     const initialSignals = mocks.getAccountHistory.mock.calls.map((call) => call[3] as AbortSignal);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
 
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
     expect(initialSignals.every((signal) => signal.aborted === false)).toBe(true);
 
     await act(async () => {
-      firstBatches.forEach((batch) => batch.resolve(makeAccountHistoryResponse([])));
+      firstBatch.resolve(makeAccountHistoryResponse([]));
       await Promise.resolve();
       await Promise.resolve();
     });
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(6);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps successful history batches when another batch fails', async () => {
+  it('loads detailed history only for the visible problem account page', async () => {
     mocks.files = Array.from({ length: 201 }, (_, index) =>
       makeCodexFile(
         `credential-${String(index + 1).padStart(3, '0')}.json`,
@@ -3838,9 +3864,8 @@ describe('AccountsPage replacement flows', () => {
         `account-${index + 1}@example.com`
       )
     );
-    const problemFile = mocks.files[200];
+    const problemFile = mocks.files[0];
     const problemRowKey = getAuthFileSelectionKey(problemFile);
-    mocks.location = { pathname: '/accounts', search: '?status=problem' };
     mocks.panelFeatureAvailability = {
       checking: false,
       managerServiceBase: 'http://manager.local:18317',
@@ -3887,7 +3912,7 @@ describe('AccountsPage replacement flows', () => {
     const renderer = await renderAccountsPage();
     await flushPromises();
 
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
     expect(
       renderer.root.findAllByProps({
         'data-account-card': problemRowKey,
@@ -4576,7 +4601,7 @@ describe('AccountsPage replacement flows', () => {
     );
   });
 
-  it('loads request evidence for every account before applying the problem filter', async () => {
+  it('uses the global compact request index before loading problem-filter history details', async () => {
     mocks.files = Array.from({ length: 201 }, (_, index) =>
       makeCodexFile(
         `credential-${String(index + 1).padStart(3, '0')}.json`,
@@ -4593,6 +4618,27 @@ describe('AccountsPage replacement flows', () => {
       requestMonitoringAvailable: true,
       serverCodexInspectionAvailable: false,
     };
+    mocks.getAccountRecentIndex.mockResolvedValue({
+      generated_at_ms: 2_000,
+      items: [
+        {
+          row_key: problemRowKey,
+          latest_request: {
+            timestamp_ms: 2_000,
+            failed: true,
+            fail_status_code: 401,
+          },
+          recent_requests: [
+            {
+              timestamp_ms: 2_000,
+              failed: true,
+              fail_status_code: 401,
+            },
+          ],
+          sync_status: 'ready',
+        },
+      ],
+    });
     mocks.getAccountHistory.mockImplementation(
       async (_base, _managementKey, request: AccountHistoryRequestForTest) => {
         const targets = request.accounts as Array<{ row_key?: string }>;
@@ -4637,9 +4683,12 @@ describe('AccountsPage replacement flows', () => {
     const historyRequests = mocks.getAccountHistory.mock.calls.map(
       (call) => call[2] as AccountHistoryRequestForTest
     );
-    expect(historyRequests).toHaveLength(2);
-    expect(historyRequests.every((request) => request.accounts.length <= 200)).toBe(true);
-    expect(historyRequests.flatMap((request) => request.accounts)).toHaveLength(201);
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
+    expect((mocks.getAccountRecentIndex.mock.calls[0]?.[2] as AccountHistoryRequestForTest).accounts)
+      .toHaveLength(201);
+    expect(historyRequests).toHaveLength(1);
+    expect(historyRequests[0]?.accounts).toHaveLength(1);
+    expect(historyRequests[0]?.accounts[0]?.row_key).toBe(problemRowKey);
     expect(
       renderer.root.findAllByProps({
         'data-account-card': problemRowKey,
@@ -4648,7 +4697,7 @@ describe('AccountsPage replacement flows', () => {
     expect(getAccountListItemTexts(renderer).join('\n')).toContain('accounts.health_reauth');
   });
 
-  it('limits full account-history loading to two concurrent batches', async () => {
+  it('loads detailed history only for the visible page while the compact index remains global', async () => {
     mocks.files = Array.from({ length: 601 }, (_, index) =>
       makeCodexFile(
         `credential-${String(index + 1).padStart(3, '0')}.json`,
@@ -4662,53 +4711,17 @@ describe('AccountsPage replacement flows', () => {
       requestMonitoringAvailable: true,
       serverCodexInspectionAvailable: false,
     };
-    const batchResponses = Array.from({ length: 4 }, () =>
-      createDeferred<AccountHistoryResponseForTest>()
-    );
-    let nextBatchIndex = 0;
-    let activeRequests = 0;
-    let peakActiveRequests = 0;
-    mocks.getAccountHistory.mockImplementation(() => {
-      const batchIndex = nextBatchIndex;
-      nextBatchIndex += 1;
-      activeRequests += 1;
-      peakActiveRequests = Math.max(peakActiveRequests, activeRequests);
-      return batchResponses[batchIndex].promise.finally(() => {
-        activeRequests -= 1;
-      });
-    });
-
     await renderAccountsPage();
     await flushPromises();
 
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
-    expect(peakActiveRequests).toBe(2);
-
-    await act(async () => {
-      batchResponses[0].resolve(makeAccountHistoryResponse([]));
-      batchResponses[1].resolve(makeAccountHistoryResponse([]));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await flushPromises();
-
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(4);
-    expect(peakActiveRequests).toBe(2);
-
-    await act(async () => {
-      batchResponses[2].resolve(makeAccountHistoryResponse([]));
-      batchResponses[3].resolve(makeAccountHistoryResponse([]));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await flushPromises();
-
-    const requests = mocks.getAccountHistory.mock.calls.map(
+    const historyRequests = mocks.getAccountHistory.mock.calls.map(
       (call) => call[2] as AccountHistoryRequestForTest
     );
-    expect(requests.map((request) => request.accounts.length)).toEqual([200, 200, 200, 1]);
-    expect(activeRequests).toBe(0);
-    expect(peakActiveRequests).toBe(2);
+    expect(historyRequests).toHaveLength(1);
+    expect(historyRequests[0]?.accounts).toHaveLength(10);
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
+    expect((mocks.getAccountRecentIndex.mock.calls[0]?.[2] as AccountHistoryRequestForTest).accounts)
+      .toHaveLength(601);
   });
 
   it('offers and applies the unknown plan filter', async () => {

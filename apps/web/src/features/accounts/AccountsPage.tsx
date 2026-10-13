@@ -327,6 +327,7 @@ import {
   type MonitoringAnalyticsRecentFailure,
   type MonitoringAnalyticsSummary,
   type MonitoringAccountHistoryItem,
+  type MonitoringAccountRecentIndexItem,
   type MonitoringAccountWindowUsageItem,
   type QuotaCooldownInfo,
   type TokenRecoveryBatchTargetRequest,
@@ -1535,6 +1536,9 @@ export function AccountsPage() {
   const [accountHistoryByRowKey, setAccountHistoryByRowKey] = useState<
     Map<string, MonitoringAccountHistoryItem>
   >(() => new Map());
+  const [accountRecentIndexByRowKey, setAccountRecentIndexByRowKey] = useState<
+    Map<string, MonitoringAccountRecentIndexItem>
+  >(() => new Map());
   const [accountHistoryLoading, setAccountHistoryLoading] = useState(false);
   const [accountHistoryErrorsByRowKey, setAccountHistoryErrorsByRowKey] = useState<
     Map<string, string>
@@ -1708,10 +1712,12 @@ export function AccountsPage() {
   const quotaCooldownRequestIdRef = useRef(0);
   const accountHistoryAutoAbortRef = useRef<AbortController | null>(null);
   const accountHistoryTargetAbortRef = useRef<AbortController | null>(null);
+  const accountRecentIndexAbortRef = useRef<AbortController | null>(null);
   const accountHistoryRequestVersionsRef = useRef<Map<string, symbol>>(new Map());
   const accountHistoryPendingRequestsRef = useRef<Set<symbol>>(new Set());
   const accountHistoryAutoLoadKeyRef = useRef<string | null>(null);
   const accountHistoryAutoRequestContextKeyRef = useRef<string | null>(null);
+  const accountRecentIndexAutoLoadKeyRef = useRef<string | null>(null);
   const accountWindowUsageReqIdRef = useRef(0);
   const accountWindowUsageAbortRef = useRef<AbortController | null>(null);
   const accountWindowUsageAutoLoadKeyRef = useRef<string | null>(null);
@@ -2273,12 +2279,15 @@ export function AccountsPage() {
     accountHistoryAutoAbortRef.current = null;
     accountHistoryTargetAbortRef.current?.abort();
     accountHistoryTargetAbortRef.current = null;
+    accountRecentIndexAbortRef.current?.abort();
+    accountRecentIndexAbortRef.current = null;
     accountHistoryRefreshRequestIdRef.current += 1;
     accountHistoryRefreshPromiseRef.current = null;
     accountHistoryRequestVersionsRef.current.clear();
     accountHistoryPendingRequestsRef.current.clear();
     accountHistoryAutoLoadKeyRef.current = null;
     accountHistoryAutoRequestContextKeyRef.current = null;
+    accountRecentIndexAutoLoadKeyRef.current = null;
     accountActionCandidatesReqIdRef.current += 1;
     accountActionCandidatesLoadedRef.current = false;
     quotaCooldownsLoadedRef.current = false;
@@ -2302,6 +2311,7 @@ export function AccountsPage() {
     setAccountActionCandidates([]);
     setHeaderSnapshotLoadedKey('');
     setAccountHistoryByRowKey((current) => (current.size === 0 ? current : new Map()));
+    setAccountRecentIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
     setAccountHistoryLoading(false);
     setAccountHistoryErrorsByRowKey((current) => (current.size === 0 ? current : new Map()));
     setHistoryRefreshing(false);
@@ -2336,6 +2346,7 @@ export function AccountsPage() {
     () => () => {
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryTargetAbortRef.current?.abort();
+      accountRecentIndexAbortRef.current?.abort();
       accountWindowUsageAbortRef.current?.abort();
     },
     []
@@ -3801,8 +3812,15 @@ export function AccountsPage() {
         recentRequests: history.recent_requests ?? [],
       });
     });
+    accountRecentIndexByRowKey.forEach((history, selectionKey) => {
+      if (evidenceMap.has(selectionKey)) return;
+      evidenceMap.set(selectionKey, {
+        latestRequest: history.latest_request ?? null,
+        recentRequests: history.recent_requests ?? [],
+      });
+    });
     return evidenceMap;
-  }, [accountHistoryByRowKey]);
+  }, [accountHistoryByRowKey, accountRecentIndexByRowKey]);
   const headerSnapshotLookup = useMemo(
     () => buildUsageHeaderSnapshotLookup(headerSnapshots),
     [headerSnapshots]
@@ -4615,7 +4633,38 @@ export function AccountsPage() {
     () => rows.find((row) => row.selectionKey === selectedRowKey) ?? null,
     [rows, selectedRowKey]
   );
-  const accountHistoryTargets = useMemo(() => buildAccountHistoryTargetEntries(rows), [rows]);
+  // Request recency remains global so sorting by “latest request” keeps its
+  // current semantics. Detailed history/cost data is intentionally scoped to
+  // the visible page; the global request index below is much cheaper.
+  const accountRecentIndexTargets = useMemo(
+    () => buildAccountHistoryTargetEntries(rows),
+    [rows]
+  );
+  const accountHistoryTargets = useMemo(
+    () => buildAccountHistoryTargetEntries(pageRows),
+    [pageRows]
+  );
+  const accountRecentIndexAutoContextKey = useMemo(
+    () =>
+      JSON.stringify({
+        checking: featureAvailability.checking,
+        connectionFingerprint,
+        managerServiceBase: featureAvailability.managerServiceBase,
+        managementKey,
+        managerConnectionFingerprint,
+        requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
+        targets: accountRecentIndexTargets.map((entry) => entry.target),
+      }),
+    [
+      accountRecentIndexTargets,
+      connectionFingerprint,
+      featureAvailability.checking,
+      featureAvailability.managerServiceBase,
+      featureAvailability.requestMonitoringAvailable,
+      managerConnectionFingerprint,
+      managementKey,
+    ]
+  );
   const accountHistoryAutoContextKey = useMemo(
     () =>
       JSON.stringify({
@@ -4637,6 +4686,7 @@ export function AccountsPage() {
       managementKey,
     ]
   );
+  const accountRecentIndexAutoLoadKey = `${accountRecentIndexAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
   const accountHistoryAutoLoadKey = `${accountHistoryAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
   const usageValuesAutoLoadKey = useMemo(
     () =>
@@ -6213,6 +6263,80 @@ export function AccountsPage() {
     usageValuesAutoLoadKeyRef.current = usageValuesAutoLoadKey;
     void loadUsageValues();
   }, [activeView, detailTab, loadUsageValues, selectedRowKey, usageValuesAutoLoadKey]);
+
+  const loadAccountRecentIndex = useCallback(async (): Promise<void> => {
+    const managerServiceBase = featureAvailability.managerServiceBase;
+    accountRecentIndexAbortRef.current?.abort();
+    accountRecentIndexAbortRef.current = null;
+
+    if (
+      featureAvailability.checking ||
+      !featureAvailability.requestMonitoringAvailable ||
+      !managerServiceBase ||
+      !managementKey ||
+      accountRecentIndexTargets.length === 0
+    ) {
+      setAccountRecentIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
+      return;
+    }
+
+    const controller = new AbortController();
+    accountRecentIndexAbortRef.current = controller;
+    try {
+      const batches: AccountHistoryTargetEntry[][] = [];
+      for (let index = 0; index < accountRecentIndexTargets.length; index += 1000) {
+        batches.push(accountRecentIndexTargets.slice(index, index + 1000));
+      }
+      const responses = await mapWithConcurrency(
+        batches,
+        MAX_CONCURRENT_ACCOUNT_HISTORY_REQUESTS,
+        (batch) =>
+          monitoringAnalyticsApi.getAccountRecentIndex(
+            managerServiceBase,
+            managementKey,
+            { accounts: batch.map((entry) => entry.target) },
+            controller.signal
+          )
+      );
+      if (controller.signal.aborted || accountRecentIndexAbortRef.current !== controller) return;
+      const next = new Map<string, MonitoringAccountRecentIndexItem>();
+      responses.forEach((response) => {
+        response.items.forEach((item) => {
+          if (item.row_key) next.set(item.row_key, item);
+        });
+      });
+      setAccountRecentIndexByRowKey(next);
+    } catch {
+      // Keep the previous compact index during a transient SQLite timeout. The
+      // detailed request remains independently refreshable from the drawer.
+    } finally {
+      if (accountRecentIndexAbortRef.current === controller) {
+        accountRecentIndexAbortRef.current = null;
+      }
+    }
+  }, [
+    accountRecentIndexTargets,
+    featureAvailability.checking,
+    featureAvailability.managerServiceBase,
+    featureAvailability.requestMonitoringAvailable,
+    managementKey,
+  ]);
+
+  useEffect(() => {
+    if (activeView !== 'accounts') {
+      accountRecentIndexAutoLoadKeyRef.current = null;
+      accountRecentIndexAbortRef.current?.abort();
+      accountRecentIndexAbortRef.current = null;
+      return;
+    }
+    if (accountRecentIndexAutoLoadKeyRef.current === accountRecentIndexAutoLoadKey) return;
+    accountRecentIndexAutoLoadKeyRef.current = accountRecentIndexAutoLoadKey;
+    void loadAccountRecentIndex();
+  }, [
+    accountRecentIndexAutoLoadKey,
+    activeView,
+    loadAccountRecentIndex,
+  ]);
 
   const loadAccountHistory = useCallback(
     async (

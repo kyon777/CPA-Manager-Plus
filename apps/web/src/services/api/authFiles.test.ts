@@ -699,21 +699,18 @@ describe('authFilesApi save auth file upload contracts', () => {
     );
   });
 
-  it('uploadFiles sends multi-file selections as separate requests', async () => {
+  it('uploadFiles submits a multi-file selection as one Manager batch job', async () => {
     // Arrange
-    mocks.postForm
-      .mockResolvedValueOnce({
-        status: 'ok',
-        uploaded: 1,
-        files: ['first-auth.json'],
-        failed: [],
-      })
-      .mockResolvedValueOnce({
-        status: 'ok',
-        uploaded: 1,
-        files: ['second-auth.json'],
-        failed: [],
-      });
+    mocks.postForm.mockResolvedValue({
+      id: 'job-123',
+      state: 'completed',
+      total: 2,
+      completed: 2,
+      uploaded: 2,
+      failed: 0,
+      files: [{ name: 'first-auth.json' }, { name: 'second-auth.json' }],
+      finished: true,
+    });
 
     const firstFile = new File(['{"type":"codex"}'], 'first-auth.json', {
       type: 'application/json',
@@ -732,26 +729,30 @@ describe('authFilesApi save auth file upload contracts', () => {
       files: ['first-auth.json', 'second-auth.json'],
       failed: [],
     });
-    expect(mocks.postForm).toHaveBeenCalledTimes(2);
+    expect(mocks.postForm).toHaveBeenCalledTimes(1);
+    expect(mocks.postForm).toHaveBeenCalledWith('/auth-files/batch-upload', expect.any(FormData));
 
-    const firstFormData = mocks.postForm.mock.calls[0]?.[1] as FormData;
-    const secondFormData = mocks.postForm.mock.calls[1]?.[1] as FormData;
-    expect(Array.from(firstFormData.getAll('file'))).toHaveLength(1);
-    expect(Array.from(secondFormData.getAll('file'))).toHaveLength(1);
-    expect((firstFormData.get('file') as File).name).toBe('first-auth.json');
-    expect((secondFormData.get('file') as File).name).toBe('second-auth.json');
+    const formData = mocks.postForm.mock.calls[0]?.[1] as FormData;
+    expect(Array.from(formData.getAll('files'))).toHaveLength(2);
+    expect((formData.getAll('files')[0] as File).name).toBe('first-auth.json');
+    expect((formData.getAll('files')[1] as File).name).toBe('second-auth.json');
   });
 
-  it('uploadFiles aggregates per-file upload failures after successful uploads', async () => {
+  it('uploadFiles reports per-file failures from a completed Manager batch job', async () => {
     // Arrange
-    mocks.postForm
-      .mockResolvedValueOnce({
-        status: 'ok',
-        uploaded: 1,
-        files: ['first-auth.json'],
-        failed: [],
-      })
-      .mockRejectedValueOnce(new Error('request body too large'));
+    mocks.postForm.mockResolvedValue({
+      id: 'job-partial',
+      state: 'partial',
+      total: 2,
+      completed: 2,
+      uploaded: 1,
+      failed: 1,
+      files: [
+        { name: 'first-auth.json' },
+        { name: 'second-auth.json', error: 'upstream rejected second file' },
+      ],
+      finished: true,
+    });
 
     const firstFile = new File(['{"type":"codex"}'], 'first-auth.json', {
       type: 'application/json',
@@ -768,9 +769,9 @@ describe('authFilesApi save auth file upload contracts', () => {
       status: 'partial',
       uploaded: 1,
       files: ['first-auth.json'],
-      failed: [{ name: 'second-auth.json', error: 'request body too large' }],
+      failed: [{ name: 'second-auth.json', error: 'upstream rejected second file' }],
     });
-    expect(mocks.postForm).toHaveBeenCalledTimes(2);
+    expect(mocks.postForm).toHaveBeenCalledTimes(1);
   });
 
   it('saveJsonObject throws Upload failed when backend reports zero uploaded files without explicit failures', async () => {

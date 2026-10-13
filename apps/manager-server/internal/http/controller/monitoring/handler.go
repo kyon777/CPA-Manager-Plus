@@ -31,6 +31,10 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleAccountHistory(w, r)
 		return
 	}
+	if path == "/v0/management/monitoring/account-recent-index" {
+		h.handleAccountRecentIndex(w, r)
+		return
+	}
 	if path == "/v0/management/monitoring/account-window-usage" {
 		h.handleAccountWindowUsage(w, r)
 		return
@@ -79,6 +83,30 @@ func (h *Handler) handleAccountHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.App.MonitoringService.AccountHistory(r.Context(), req)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, err)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleAccountRecentIndex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.MethodNotAllowed(w)
+		return
+	}
+	var req monitoringsvc.AccountRecentIndexRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateAccountRecentIndexRequest(req); err != nil {
+		response.Error(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := h.App.MonitoringService.AccountRecentIndex(r.Context(), req)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, err)
 		return
@@ -153,6 +181,38 @@ func validateAccountHistoryRequest(req monitoringsvc.AccountHistoryRequest) erro
 	}
 	if len(req.Accounts) > 200 {
 		return errors.New("accounts must be less than or equal to 200")
+	}
+	rowKeys := make(map[string]struct{}, len(req.Accounts))
+	for _, account := range req.Accounts {
+		if strings.TrimSpace(account.RowKey) == "" {
+			return errors.New("row_key is required")
+		}
+		if _, exists := rowKeys[account.RowKey]; exists {
+			return errors.New("row_key must be unique")
+		}
+		rowKeys[account.RowKey] = struct{}{}
+		if strings.TrimSpace(account.AccountKey) == "" &&
+			strings.TrimSpace(account.AccountSnapshot) == "" &&
+			strings.TrimSpace(account.AuthLabelSnapshot) == "" &&
+			strings.TrimSpace(account.AuthFileSnapshot) == "" &&
+			strings.TrimSpace(account.AuthProjectIDSnapshot) == "" &&
+			strings.TrimSpace(account.AuthIndex) == "" &&
+			strings.TrimSpace(account.Source) == "" {
+			return errors.New("at least one account target field is required")
+		}
+		if !monitoringsvc.AccountHistoryTargetHasRequiredProvider(account) {
+			return errors.New("auth_provider_snapshot is required for file account targets")
+		}
+	}
+	return nil
+}
+
+func validateAccountRecentIndexRequest(req monitoringsvc.AccountRecentIndexRequest) error {
+	if len(req.Accounts) == 0 {
+		return errors.New("accounts are required")
+	}
+	if len(req.Accounts) > 1000 {
+		return errors.New("accounts must be less than or equal to 1000")
 	}
 	rowKeys := make(map[string]struct{}, len(req.Accounts))
 	for _, account := range req.Accounts {

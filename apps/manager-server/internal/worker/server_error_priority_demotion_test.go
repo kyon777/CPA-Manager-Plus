@@ -5,11 +5,165 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
+
+type serverErrorPriorityTestSetupResolver struct {
+	setup store.Setup
+}
+
+func (r serverErrorPriorityTestSetupResolver) ResolveSetup(context.Context) (store.Setup, bool, error) {
+	return r.setup, true, nil
+}
+
+func TestServerErrorPriorityDemotionWorkerUsesResolvedInternalSetup(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v0/management/auth-files":
+			if r.URL.Query().Get("name") == "codex-a.json" {
+				_ = json.NewEncoder(w).Encode([]map[string]any{{
+					"id": "runtime-a", "name": "codex-a.json", "auth_index": "auth-a", "provider": "codex", "email": "a@example.com", "priority": 101,
+				}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "runtime-a", "name": "codex-a.json", "auth_index": "auth-a", "provider": "codex", "email": "a@example.com", "priority": 101},
+				{"id": "runtime-b", "name": "codex-b.json", "auth_index": "auth-b", "provider": "codex", "email": "b@example.com", "priority": 100},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/v0/management/auth-files/fields":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	worker := NewServerErrorPriorityDemotionWorkerWithMutationCoordinatorAndSetupResolver(
+		cpaauthfiles.NewMutationCoordinator(),
+		serverErrorPriorityTestSetupResolver{setup: store.Setup{
+			CPAUpstreamURL: server.URL,
+			ManagementKey:  "internal-management-key",
+		}},
+	)
+	worker.client = server.Client()
+	worker.handleCandidate(context.Background(), serverErrorPriorityDemotionCandidate{
+		BaseURL:         "https://public.example.invalid",
+		ManagementKey:   "stale-public-key",
+		FileName:        "codex-a.json",
+		AuthIndex:       "auth-a",
+		Provider:        "codex",
+		AccountSnapshot: "a@example.com",
+		EventHash:       "evt-resolved-setup",
+		StatusCode:      http.StatusBadGateway,
+	})
+
+	if len(requests) != 3 {
+		t.Fatalf("internal resolver request count = %d, want 3; requests=%#v", len(requests), requests)
+	}
+	if requests[2] != "PATCH /v0/management/auth-files/fields" {
+		t.Fatalf("patch request = %q, want internal CPA endpoint", requests[2])
+	}
+}
+
+func TestServerErrorPriorityDemotionWorkerCachesPeerInventoryWithinTTL(t *testing.T) {
+	var fullInventoryCalls atomic.Int32
+	patchCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v0/management/auth-files" {
+			if r.URL.Query().Get("name") == "" {
+				fullInventoryCalls.Add(1)
+				_ = json.NewEncoder(w).Encode([]map[string]any{
+					{"id": "runtime-a", "name": "codex-a.json", "auth_index": "auth-a", "provider": "codex", "email": "a@example.com", "priority": 150},
+					{"id": "runtime-b", "name": "codex-b.json", "auth_index": "auth-b", "provider": "codex", "email": "b@example.com", "priority": 100},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id": "runtime-a", "name": "codex-a.json", "auth_index": "auth-a", "provider": "codex", "email": "a@example.com", "priority": 150,
+			}})
+			return
+		}
+		if r.Method == http.MethodPatch && r.URL.Path == "/v0/management/auth-files/fields" {
+			patchCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	worker := NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(
+		cpaauthfiles.NewMutationCoordinator(),
+	)
+	worker.client = server.Client()
+	candidate := serverErrorPriorityDemotionCandidate{
+		BaseURL:         server.URL,
+		ManagementKey:   "management-key",
+		FileName:        "codex-a.json",
+		AuthIndex:       "auth-a",
+		Provider:        "codex",
+		AccountSnapshot: "a@example.com",
+		EventHash:       "evt-cache-1",
+		StatusCode:      http.StatusBadGateway,
+	}
+
+	worker.handleCandidate(context.Background(), candidate)
+	candidate.EventHash = "evt-cache-2"
+	worker.handleCandidate(context.Background(), candidate)
+
+	if got := fullInventoryCalls.Load(); got != 1 {
+		t.Fatalf("full auth-files inventory calls = %d, want 1 within cache TTL", got)
+	}
+	if patchCalls != 2 {
+		t.Fatalf("priority patch calls = %d, want 2", patchCalls)
+	}
+}
+
+func TestServerErrorPriorityDemotionWorkerCoolsDownFailedPeerInventoryReads(t *testing.T) {
+	var fullInventoryCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v0/management/auth-files" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("name") == "codex-a.json" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id": "runtime-a", "name": "codex-a.json", "auth_index": "auth-a", "provider": "codex", "email": "a@example.com", "priority": 150,
+			}})
+			return
+		}
+		fullInventoryCalls.Add(1)
+		http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+	}))
+	t.Cleanup(server.Close)
+
+	worker := NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(cpaauthfiles.NewMutationCoordinator())
+	worker.client = server.Client()
+	candidate := serverErrorPriorityDemotionCandidate{
+		BaseURL:         server.URL,
+		ManagementKey:   "management-key",
+		FileName:        "codex-a.json",
+		AuthIndex:       "auth-a",
+		Provider:        "codex",
+		AccountSnapshot: "a@example.com",
+		EventHash:       "evt-cooldown-1",
+		StatusCode:      http.StatusBadGateway,
+	}
+	worker.handleCandidate(context.Background(), candidate)
+	candidate.EventHash = "evt-cooldown-2"
+	worker.handleCandidate(context.Background(), candidate)
+
+	if got := fullInventoryCalls.Load(); got != 1 {
+		t.Fatalf("failed full auth-file inventory calls = %d, want 1 during cooldown", got)
+	}
+}
 
 func TestServerErrorPriorityDemotionWorkerDecreasesCurrentPriorityForHTTP502(t *testing.T) {
 	patchCalls := 0

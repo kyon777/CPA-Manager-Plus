@@ -15,7 +15,9 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -28,6 +30,28 @@ type Service struct {
 	managerConfigService *managerconfig.Service
 	store                *store.Store
 	authFileMutations    *cpaauthfiles.MutationCoordinator
+	authFileInventory    *authFileInventoryCache
+}
+
+const (
+	authFileInventoryFreshTTL = 20 * time.Second
+	authFileInventoryStaleTTL = 10 * time.Minute
+	authFileInventoryMaxBytes = 64 * 1024 * 1024
+)
+
+type authFileInventoryCache struct {
+	mu      sync.Mutex
+	entries map[string]authFileInventoryCacheEntry
+	client  *http.Client
+	now     func() time.Time
+}
+
+type authFileInventoryCacheEntry struct {
+	body        []byte
+	contentType string
+	fetchedAt   time.Time
+	refreshing  bool
+	refreshDone chan struct{}
 }
 
 type authFileOwnershipMutation struct {
@@ -130,6 +154,11 @@ func NewWithMutationCoordinator(
 	service := &Service{
 		managerConfigService: managerConfigService,
 		authFileMutations:    coordinator,
+		authFileInventory: &authFileInventoryCache{
+			entries: make(map[string]authFileInventoryCacheEntry),
+			client:  &http.Client{Timeout: cpaauthfiles.DefaultTimeout},
+			now:     time.Now,
+		},
 	}
 	if len(stores) > 0 {
 		service.store = stores[0]
@@ -138,6 +167,10 @@ func NewWithMutationCoordinator(
 }
 
 func (s *Service) ProxyManagement(w http.ResponseWriter, r *http.Request, writeError func(http.ResponseWriter, int, error)) {
+	if isAuthFileInventoryRequest(r) {
+		s.proxyAuthFileInventory(w, r, writeError)
+		return
+	}
 	s.proxyWithSavedManagementKey(w, r, writeError)
 }
 
@@ -284,9 +317,222 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 			// recovery could overwrite the user's manual auth-file mutation.
 			return err
 		}
+		if isAuthFileMutationRequest(r) {
+			s.invalidateAuthFileInventory(setup)
+		}
 		return s.restoreInspectionOwnershipDetached(r.Context(), ownershipItemsNotMutated(revokedOwnership, mutation))
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func isAuthFileInventoryRequest(r *http.Request) bool {
+	if r == nil || r.Method != http.MethodGet {
+		return false
+	}
+	return strings.TrimRight(r.URL.Path, "/") == "/v0/management/auth-files" &&
+		strings.TrimSpace(r.URL.RawQuery) == ""
+}
+
+func isAuthFileMutationRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodDelete {
+		return false
+	}
+	path := strings.TrimRight(r.URL.Path, "/")
+	return path == "/v0/management/auth-files" ||
+		path == "/v0/management/auth-files/status" ||
+		path == "/v0/management/auth-files/fields"
+}
+
+func (s *Service) proxyAuthFileInventory(w http.ResponseWriter, r *http.Request, writeError func(http.ResponseWriter, int, error)) {
+	setup, ok, err := s.resolveSetup(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusPreconditionRequired, errors.New("usage service is not configured"))
+		return
+	}
+	if s == nil || s.authFileInventory == nil {
+		s.proxyWithSavedManagementKey(w, r, writeError)
+		return
+	}
+
+	cache := s.authFileInventory
+	cacheKey := authFileInventoryCacheKey(setup)
+	now := cache.currentTime()
+	cache.mu.Lock()
+	entry, found := cache.entries[cacheKey]
+	age := now.Sub(entry.fetchedAt)
+	if found && len(entry.body) > 0 && age < authFileInventoryFreshTTL {
+		cache.mu.Unlock()
+		writeAuthFileInventoryCacheResponse(w, entry, "fresh", age)
+		return
+	}
+	if found && len(entry.body) > 0 && age < authFileInventoryStaleTTL {
+		if !entry.refreshing {
+			entry.refreshing = true
+			entry.refreshDone = make(chan struct{})
+			cache.entries[cacheKey] = entry
+			go s.refreshAuthFileInventory(cacheKey, setup, entry.refreshDone)
+		}
+		cache.mu.Unlock()
+		writeAuthFileInventoryCacheResponse(w, entry, "stale", age)
+		return
+	}
+	if found && entry.refreshing && entry.refreshDone != nil {
+		refreshDone := entry.refreshDone
+		cache.mu.Unlock()
+		select {
+		case <-refreshDone:
+			s.proxyAuthFileInventory(w, r, writeError)
+		case <-r.Context().Done():
+			writeError(w, http.StatusGatewayTimeout, r.Context().Err())
+		}
+		return
+	}
+	entry = authFileInventoryCacheEntry{
+		refreshing:  true,
+		refreshDone: make(chan struct{}),
+	}
+	cache.entries[cacheKey] = entry
+	cache.mu.Unlock()
+
+	fetchedEntry, err := s.fetchAuthFileInventory(r.Context(), setup)
+	if err != nil {
+		cache.mu.Lock()
+		current, exists := cache.entries[cacheKey]
+		if exists && current.refreshDone == entry.refreshDone {
+			delete(cache.entries, cacheKey)
+			close(current.refreshDone)
+		}
+		cache.mu.Unlock()
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	cache.mu.Lock()
+	current, exists := cache.entries[cacheKey]
+	if exists && current.refreshDone == entry.refreshDone {
+		fetchedEntry.refreshing = false
+		cache.entries[cacheKey] = fetchedEntry
+		close(current.refreshDone)
+	}
+	cache.mu.Unlock()
+	writeAuthFileInventoryCacheResponse(w, fetchedEntry, "miss", 0)
+}
+
+func (s *Service) refreshAuthFileInventory(cacheKey string, setup store.Setup, refreshDone chan struct{}) {
+	if s == nil || s.authFileInventory == nil {
+		return
+	}
+	entry, err := s.fetchAuthFileInventory(context.Background(), setup)
+	cache := s.authFileInventory
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	current, found := cache.entries[cacheKey]
+	if err != nil {
+		if found {
+			current.refreshing = false
+			if current.refreshDone == refreshDone {
+				current.refreshDone = nil
+				close(refreshDone)
+			}
+			cache.entries[cacheKey] = current
+		}
+		return
+	}
+	entry.refreshing = false
+	if found && current.refreshDone == refreshDone {
+		close(refreshDone)
+	}
+	cache.entries[cacheKey] = entry
+}
+
+func (s *Service) fetchAuthFileInventory(ctx context.Context, setup store.Setup) (authFileInventoryCacheEntry, error) {
+	if s == nil || s.authFileInventory == nil {
+		return authFileInventoryCacheEntry{}, errors.New("auth-file inventory cache is unavailable")
+	}
+	target, err := url.Parse(setup.CPAUpstreamURL)
+	if err != nil {
+		return authFileInventoryCacheEntry{}, err
+	}
+	endpoint := target.ResolveReference(&url.URL{Path: "/v0/management/auth-files"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return authFileInventoryCacheEntry{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+setup.ManagementKey)
+	response, err := s.authFileInventory.client.Do(req)
+	if err != nil {
+		return authFileInventoryCacheEntry{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return authFileInventoryCacheEntry{}, fmt.Errorf("GET /v0/management/auth-files: HTTP %d %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, authFileInventoryMaxBytes+1))
+	if err != nil {
+		return authFileInventoryCacheEntry{}, err
+	}
+	if int64(len(body)) > authFileInventoryMaxBytes {
+		return authFileInventoryCacheEntry{}, fmt.Errorf("GET /v0/management/auth-files: response exceeds %d bytes", authFileInventoryMaxBytes)
+	}
+	return authFileInventoryCacheEntry{
+		body:        append([]byte(nil), body...),
+		contentType: response.Header.Get("Content-Type"),
+		fetchedAt:   s.authFileInventory.currentTime(),
+	}, nil
+}
+
+func (s *Service) invalidateAuthFileInventory(setup store.Setup) {
+	if s == nil || s.authFileInventory == nil {
+		return
+	}
+	s.authFileInventory.mu.Lock()
+	delete(s.authFileInventory.entries, authFileInventoryCacheKey(setup))
+	s.authFileInventory.mu.Unlock()
+}
+
+// InvalidateAuthFileInventory lets internal mutators such as the async batch
+// uploader clear the same setup-scoped inventory cache without exposing a
+// cache control endpoint to browsers.
+func (s *Service) InvalidateAuthFileInventory(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	setup, ok, err := s.resolveSetup(ctx)
+	if err != nil || !ok {
+		return
+	}
+	s.invalidateAuthFileInventory(setup)
+}
+
+func authFileInventoryCacheKey(setup store.Setup) string {
+	sum := sha256.Sum256([]byte(strings.TrimRight(strings.TrimSpace(setup.CPAUpstreamURL), "/") + "\x00" + setup.ManagementKey))
+	return hex.EncodeToString(sum[:])
+}
+
+func (c *authFileInventoryCache) currentTime() time.Time {
+	if c != nil && c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func writeAuthFileInventoryCacheResponse(w http.ResponseWriter, entry authFileInventoryCacheEntry, state string, age time.Duration) {
+	if contentType := strings.TrimSpace(entry.contentType); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.Header().Set("X-CPAM-Inventory-Cache", state)
+	w.Header().Set("X-CPAM-Inventory-Age-MS", strconv.FormatInt(age.Milliseconds(), 10))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(entry.body)
 }
 
 func (s *Service) acquireAuthFileMutation(

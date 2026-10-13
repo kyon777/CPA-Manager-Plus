@@ -2,17 +2,21 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialpolicy"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -20,6 +24,8 @@ import (
 const (
 	serverErrorPriorityDemotionQueueSize     = 256
 	serverErrorPriorityDemotionActionTimeout = 30 * time.Second
+	serverErrorPriorityInventoryCacheTTL     = 20 * time.Second
+	serverErrorPriorityFailureCooldown       = 45 * time.Second
 )
 
 // ServerErrorPriorityDemotionWorker rebalances a credential's priority for
@@ -32,7 +38,27 @@ const (
 type ServerErrorPriorityDemotionWorker struct {
 	client            *http.Client
 	authFileMutations *cpaauthfiles.MutationCoordinator
+	setupResolver     serverErrorPrioritySetupResolver
 	jobs              chan serverErrorPriorityDemotionCandidate
+
+	inventoryMu    sync.Mutex
+	inventoryCache map[string]serverErrorPriorityInventorySnapshot
+	now            func() time.Time
+}
+
+// serverErrorPrioritySetupResolver provides the same already-normalized CPA
+// setup that Manager Server uses for its proxy paths. Keeping this dependency
+// narrow allows the worker to retain its legacy runtime-config fallback while
+// avoiding a public reverse-proxy hop when a local Manager setup is available.
+type serverErrorPrioritySetupResolver interface {
+	ResolveSetup(context.Context) (store.Setup, bool, error)
+}
+
+type serverErrorPriorityInventorySnapshot struct {
+	files       []cpaauthfiles.File
+	fetchedAt   time.Time
+	failureAt   time.Time
+	failureText string
 }
 
 type serverErrorPriorityDemotionCandidate struct {
@@ -54,13 +80,23 @@ func NewServerErrorPriorityDemotionWorker() *ServerErrorPriorityDemotionWorker {
 func NewServerErrorPriorityDemotionWorkerWithMutationCoordinator(
 	coordinator *cpaauthfiles.MutationCoordinator,
 ) *ServerErrorPriorityDemotionWorker {
+	return NewServerErrorPriorityDemotionWorkerWithMutationCoordinatorAndSetupResolver(coordinator, nil)
+}
+
+func NewServerErrorPriorityDemotionWorkerWithMutationCoordinatorAndSetupResolver(
+	coordinator *cpaauthfiles.MutationCoordinator,
+	resolver serverErrorPrioritySetupResolver,
+) *ServerErrorPriorityDemotionWorker {
 	if coordinator == nil {
 		coordinator = cpaauthfiles.NewMutationCoordinator()
 	}
 	return &ServerErrorPriorityDemotionWorker{
 		client:            &http.Client{Timeout: serverErrorPriorityDemotionActionTimeout},
 		authFileMutations: coordinator,
+		setupResolver:     resolver,
 		jobs:              make(chan serverErrorPriorityDemotionCandidate, serverErrorPriorityDemotionQueueSize),
+		inventoryCache:    make(map[string]serverErrorPriorityInventorySnapshot),
+		now:               time.Now,
 	}
 }
 
@@ -81,7 +117,7 @@ func (w *ServerErrorPriorityDemotionWorker) HandleUsageEvents(
 	}
 	baseURL := strings.TrimSpace(cfg.CPAUpstreamURL)
 	managementKey := strings.TrimSpace(cfg.ManagementKey)
-	if baseURL == "" || managementKey == "" {
+	if (baseURL == "" || managementKey == "") && w.setupResolver == nil {
 		return
 	}
 	for _, event := range events {
@@ -114,9 +150,14 @@ func (w *ServerErrorPriorityDemotionWorker) handleCandidate(
 	ctx context.Context,
 	candidate serverErrorPriorityDemotionCandidate,
 ) {
-	if w == nil || candidate.FileName == "" || candidate.BaseURL == "" || candidate.ManagementKey == "" {
+	if w == nil || candidate.FileName == "" {
 		return
 	}
+	resolvedCandidate, ok := w.resolveCandidateSetup(ctx, candidate)
+	if !ok {
+		return
+	}
+	candidate = resolvedCandidate
 	identity, err := candidate.identity()
 	if err != nil {
 		log.Printf("[server-error-priority] skip auth file %q event=%q: %v", candidate.FileName, candidate.EventHash, err)
@@ -152,7 +193,7 @@ func (w *ServerErrorPriorityDemotionWorker) handleCandidate(
 		log.Printf("[server-error-priority] priority already zero for auth file %q event=%q", candidate.FileName, candidate.EventHash)
 		return
 	}
-	allFiles, err := client.Fetch(ctx, candidate.BaseURL, candidate.ManagementKey)
+	allFiles, err := w.peerInventory(ctx, client, candidate)
 	if err != nil {
 		log.Printf("[server-error-priority] failed to read peer priorities for auth file %q event=%q: %v", candidate.FileName, candidate.EventHash, err)
 		return
@@ -167,7 +208,152 @@ func (w *ServerErrorPriorityDemotionWorker) handleCandidate(
 		log.Printf("[server-error-priority] failed to lower priority for auth file %q event=%q: %v", candidate.FileName, candidate.EventHash, err)
 		return
 	}
+	w.updateCachedPriority(candidate, target.File, nextPriority)
 	log.Printf("[server-error-priority] lowered auth file %q priority %d -> %d after HTTP %d event=%q peer_max=%d has_peer=%t", candidate.FileName, currentPriority, nextPriority, candidate.StatusCode, candidate.EventHash, peerMax, hasPeer)
+}
+
+// peerInventory caches the complete CPA auth-file snapshot briefly. A single
+// worker processes candidates sequentially, so this eliminates the repeated
+// expensive full inventory scan generated by bursts of 502/503/qualified-429
+// events without weakening the per-credential identity verification above.
+// Failed reads use a short cooldown rather than stacking 30-second upstream
+// timeouts behind every queued event.
+func (w *ServerErrorPriorityDemotionWorker) peerInventory(
+	ctx context.Context,
+	client *cpaauthfiles.Client,
+	candidate serverErrorPriorityDemotionCandidate,
+) ([]cpaauthfiles.File, error) {
+	if w == nil {
+		return client.Fetch(ctx, candidate.BaseURL, candidate.ManagementKey)
+	}
+	cacheKey := serverErrorPriorityInventoryKey(candidate)
+	now := w.currentTime()
+
+	w.inventoryMu.Lock()
+	snapshot, ok := w.inventoryCache[cacheKey]
+	if ok && len(snapshot.files) > 0 && now.Sub(snapshot.fetchedAt) < serverErrorPriorityInventoryCacheTTL {
+		files := cloneServerErrorPriorityFiles(snapshot.files)
+		w.inventoryMu.Unlock()
+		return files, nil
+	}
+	if ok && !snapshot.failureAt.IsZero() && now.Sub(snapshot.failureAt) < serverErrorPriorityFailureCooldown {
+		err := fmt.Errorf("peer inventory retry is cooling down after: %s", snapshot.failureText)
+		w.inventoryMu.Unlock()
+		return nil, err
+	}
+	w.inventoryMu.Unlock()
+
+	files, err := client.Fetch(ctx, candidate.BaseURL, candidate.ManagementKey)
+	if err != nil {
+		w.inventoryMu.Lock()
+		w.inventoryCache[cacheKey] = serverErrorPriorityInventorySnapshot{
+			failureAt:   now,
+			failureText: serverErrorPrioritySafeFailureText(err),
+		}
+		w.inventoryMu.Unlock()
+		return nil, err
+	}
+
+	w.inventoryMu.Lock()
+	w.inventoryCache[cacheKey] = serverErrorPriorityInventorySnapshot{
+		files:     cloneServerErrorPriorityFiles(files),
+		fetchedAt: now,
+	}
+	w.inventoryMu.Unlock()
+	return files, nil
+}
+
+func (w *ServerErrorPriorityDemotionWorker) updateCachedPriority(
+	candidate serverErrorPriorityDemotionCandidate,
+	target cpaauthfiles.File,
+	priority int,
+) {
+	if w == nil {
+		return
+	}
+	cacheKey := serverErrorPriorityInventoryKey(candidate)
+	w.inventoryMu.Lock()
+	defer w.inventoryMu.Unlock()
+	snapshot, ok := w.inventoryCache[cacheKey]
+	if !ok {
+		return
+	}
+	for index := range snapshot.files {
+		if !sameServerErrorPriorityCredential(snapshot.files[index], target) {
+			continue
+		}
+		if snapshot.files[index].Raw == nil {
+			snapshot.files[index].Raw = map[string]any{}
+		}
+		snapshot.files[index].Raw["priority"] = priority
+		break
+	}
+	w.inventoryCache[cacheKey] = snapshot
+}
+
+func (w *ServerErrorPriorityDemotionWorker) currentTime() time.Time {
+	if w != nil && w.now != nil {
+		return w.now()
+	}
+	return time.Now()
+}
+
+func (w *ServerErrorPriorityDemotionWorker) resolveCandidateSetup(
+	ctx context.Context,
+	candidate serverErrorPriorityDemotionCandidate,
+) (serverErrorPriorityDemotionCandidate, bool) {
+	if w == nil || w.setupResolver == nil {
+		return candidate, strings.TrimSpace(candidate.BaseURL) != "" && strings.TrimSpace(candidate.ManagementKey) != ""
+	}
+	setup, configured, err := w.setupResolver.ResolveSetup(ctx)
+	if err != nil {
+		log.Printf("[server-error-priority] skip auth file %q event=%q: resolve CPA setup failed: %v", candidate.FileName, candidate.EventHash, err)
+		return candidate, false
+	}
+	if !configured || strings.TrimSpace(setup.CPAUpstreamURL) == "" || strings.TrimSpace(setup.ManagementKey) == "" {
+		log.Printf("[server-error-priority] skip auth file %q event=%q: CPA setup is unavailable", candidate.FileName, candidate.EventHash)
+		return candidate, false
+	}
+	candidate.BaseURL = strings.TrimSpace(setup.CPAUpstreamURL)
+	candidate.ManagementKey = strings.TrimSpace(setup.ManagementKey)
+	return candidate, true
+}
+
+func serverErrorPriorityInventoryKey(candidate serverErrorPriorityDemotionCandidate) string {
+	// The key is never logged or persisted. A digest additionally ensures that
+	// a memory dump of map keys cannot directly reveal the management key.
+	material := strings.TrimRight(strings.TrimSpace(candidate.BaseURL), "/") + "\x00" + candidate.ManagementKey
+	digest := sha256.Sum256([]byte(material))
+	return hex.EncodeToString(digest[:])
+}
+
+func cloneServerErrorPriorityFiles(files []cpaauthfiles.File) []cpaauthfiles.File {
+	cloned := make([]cpaauthfiles.File, len(files))
+	for index, file := range files {
+		cloned[index] = file
+		if file.Raw == nil {
+			continue
+		}
+		cloned[index].Raw = make(map[string]any, len(file.Raw))
+		for key, value := range file.Raw {
+			cloned[index].Raw[key] = value
+		}
+	}
+	return cloned
+}
+
+func serverErrorPrioritySafeFailureText(err error) string {
+	if err == nil {
+		return "upstream request failed"
+	}
+	text := strings.TrimSpace(err.Error())
+	if len(text) > 240 {
+		return text[:240]
+	}
+	if text == "" {
+		return "upstream request failed"
+	}
+	return text
 }
 
 func serverErrorPriorityAfterPeerRebalance(currentPriority int, peerMax int, hasPeer bool) int {
@@ -240,9 +426,6 @@ func serverErrorPriorityDemotionCandidateFromEvent(
 		AccountSnapshot: stableEventAccountSnapshot(fileName, event.AccountSnapshot),
 		EventHash:       strings.TrimSpace(event.EventHash),
 		StatusCode:      event.FailStatusCode,
-	}
-	if candidate.BaseURL == "" || candidate.ManagementKey == "" {
-		return serverErrorPriorityDemotionCandidate{}, false
 	}
 	if candidate.Provider == "codex" && candidate.AuthIndex == "" {
 		return serverErrorPriorityDemotionCandidate{}, false

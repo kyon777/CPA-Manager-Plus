@@ -7,6 +7,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
 	accountactioncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/accountaction"
 	apikeyaliascontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/apikeyalias"
+	authfilesbatchcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesbatch"
 	automationcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/automation"
 	codexinspectioncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/codexinspection"
 	credentialruntimecontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/credentialruntime"
@@ -46,6 +47,10 @@ func New(appCtx *app.Context) http.Handler {
 	dashboardHandler := &dashboardcontroller.Handler{App: appCtx}
 	monitoringHandler := &monitoringcontroller.Handler{App: appCtx}
 	quotaSnapshotHandler := &quotasnapshotcontroller.Handler{App: appCtx}
+	authFileBatchUploadHandler := &authfilesbatchcontroller.Handler{
+		App:     appCtx,
+		Service: appCtx.AuthFileBatchUploadService,
+	}
 	proxyHandler := &proxycontroller.Handler{App: appCtx}
 	proxyFilterHandler := &proxyfiltercontroller.Handler{App: appCtx}
 	panelHandler := &panelcontroller.Handler{App: appCtx}
@@ -66,7 +71,7 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
 	mux.HandleFunc("/favicon.ico", panelHandler.Favicon)
 	mux.HandleFunc("/apple-touch-icon.png", panelHandler.AppleTouchIcon)
-	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, managerConfigHandler, proxyHandler))
+	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, authFileBatchUploadHandler, managerConfigHandler, proxyHandler))
 
 	return middleware.Recovery(middleware.RequestLogger(mux))
 }
@@ -83,6 +88,7 @@ func rootHandler(
 	dashboardHandler *dashboardcontroller.Handler,
 	monitoringHandler *monitoringcontroller.Handler,
 	quotaSnapshotHandler *quotasnapshotcontroller.Handler,
+	authFileBatchUploadHandler *authfilesbatchcontroller.Handler,
 	managerConfigHandler *managerconfigcontroller.Handler,
 	proxyHandler *proxycontroller.Handler,
 ) http.HandlerFunc {
@@ -122,6 +128,10 @@ func rootHandler(
 		}
 		if strings.HasPrefix(r.URL.Path, "/v0/management/monitoring/") {
 			middleware.WithCORS(appCtx.Config, monitoringHandler.Handle)(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v0/management/auth-files/batch-upload") {
+			middleware.WithCORS(appCtx.Config, authFileBatchUploadHandler.Handle)(w, r)
 			return
 		}
 		cleanQuotaSnapshotPath := strings.TrimRight(r.URL.Path, "/")

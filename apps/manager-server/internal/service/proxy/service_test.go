@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,6 +62,134 @@ func testVerifiedAuthFileWriteRequest(t *testing.T, name string, currentContent 
 	req.Header.Set(authFileWriteIdentitiesHeader, url.QueryEscape(string(identityJSON)))
 	req.Header.Set(authFileWriteContentSHA256Header, testAuthFileContentSHA256(currentContent))
 	return req
+}
+
+func TestProxyManagementCachesAuthFileInventoryAndInvalidatesPerSetup(t *testing.T) {
+	var authFileRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v0/management/auth-files" {
+			http.NotFound(w, r)
+			return
+		}
+		authFileRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[{\\\"name\\\":\\\"cached.json\\\",\\\"provider\\\":\\\"codex\\\"}]"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	setup := store.Setup{CPAUpstreamURL: upstream.URL, ManagementKey: "management-key"}
+	if err := st.SaveSetup(context.Background(), setup); err != nil {
+		t.Fatalf("save setup: %v", err)
+	}
+	service := New(managerconfig.New(config.Config{}, st, nil), st)
+	writeError := func(w http.ResponseWriter, status int, err error) {
+		http.Error(w, err.Error(), status)
+	}
+	requestInventory := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+		recorder := httptest.NewRecorder()
+		service.ProxyManagement(recorder, req, writeError)
+		return recorder
+	}
+
+	first := requestInventory()
+	if first.Code != http.StatusOK {
+		t.Fatalf("first inventory status = %d body=%q", first.Code, first.Body.String())
+	}
+	if got := first.Header().Get("X-CPAM-Inventory-Cache"); got != "miss" {
+		t.Fatalf("first inventory cache header = %q, want miss", got)
+	}
+
+	second := requestInventory()
+	if second.Code != http.StatusOK {
+		t.Fatalf("second inventory status = %d body=%q", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("X-CPAM-Inventory-Cache"); got != "fresh" {
+		t.Fatalf("second inventory cache header = %q, want fresh", got)
+	}
+	if got := authFileRequests.Load(); got != 1 {
+		t.Fatalf("upstream auth-file requests = %d, want 1 after warm cache", got)
+	}
+
+	service.invalidateAuthFileInventory(setup)
+	third := requestInventory()
+	if third.Code != http.StatusOK {
+		t.Fatalf("post-invalidation inventory status = %d body=%q", third.Code, third.Body.String())
+	}
+	if got := authFileRequests.Load(); got != 2 {
+		t.Fatalf("upstream auth-file requests = %d, want 2 after invalidation", got)
+	}
+}
+
+func TestProxyManagementCoalescesConcurrentColdAuthFileInventoryReads(t *testing.T) {
+	var authFileRequests atomic.Int32
+	upstreamStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseUpstream) }) }
+	t.Cleanup(release)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v0/management/auth-files" {
+			http.NotFound(w, r)
+			return
+		}
+		call := authFileRequests.Add(1)
+		select {
+		case <-upstreamStarted:
+		default:
+			close(upstreamStarted)
+		}
+		if call == 1 {
+			<-releaseUpstream
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[{\\\"name\\\":\\\"cached.json\\\"}]"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.SaveSetup(context.Background(), store.Setup{
+		CPAUpstreamURL: upstream.URL,
+		ManagementKey:  "management-key",
+	}); err != nil {
+		t.Fatalf("save setup: %v", err)
+	}
+	service := New(managerconfig.New(config.Config{}, st, nil), st)
+	writeError := func(w http.ResponseWriter, status int, err error) {
+		http.Error(w, err.Error(), status)
+	}
+	requestInventory := func(done chan<- *httptest.ResponseRecorder) {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+		recorder := httptest.NewRecorder()
+		service.ProxyManagement(recorder, req, writeError)
+		done <- recorder
+	}
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	secondDone := make(chan *httptest.ResponseRecorder, 1)
+	go requestInventory(firstDone)
+	<-upstreamStarted
+	go requestInventory(secondDone)
+	time.Sleep(80 * time.Millisecond)
+	if got := authFileRequests.Load(); got != 1 {
+		release()
+		t.Fatalf("concurrent cold upstream requests = %d, want 1", got)
+	}
+	release()
+	for _, response := range []*httptest.ResponseRecorder{<-firstDone, <-secondDone} {
+		if response.Code != http.StatusOK {
+			t.Fatalf("coalesced inventory status = %d body=%q", response.Code, response.Body.String())
+		}
+	}
 }
 
 func TestInspectAuthFileOwnershipMutationRestoresStatusBody(t *testing.T) {

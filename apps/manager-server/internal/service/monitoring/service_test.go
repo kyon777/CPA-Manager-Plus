@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -2260,6 +2261,94 @@ func TestAccountHistoryReturnsRollupTotalsAndCost(t *testing.T) {
 	}
 	if resp.Items[2].RowKey != "row-legacy-key" || !resp.Items[2].Matched || resp.Items[2].AccountKey != historyKey || resp.Items[2].TotalRequests != 2 {
 		t.Fatalf("account_key item = %#v", resp.Items[2])
+	}
+}
+
+func TestAccountRecentIndexReturnsOnlyRecentRequestEvidence(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	baseMS := int64(1_700_000_100_000)
+	first := monitoringEvent("recent-index-first", baseMS+1_000, "gpt-a", "auth-a", "source-a", false, 1, 1, 0, 0, 2, nil)
+	first.AuthFileSnapshot = "recent-a.json"
+	first.AuthProviderSnapshot = "openai"
+	first.AccountSnapshot = "a@example.com"
+	second := monitoringEvent("recent-index-second", baseMS+2_000, "gpt-a", "auth-a", "source-a", true, 1, 1, 0, 0, 2, nil)
+	second.AuthFileSnapshot = "recent-a.json"
+	second.AuthProviderSnapshot = "openai"
+	second.AccountSnapshot = "a@example.com"
+	second.FailStatusCode = http.StatusBadGateway
+	if _, err := db.InsertEvents(ctx, []usage.Event{first, second}); err != nil {
+		t.Fatalf("insert recent-index events: %v", err)
+	}
+
+	response, err := New(db).AccountRecentIndex(ctx, AccountRecentIndexRequest{
+		Accounts: []AccountHistoryTarget{
+			{
+				RowKey:               "row-a",
+				AuthFileSnapshot:     "recent-a.json",
+				AuthIndex:            "auth-a",
+				AuthProviderSnapshot: "openai",
+				AccountSnapshot:      "a@example.com",
+			},
+			{
+				RowKey:               "row-empty",
+				AuthFileSnapshot:     "recent-empty.json",
+				AuthIndex:            "auth-empty",
+				AuthProviderSnapshot: "openai",
+				AccountSnapshot:      "empty@example.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("account recent index: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("recent index items = %#v", response.Items)
+	}
+	item := response.Items[0]
+	if item.RowKey != "row-a" || item.LatestRequest == nil || item.LatestRequest.TimestampMS != baseMS+2_000 || !item.LatestRequest.Failed {
+		t.Fatalf("recent index item = %#v", item)
+	}
+	if len(item.RecentRequests) != 1 || item.SyncStatus != "ready" {
+		t.Fatalf("recent index evidence = %#v", item)
+	}
+	empty := response.Items[1]
+	if empty.RowKey != "row-empty" || empty.LatestRequest != nil || len(empty.RecentRequests) != 0 || empty.SyncStatus != "empty" {
+		t.Fatalf("empty recent index item = %#v", empty)
+	}
+}
+
+func TestAccountRecentIndexReadsOnlyOneRequestPerCredential(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	base := int64(1_700_000_200_000)
+	newer := monitoringEvent("recent-index-limit-new", base+2, "gpt-a", "auth-a", "source-a", false, 1, 1, 0, 0, 2, nil)
+	newer.AuthFileSnapshot = "credential-a.json"
+	newer.AuthProviderSnapshot = "openai"
+	newer.AccountSnapshot = "a@example.com"
+	older := monitoringEvent("recent-index-limit-old", base+1, "gpt-a", "auth-a", "source-a", false, 1, 1, 0, 0, 2, nil)
+	older.AuthFileSnapshot = "credential-a.json"
+	older.AuthProviderSnapshot = "openai"
+	older.AccountSnapshot = "a@example.com"
+	if _, err := db.InsertEvents(ctx, []usage.Event{newer, older}); err != nil {
+		t.Fatalf("insert recent request events: %v", err)
+	}
+
+	response, err := New(db).AccountRecentIndex(ctx, AccountRecentIndexRequest{Accounts: []AccountHistoryTarget{{
+		RowKey:               "credential-a",
+		AuthFileSnapshot:     "credential-a.json",
+		AuthIndex:            "auth-a",
+		AuthProviderSnapshot: "openai",
+		AccountSnapshot:      "a@example.com",
+	}}})
+	if err != nil {
+		t.Fatalf("account recent index: %v", err)
+	}
+	if len(response.Items) != 1 || len(response.Items[0].RecentRequests) != 1 {
+		t.Fatalf("compact index requests = %#v, want only the latest request", response.Items)
+	}
+	if response.Items[0].LatestRequest == nil || response.Items[0].LatestRequest.TimestampMS != base+2 {
+		t.Fatalf("compact index latest request = %#v", response.Items[0].LatestRequest)
 	}
 }
 

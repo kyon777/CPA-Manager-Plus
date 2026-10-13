@@ -97,6 +97,20 @@ type AuthFileBatchUploadResponse = {
   files?: unknown;
   failed?: unknown;
 };
+type AuthFileBatchUploadJobFile = {
+  name?: unknown;
+  error?: unknown;
+};
+type AuthFileBatchUploadJobResponse = {
+  id?: unknown;
+  state?: unknown;
+  total?: unknown;
+  completed?: unknown;
+  uploaded?: unknown;
+  failed?: unknown;
+  files?: AuthFileBatchUploadJobFile[];
+  finished?: unknown;
+};
 type AuthFileBatchDeleteResponse = {
   status?: string;
   deleted?: number;
@@ -123,6 +137,8 @@ const AUTH_FILE_WRITE_IDENTITIES_HEADER = 'X-CPAMP-Auth-File-Write-Identities';
 const AUTH_FILE_WRITE_CONTENT_SHA256_HEADER = 'X-CPAMP-Auth-File-Write-Content-SHA256';
 const CPA_PLUGIN_VIRTUAL_MUTATION_CONFLICT =
   'plugin virtual auth cannot be modified directly; edit or delete the source auth file';
+const AUTH_FILE_BATCH_UPLOAD_POLL_INTERVAL_MS = 750;
+const AUTH_FILE_BATCH_UPLOAD_MAX_WAIT_MS = 2 * 60 * 60 * 1000;
 
 export const AUTH_FILE_INVALID_JSON_OBJECT_ERROR = 'AUTH_FILE_INVALID_JSON_OBJECT';
 
@@ -250,12 +266,6 @@ const normalizeBatchUploadResponse = (
   };
 };
 
-const readUploadErrorMessage = (err: unknown): string => {
-  if (err instanceof Error && err.message.trim()) return err.message;
-  if (typeof err === 'string' && err.trim()) return err.trim();
-  return 'Upload failed';
-};
-
 const uploadSingleAuthFile = async (
   file: File,
   headers: Record<string, string> = {},
@@ -278,29 +288,81 @@ const uploadSingleAuthFile = async (
   return normalizeBatchUploadResponse(payload, [file.name]);
 };
 
-const mergeBatchUploadResults = (
-  results: AuthFileBatchUploadResult[],
+const normalizeBatchJobUploadResult = (
+  payload: AuthFileBatchUploadJobResponse | undefined,
   requestedNames: string[]
 ): AuthFileBatchUploadResult => {
-  const uploaded = results.reduce((total, result) => total + Math.max(0, result.uploaded), 0);
-  const files = results.flatMap((result) => result.files);
-  const failed = results.flatMap((result) => result.failed);
-  const hasFailureStatus = results.some((result) => {
-    const status = result.status.trim().toLowerCase();
-    return status === 'error' || status === 'failed' || status === 'partial';
-  });
+  const files = Array.isArray(payload?.files) ? payload.files : [];
+  const failed = normalizeBatchFailures(
+    files.filter((file) => typeof file?.error === 'string' && file.error.trim() !== '')
+  );
+  const uploadedFiles = normalizeRequestedAuthFileNames(
+    files
+      .filter((file) => {
+        const error = typeof file?.error === 'string' ? file.error.trim() : '';
+        return !error;
+      })
+      .map((file) => String(file?.name ?? ''))
+  );
+  const uploaded =
+    typeof payload?.uploaded === 'number'
+      ? Math.max(0, payload.uploaded)
+      : uploadedFiles.length;
+  const state = typeof payload?.state === 'string' ? payload.state.trim().toLowerCase() : '';
 
   return {
     status:
-      failed.length > 0 || hasFailureStatus || uploaded < requestedNames.length
+      failed.length > 0 || state === 'partial' || state === 'failed'
         ? uploaded > 0
           ? 'partial'
           : 'error'
         : 'ok',
     uploaded,
-    files,
+    files:
+      uploadedFiles.length > 0
+        ? uploadedFiles
+        : uploaded > 0 && failed.length === 0
+          ? [...requestedNames]
+          : [],
     failed,
   };
+};
+
+const waitForAuthFileBatchUpload = (delayMS: number) =>
+  new Promise<void>((resolve) => {
+    window.setTimeout(resolve, delayMS);
+  });
+
+const uploadAuthFileBatch = async (
+  files: File[],
+  requestScope?: AuthFilesApiRequestScope
+): Promise<AuthFileBatchUploadResult> => {
+  const formData = new FormData();
+  files.forEach((file) => formData.append('files', file, file.name));
+  const requestedNames = files.map((file) => file.name);
+  const requestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : undefined;
+  let status = requestConfig
+    ? await apiClient.postForm<AuthFileBatchUploadJobResponse>(
+        '/auth-files/batch-upload',
+        formData,
+        requestConfig
+      )
+    : await apiClient.postForm<AuthFileBatchUploadJobResponse>('/auth-files/batch-upload', formData);
+  const jobID = typeof status?.id === 'string' ? status.id.trim() : '';
+  if (!jobID) throw new Error('Batch upload did not return a job ID');
+
+  const startedAt = Date.now();
+  while (status.finished !== true) {
+    if (Date.now() - startedAt > AUTH_FILE_BATCH_UPLOAD_MAX_WAIT_MS) {
+      throw new Error('Batch upload did not finish in time');
+    }
+    await waitForAuthFileBatchUpload(AUTH_FILE_BATCH_UPLOAD_POLL_INTERVAL_MS);
+    const endpoint = `/auth-files/batch-upload/${encodeURIComponent(jobID)}`;
+    status = requestConfig
+      ? await apiClient.get<AuthFileBatchUploadJobResponse>(endpoint, requestConfig)
+      : await apiClient.get<AuthFileBatchUploadJobResponse>(endpoint);
+  }
+  return normalizeBatchJobUploadResult(status, requestedNames);
 };
 
 const normalizeBatchDeleteResponse = (
@@ -1387,21 +1449,7 @@ export const authFilesApi = {
     if (files.length === 1) {
       return uploadSingleAuthFile(files[0], {}, requestScope);
     }
-
-    const results: AuthFileBatchUploadResult[] = [];
-    for (const file of files) {
-      try {
-        results.push(await uploadSingleAuthFile(file, {}, requestScope));
-      } catch (err) {
-        results.push({
-          status: 'error',
-          uploaded: 0,
-          files: [],
-          failed: [{ name: file.name, error: readUploadErrorMessage(err) }],
-        });
-      }
-    }
-    return mergeBatchUploadResults(results, requestedNames);
+    return uploadAuthFileBatch(files, requestScope);
   },
 
   upload: (file: File, requestScope?: AuthFilesApiRequestScope) =>

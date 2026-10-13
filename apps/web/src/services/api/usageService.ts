@@ -1175,6 +1175,10 @@ export interface MonitoringAccountHistoryRequest {
   catch_up?: boolean;
 }
 
+export interface MonitoringAccountRecentIndexRequest {
+  accounts: MonitoringAccountHistoryTarget[];
+}
+
 export interface MonitoringAccountHistoryCheckpoint {
   last_event_id: number;
   latest_id: number;
@@ -1214,6 +1218,18 @@ export interface MonitoringAccountHistoryResponse {
   generated_at_ms: number;
   checkpoint: MonitoringAccountHistoryCheckpoint;
   items: MonitoringAccountHistoryItem[];
+}
+
+export interface MonitoringAccountRecentIndexItem {
+  row_key: string;
+  latest_request?: MonitoringAccountLatestRequest | null;
+  recent_requests?: MonitoringAccountLatestRequest[];
+  sync_status: 'ready' | 'pending' | 'empty' | string;
+}
+
+export interface MonitoringAccountRecentIndexResponse {
+  generated_at_ms: number;
+  items: MonitoringAccountRecentIndexItem[];
 }
 
 export interface MonitoringAccountWindowUsageTarget {
@@ -4408,6 +4424,38 @@ export const monitoringAnalyticsApi = {
     return withUsageServiceError(async () => {
       const response = await axios.post<MonitoringAccountHistoryResponse>(
         buildUrl(base, '/v0/management/monitoring/account-history'),
+        request,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          signal,
+        }
+      );
+      return response.data;
+    });
+  },
+  getAccountRecentIndex: async (
+    base: string,
+    managementKey: string | undefined,
+    request: MonitoringAccountRecentIndexRequest,
+    signal?: AbortSignal
+  ): Promise<MonitoringAccountRecentIndexResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      const history = getDemoAccountHistory(request);
+      return {
+        generated_at_ms: history.generated_at_ms,
+        items: history.items.map((item) => ({
+          row_key: item.row_key,
+          latest_request: item.latest_request,
+          recent_requests: item.recent_requests,
+          sync_status: item.sync_status,
+        })),
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<MonitoringAccountRecentIndexResponse>(
+        buildUrl(base, '/v0/management/monitoring/account-recent-index'),
         request,
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,

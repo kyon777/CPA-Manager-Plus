@@ -30,6 +30,7 @@ const (
 	maxHeaderSnapshotDays      = 365
 	maxHeaderSnapshotLimit     = 5000
 	maxAccountHistoryTargets   = 200
+	maxAccountRecentIndexItems = 1000
 	maxAccountWindowUsageItems = 400
 	accountHistoryCatchUpLimit = 5000
 	accountRecentRequestLimit  = 10
@@ -253,6 +254,26 @@ type HeaderSnapshotsResponse struct {
 type AccountHistoryRequest struct {
 	Accounts []AccountHistoryTarget `json:"accounts"`
 	CatchUp  bool                   `json:"catch_up"`
+}
+
+// AccountRecentIndexRequest is intentionally a history-free list of
+// credential request evidence. It lets the account grid sort every filtered
+// row by its most recent request without running the pricing/rollup work that
+// AccountHistory performs for detail cards.
+type AccountRecentIndexRequest struct {
+	Accounts []AccountHistoryTarget `json:"accounts"`
+}
+
+type AccountRecentIndexResponse struct {
+	GeneratedAtMS int64                    `json:"generated_at_ms"`
+	Items         []AccountRecentIndexItem `json:"items"`
+}
+
+type AccountRecentIndexItem struct {
+	RowKey         string                 `json:"row_key"`
+	LatestRequest  *AccountLatestRequest  `json:"latest_request,omitempty"`
+	RecentRequests []AccountLatestRequest `json:"recent_requests,omitempty"`
+	SyncStatus     string                 `json:"sync_status"`
 }
 
 type AccountHistoryTarget struct {
@@ -1762,6 +1783,55 @@ func (s *Service) AccountHistory(ctx context.Context, req AccountHistoryRequest)
 	return response, err
 }
 
+// AccountRecentIndex only reads the indexed recent-request projection. It
+// deliberately avoids account-history checkpoints, legacy totals, pricing
+// snapshots and catch-up work so it remains safe to request for a whole
+// filtered credential list.
+func (s *Service) AccountRecentIndex(ctx context.Context, req AccountRecentIndexRequest) (AccountRecentIndexResponse, error) {
+	if len(req.Accounts) == 0 {
+		return AccountRecentIndexResponse{}, errors.New("accounts are required")
+	}
+	if len(req.Accounts) > maxAccountRecentIndexItems {
+		return AccountRecentIndexResponse{}, fmt.Errorf("accounts must be less than or equal to %d", maxAccountRecentIndexItems)
+	}
+	latestRequestTargets := make([]store.LatestAccountRequestQuery, 0, len(req.Accounts))
+	for index, account := range req.Accounts {
+		if !AccountHistoryTargetHasRequiredProvider(account) {
+			return AccountRecentIndexResponse{}, errors.New("auth_provider_snapshot is required for file account targets")
+		}
+		if latestAccountRequestTargetValid(account) {
+			latestRequestTargets = append(latestRequestTargets, latestAccountRequestQuery(index, account))
+		}
+	}
+	// The grid-wide index only needs the latest record to preserve global sort
+	// semantics. The visible page keeps the richer ten-request history through
+	// AccountHistory below.
+	recentRequests, err := s.store.RecentAccountRequests(ctx, latestRequestTargets, 1)
+	if err != nil {
+		return AccountRecentIndexResponse{}, err
+	}
+	recentRequestsByTargetIndex := mapRecentAccountRequests(recentRequests)
+	items := make([]AccountRecentIndexItem, 0, len(req.Accounts))
+	for index, account := range req.Accounts {
+		recent := recentRequestsByTargetIndex[index]
+		var latest *AccountLatestRequest
+		if len(recent) > 0 {
+			value := recent[0]
+			latest = &value
+		}
+		items = append(items, AccountRecentIndexItem{
+			RowKey:         account.RowKey,
+			LatestRequest:  latest,
+			RecentRequests: recent,
+			SyncStatus:     accountHistorySyncStatus(latest != nil, false),
+		})
+	}
+	return AccountRecentIndexResponse{
+		GeneratedAtMS: time.Now().UnixMilli(),
+		Items:         items,
+	}, nil
+}
+
 func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest) (AccountHistoryResponse, error) {
 	if len(req.Accounts) == 0 {
 		return AccountHistoryResponse{}, errors.New("accounts are required")
@@ -1830,15 +1900,7 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 			}
 		}
 		if latestAccountRequestTargetValid(account) {
-			latestRequestTargets = append(latestRequestTargets, store.LatestAccountRequestQuery{
-				RequestIndex:          index,
-				AuthFileSnapshot:      accountHistoryAuthFileSnapshot(account),
-				AuthIndex:             account.AuthIndex,
-				Provider:              account.AuthProviderSnapshot,
-				AuthAccountIDSnapshot: account.AuthAccountIDSnapshot,
-				AuthProjectIDSnapshot: account.AuthProjectIDSnapshot,
-				AccountSnapshot:       account.AccountSnapshot,
-			})
+			latestRequestTargets = append(latestRequestTargets, latestAccountRequestQuery(index, account))
 		}
 	}
 	keys = uniqueAccountHistoryKeys(keys)
@@ -1893,17 +1955,7 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 	if err != nil {
 		return AccountHistoryResponse{}, err
 	}
-	recentRequestsByTargetIndex := make(map[int][]AccountLatestRequest, len(recentRequests))
-	for _, request := range recentRequests {
-		mapped := accountLatestRequestFromStore(request)
-		if mapped == nil {
-			continue
-		}
-		recentRequestsByTargetIndex[request.RequestIndex] = append(
-			recentRequestsByTargetIndex[request.RequestIndex],
-			*mapped,
-		)
-	}
+	recentRequestsByTargetIndex := mapRecentAccountRequests(recentRequests)
 	pending := latestID > checkpoint.LastEventID
 	items := make([]AccountHistoryItem, 0, len(req.Accounts))
 	for index := range req.Accounts {
@@ -4175,6 +4227,30 @@ func accountHistoryAuthFileSnapshot(target AccountHistoryTarget) string {
 		return value
 	}
 	return strings.TrimSpace(target.Source)
+}
+
+func latestAccountRequestQuery(index int, target AccountHistoryTarget) store.LatestAccountRequestQuery {
+	return store.LatestAccountRequestQuery{
+		RequestIndex:          index,
+		AuthFileSnapshot:      accountHistoryAuthFileSnapshot(target),
+		AuthIndex:             target.AuthIndex,
+		Provider:              target.AuthProviderSnapshot,
+		AuthAccountIDSnapshot: target.AuthAccountIDSnapshot,
+		AuthProjectIDSnapshot: target.AuthProjectIDSnapshot,
+		AccountSnapshot:       target.AccountSnapshot,
+	}
+}
+
+func mapRecentAccountRequests(requests []store.LatestAccountRequest) map[int][]AccountLatestRequest {
+	result := make(map[int][]AccountLatestRequest, len(requests))
+	for _, request := range requests {
+		mapped := accountLatestRequestFromStore(request)
+		if mapped == nil {
+			continue
+		}
+		result[request.RequestIndex] = append(result[request.RequestIndex], *mapped)
+	}
+	return result
 }
 
 func accountLatestRequestFromStore(request store.LatestAccountRequest) *AccountLatestRequest {
