@@ -24,6 +24,17 @@ CPA_UPSTREAM_URL: "http://cli-proxy-api:8317"
 
 `cpa-manager-plus` 与 `cli-proxy-api` 都加入外部 Docker 网络 `app-network`，因此 Manager 通过 Docker 内网 DNS 访问 CPA Core，不经过公网 Caddy。当前两者网络名均为 `app-network`。
 
+通信不是浏览器直连 Core，而是：
+
+```text
+浏览器 / Caddy -> cpa-manager-plus:18317 -> cli-proxy-api:8317
+```
+
+其中 `8317` 同时承载两条 Manager→Core 通道：
+
+- 普通管理/API 请求走 HTTP，并由 Manager 代理、补充保存的 Bearer Management Key。
+- 用量队列收集走 CPA Core 同一地址上的 RESP/TCP；`USAGE_COLLECTOR_MODE=resp` 时 Manager 对 `cli-proxy-api:8317` 建立 RESP 连接并执行 `AUTH`，再按 `usage` 队列和 `right` 侧消费。
+
 代码层的连接优先级要分清：
 
 1. `CPA_UPSTREAM_URL` 是 Manager 的环境/兼容启动连接来源。
