@@ -95,7 +95,13 @@ USAGE_QUERY_LIMIT=50000
 - 粘贴认证 JSON 默认类型为 `CPA 认证 JSON`。
 - 单个 JSON 的文件名自动使用 JSON 的 `email`，不再要求手填名称。
 - 数组 JSON 自动拆成多个独立账号文件；多文件上传由 Manager Server 异步串行提交给 CPA Core，避免浏览器并发请求导致 30 秒超时。
+- 批量上传全部成功时，前端必须明确显示“全部成功：已保存 N/N 个认证文件”；部分成功仍显示成功数/总数及失败文件名。
 - 批量上传成功后失效凭证清单缓存；任务状态只返回文件名、数量和原因，不返回 token。
+
+### 简体中文策略文案
+
+- `accountPolicy.serverErrorPriorityDemotion_*` 的简体中文资源必须保持 UTF-8 正常中文，禁止 `????` 乱码回归。
+- 文案必须与实际策略一致：只处理新入库的 HTTP `502`、`503`，或响应体精确为 `{"detail":"Rate limit exceeded"}` 的 HTTP `429`；比较同 Provider 的已启用账号优先级，按 peer-rebalance 规则降级，最低为 0。
 
 ### API Key / 插件桥接
 
