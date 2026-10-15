@@ -329,8 +329,16 @@ func isAuthFileInventoryRequest(r *http.Request) bool {
 	if r == nil || r.Method != http.MethodGet {
 		return false
 	}
-	return strings.TrimRight(r.URL.Path, "/") == "/v0/management/auth-files" &&
-		strings.TrimSpace(r.URL.RawQuery) == ""
+	if strings.TrimRight(r.URL.Path, "/") != "/v0/management/auth-files" {
+		return false
+	}
+	query := r.URL.Query()
+	// Identity lookups must stay on the direct proxy path. Inventory variants
+	// are bounded by page/page_size and may safely use the response cache.
+	if query.Has("name") || query.Has("auth_index") || query.Has("authIndex") {
+		return false
+	}
+	return len(query) == 0 || query.Has("page") || query.Has("page_size") || query.Has("include_proxy_url")
 }
 
 func isAuthFileMutationRequest(r *http.Request) bool {
@@ -362,7 +370,8 @@ func (s *Service) proxyAuthFileInventory(w http.ResponseWriter, r *http.Request,
 	}
 
 	cache := s.authFileInventory
-	cacheKey := authFileInventoryCacheKey(setup)
+	query := normalizedAuthFileInventoryQuery(r.URL.Query())
+	cacheKey := authFileInventoryCacheKey(setup, query)
 	now := cache.currentTime()
 	cache.mu.Lock()
 	entry, found := cache.entries[cacheKey]
@@ -377,7 +386,7 @@ func (s *Service) proxyAuthFileInventory(w http.ResponseWriter, r *http.Request,
 			entry.refreshing = true
 			entry.refreshDone = make(chan struct{})
 			cache.entries[cacheKey] = entry
-			go s.refreshAuthFileInventory(cacheKey, setup, entry.refreshDone)
+			go s.refreshAuthFileInventory(cacheKey, setup, query, entry.refreshDone)
 		}
 		cache.mu.Unlock()
 		writeAuthFileInventoryCacheResponse(w, entry, "stale", age)
@@ -401,7 +410,7 @@ func (s *Service) proxyAuthFileInventory(w http.ResponseWriter, r *http.Request,
 	cache.entries[cacheKey] = entry
 	cache.mu.Unlock()
 
-	fetchedEntry, err := s.fetchAuthFileInventory(r.Context(), setup)
+	fetchedEntry, err := s.fetchAuthFileInventory(r.Context(), setup, query)
 	if err != nil {
 		cache.mu.Lock()
 		current, exists := cache.entries[cacheKey]
@@ -424,11 +433,11 @@ func (s *Service) proxyAuthFileInventory(w http.ResponseWriter, r *http.Request,
 	writeAuthFileInventoryCacheResponse(w, fetchedEntry, "miss", 0)
 }
 
-func (s *Service) refreshAuthFileInventory(cacheKey string, setup store.Setup, refreshDone chan struct{}) {
+func (s *Service) refreshAuthFileInventory(cacheKey string, setup store.Setup, query string, refreshDone chan struct{}) {
 	if s == nil || s.authFileInventory == nil {
 		return
 	}
-	entry, err := s.fetchAuthFileInventory(context.Background(), setup)
+	entry, err := s.fetchAuthFileInventory(context.Background(), setup, query)
 	cache := s.authFileInventory
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -451,7 +460,7 @@ func (s *Service) refreshAuthFileInventory(cacheKey string, setup store.Setup, r
 	cache.entries[cacheKey] = entry
 }
 
-func (s *Service) fetchAuthFileInventory(ctx context.Context, setup store.Setup) (authFileInventoryCacheEntry, error) {
+func (s *Service) fetchAuthFileInventory(ctx context.Context, setup store.Setup, query string) (authFileInventoryCacheEntry, error) {
 	if s == nil || s.authFileInventory == nil {
 		return authFileInventoryCacheEntry{}, errors.New("auth-file inventory cache is unavailable")
 	}
@@ -460,6 +469,7 @@ func (s *Service) fetchAuthFileInventory(ctx context.Context, setup store.Setup)
 		return authFileInventoryCacheEntry{}, err
 	}
 	endpoint := target.ResolveReference(&url.URL{Path: "/v0/management/auth-files"})
+	endpoint.RawQuery = query
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return authFileInventoryCacheEntry{}, err
@@ -493,7 +503,12 @@ func (s *Service) invalidateAuthFileInventory(setup store.Setup) {
 		return
 	}
 	s.authFileInventory.mu.Lock()
-	delete(s.authFileInventory.entries, authFileInventoryCacheKey(setup))
+	prefix := authFileInventoryCacheKey(setup, "")
+	for key := range s.authFileInventory.entries {
+		if key == prefix || strings.HasPrefix(key, prefix+"\x00") {
+			delete(s.authFileInventory.entries, key)
+		}
+	}
 	s.authFileInventory.mu.Unlock()
 }
 
@@ -511,9 +526,24 @@ func (s *Service) InvalidateAuthFileInventory(ctx context.Context) {
 	s.invalidateAuthFileInventory(setup)
 }
 
-func authFileInventoryCacheKey(setup store.Setup) string {
+func authFileInventoryCacheKey(setup store.Setup, query string) string {
 	sum := sha256.Sum256([]byte(strings.TrimRight(strings.TrimSpace(setup.CPAUpstreamURL), "/") + "\x00" + setup.ManagementKey))
-	return hex.EncodeToString(sum[:])
+	base := hex.EncodeToString(sum[:])
+	if strings.TrimSpace(query) == "" {
+		return base
+	}
+	return base + "\x00" + query
+}
+
+func normalizedAuthFileInventoryQuery(query url.Values) string {
+	if len(query) == 0 {
+		return ""
+	}
+	copyValues := make(url.Values, len(query))
+	for key, values := range query {
+		copyValues[key] = append([]string(nil), values...)
+	}
+	return copyValues.Encode()
 }
 
 func (c *authFileInventoryCache) currentTime() time.Time {

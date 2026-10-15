@@ -22,6 +22,11 @@ import { parseTimestampMs } from '@/utils/timestamp';
 
 type StatusError = { status?: number };
 export type AuthFilesApiRequestScope = ApiClientRequestScope;
+export type AuthFilesPageOptions = {
+  page?: number;
+  pageSize?: number;
+  includeProxyUrl?: boolean;
+};
 type AuthFileStatusResponse = { status: string; disabled: boolean };
 export type AuthFileStatusMutationResult = AuthFileStatusResponse & {
   mutationScope: 'credential' | 'source-file';
@@ -627,7 +632,7 @@ const dedupeAuthFilesResponse = (payload: AuthFilesResponse): AuthFilesResponse 
   return {
     ...payload,
     files: normalizedFiles,
-    total: normalizedFiles.length,
+    total: typeof payload?.total === 'number' ? payload.total : normalizedFiles.length,
   };
 };
 
@@ -1223,6 +1228,27 @@ const buildAuthFileStatusPayload = (
 };
 
 export const authFilesApi = {
+  listPage: async (
+    options: AuthFilesPageOptions = {},
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<AuthFilesResponse> => {
+    const page = Number.isInteger(options.page) && (options.page ?? 0) > 0 ? options.page : 1;
+    const requestedPageSize =
+      Number.isInteger(options.pageSize) && (options.pageSize ?? 0) > 0 ? options.pageSize : 50;
+    const pageSize = Math.min(requestedPageSize ?? 50, 50);
+    const params = {
+      page,
+      page_size: pageSize,
+      include_proxy_url: options.includeProxyUrl === false ? 0 : 1,
+    };
+    const config = {
+      ...(requestScope ? createScopedApiRequestConfig(requestScope) : {}),
+      params,
+    };
+    const response = await apiClient.get<AuthFilesResponse>('/auth-files', config);
+    return dedupeAuthFilesResponse(response);
+  },
+
   list: async (requestScope?: AuthFilesApiRequestScope) => {
     const response = requestScope
       ? await apiClient.get<AuthFilesResponse>(

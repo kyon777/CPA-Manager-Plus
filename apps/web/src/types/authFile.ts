@@ -52,4 +52,8 @@ export interface AuthFileItem {
 export interface AuthFilesResponse {
   files: AuthFileItem[];
   total?: number;
+  page?: number;
+  page_size?: number;
+  has_more?: boolean;
+  proxy_url_included?: boolean;
 }

@@ -126,6 +126,81 @@ func TestProxyManagementCachesAuthFileInventoryAndInvalidatesPerSetup(t *testing
 	}
 }
 
+func TestProxyManagementCachesPagedAuthFileInventoryPerQueryVariant(t *testing.T) {
+	var authFileRequests atomic.Int32
+	var queriesMu sync.Mutex
+	queries := make([]string, 0, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v0/management/auth-files" {
+			http.NotFound(w, r)
+			return
+		}
+		authFileRequests.Add(1)
+		queriesMu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		queriesMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, fmt.Sprintf(`{"files":[{"name":"page-%s.json","proxy_url":"http://proxy-%s"}],"total":101,"page":%s,"page_size":50,"proxy_url_included":true}`, r.URL.Query().Get("page"), r.URL.Query().Get("page"), r.URL.Query().Get("page")))
+	}))
+	t.Cleanup(upstream.Close)
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	setup := store.Setup{CPAUpstreamURL: upstream.URL, ManagementKey: "management-key"}
+	if err := st.SaveSetup(context.Background(), setup); err != nil {
+		t.Fatalf("save setup: %v", err)
+	}
+	service := New(managerconfig.New(config.Config{}, st, nil), st)
+	writeError := func(w http.ResponseWriter, status int, err error) {
+		http.Error(w, err.Error(), status)
+	}
+	requestInventory := func(rawQuery string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files?"+rawQuery, nil)
+		recorder := httptest.NewRecorder()
+		service.ProxyManagement(recorder, req, writeError)
+		return recorder
+	}
+
+	first := requestInventory("page=1&page_size=50&include_proxy_url=1")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first paged inventory status = %d body=%q", first.Code, first.Body.String())
+	}
+	if got := first.Header().Get("X-CPAM-Inventory-Cache"); got != "miss" {
+		t.Fatalf("first paged inventory cache header = %q, want miss", got)
+	}
+	second := requestInventory("page=1&page_size=50&include_proxy_url=1")
+	if got := second.Header().Get("X-CPAM-Inventory-Cache"); got != "fresh" {
+		t.Fatalf("second paged inventory cache header = %q, want fresh", got)
+	}
+	pageTwo := requestInventory("page=2&page_size=50&include_proxy_url=1")
+	if pageTwo.Code != http.StatusOK || !strings.Contains(pageTwo.Body.String(), `"page-2.json"`) {
+		t.Fatalf("page two response = status %d body=%q", pageTwo.Code, pageTwo.Body.String())
+	}
+	if got := authFileRequests.Load(); got != 2 {
+		t.Fatalf("paged upstream auth-file requests = %d, want 2", got)
+	}
+
+	service.invalidateAuthFileInventory(setup)
+	third := requestInventory("page=1&page_size=50&include_proxy_url=1")
+	if third.Code != http.StatusOK {
+		t.Fatalf("post-invalidation paged inventory status = %d body=%q", third.Code, third.Body.String())
+	}
+	if got := authFileRequests.Load(); got != 3 {
+		t.Fatalf("paged upstream auth-file requests after invalidation = %d, want 3", got)
+	}
+	queriesMu.Lock()
+	defer queriesMu.Unlock()
+	if !strings.Contains(queries[0], "page=1") || !strings.Contains(queries[0], "page_size=50") || !strings.Contains(queries[0], "include_proxy_url=1") {
+		t.Fatalf("first upstream query = %q", queries[0])
+	}
+	if !strings.Contains(queries[1], "page=2") {
+		t.Fatalf("second upstream query = %q", queries[1])
+	}
+}
+
 func TestProxyManagementCoalescesConcurrentColdAuthFileInventoryReads(t *testing.T) {
 	var authFileRequests atomic.Int32
 	upstreamStarted := make(chan struct{})

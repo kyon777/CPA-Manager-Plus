@@ -257,6 +257,39 @@ describe('authFilesApi model endpoints', () => {
 });
 
 describe('authFilesApi list normalization', () => {
+  it('requests a bounded CPA page with the proxy projection', async () => {
+    mocks.get.mockResolvedValue({
+      files: [
+        { name: 'account.json', auth_index: '0', note: 'today', proxy_url: 'http://proxy:1' },
+      ],
+      total: 3012,
+      page: 3,
+      page_size: 50,
+      has_more: true,
+      proxy_url_included: true,
+    });
+
+    const result = await authFilesApi.listPage({ page: 3, pageSize: 50 }, {
+      apiBase: 'http://old-cpa.local:8317',
+      managementKey: 'old-cpa-key',
+    });
+
+    expect(mocks.get).toHaveBeenCalledWith('/auth-files', {
+      baseURL: 'http://old-cpa.local:8317/v0/management',
+      headers: { Authorization: 'Bearer old-cpa-key' },
+      cpampScopedRequest: true,
+      params: { page: 3, page_size: 50, include_proxy_url: 1 },
+    });
+    expect(result).toMatchObject({
+      total: 3012,
+      page: 3,
+      page_size: 50,
+      has_more: true,
+      proxy_url_included: true,
+    });
+    expect(result.files[0]).toMatchObject({ proxy_url: 'http://proxy:1', note: 'today' });
+  });
+
   it('pins list requests to the captured CPA connection', async () => {
     mocks.get.mockResolvedValue({ files: [] });
     const requestScope = {
