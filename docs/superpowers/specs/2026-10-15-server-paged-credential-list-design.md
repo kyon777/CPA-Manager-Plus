@@ -1,155 +1,180 @@
-﻿# CPAM 服务端分页凭证列表与运行时元数据缓存设计
+﻿# CPAM 服务端分页凭证列表与代理投影设计
 
 ## 目标
 
-在不修改 CPA Core、不改变 API 请求采集、计费、价格计算、优先级 worker 或 Token Acquisition 行为的前提下，使 CPAM 在约 3,000 个凭证、下游约 500 并发请求时，仍能快速打开、翻页、搜索和按“最近请求”排序凭证列表。
+在不修改 CPA Core 请求路由、不改变 API 计费、用量采集、价格计算、优先级策略或 Token Acquisition 行为的前提下，使 CPAM 在约 3,000 个凭证、下游约 500 并发请求时，仍能快速打开、翻页、搜索和按“最近请求”排序凭证列表。
 
-本设计还消除“备注先显示、代理 URL 后显示”的常态延迟：常规列表响应必须同时返回备注和已知代理 URL；列表打开不得为每条可见凭证下载原始认证 JSON。
+普通列表首屏必须把 `note` 与 `proxy_url` 一起返回；不得因为展示代理而为当前页下载原始认证 JSON。
 
 ## 已确认的现状
 
-1. Web `authFilesApi.list()` 当前请求 `/v0/management/auth-files` 时没有 `page` / `page_size`，浏览器先取得完整凭证数组，再在前端构造行、筛选、排序并 `slice` 当前页。
-2. CPA 的管理接口已支持 `page` 与 `page_size`。真实运行验证表明 `page_size` 必须使用 snake_case；`pageSize` 和 `limit` 不生效。
-3. `note` 来自首个 `/auth-files` 清单响应，故列表一出现即可渲染。
-4. `proxy_url` 不能可靠地从清单响应取得时，Web 会在得到当前页后调用 `POST /v0/management/credential-runtime-metadata`。服务端按物理文件分组，再经 `/v0/management/auth-files/download` 下载原始认证 JSON；当前最大并发下载数为 4。因此代理 URL 需要等第二条异步链路完成。
-5. 现有 `credential-runtime-metadata` 不带 TTL；每次当前页 target 改变都会清空并重新读取。代理筛选弹窗虽仅在打开时运行，但会把全部启用账号按 80 个 target 串行请求，3,000 个账号约 38 批。
-6. 现有 `auth-files` 原始响应缓存、最近请求轻量索引、批量 JSON 服务端作业已经存在，必须复用，不可回退或覆盖。
+1. 当前 Web `authFilesApi.list()` 未传 `page` / `page_size`，浏览器会取得完整凭证数组，再在前端构造行、筛选、排序并 `slice` 当前页。
+2. CPA 已支持分页。实测参数必须使用 snake_case：`page` 与 `page_size`；`pageSize` 和 `limit` 不生效。
+3. 当前 `/v0/management/auth-files` 响应直接含 `note`，但不含 `proxy_url`；所以备注首屏显示。
+4. 当前代理 URL 来自 `POST /v0/management/credential-runtime-metadata`。Manager Server 对每个物理文件下载原始认证 JSON，再解析目标记录的代理，默认最大下载并发为 4；因此代理会晚于备注出现。
+5. 当前 CPAM 的 auth-files 原始响应缓存只拦截**无 query string**的请求。带 `page`、`page_size` 或 `include_proxy_url` 的请求会直通 CPA；这不会返回错误页，但也不会获得分页缓存。
+6. 已存在 auth-files 缓存、最近请求轻量索引、服务端批量 JSON 作业等二改，必须保留而非回退。
+
+## CPA → CPAM 的新接口契约
+
+CPA Core 正在提供以下查询参数：
+
+```text
+GET /v0/management/auth-files?page=1&page_size=50&include_proxy_url=1
+```
+
+CPAM 的任何普通列表读取都必须传这三个参数，默认每页 50 条；不得再从列表代码发起无分页的 `/auth-files` 请求。
+
+当 `include_proxy_url=1` 时，CPA 应在每个逻辑凭证的 `files[]` 项中返回：
+
+```json
+{
+  "name": "account.json",
+  "auth_index": "...",
+  "email": "user@example.com",
+  "note": "2026-10-15",
+  "proxy_url": "http://user:pass@host:port"
+}
+```
+
+兼容与准确性要求：
+
+- `proxy_url` 必须是当前逻辑凭证记录的值；同一物理 JSON 存在多个账号时，按 `auth_index` / `email` 精确投影，绝不读取 sibling 的代理。
+- 支持原始字段别名 `proxy_url`、`proxyUrl`、`proxy-url`。
+- 推荐 `include_proxy_url=1` 时每项都带 `proxy_url`：无代理返回空字符串。这样 CPAM 能确定 CPA 已支持该投影，而不是把“所有账号没有代理”误判为旧 Core 不支持。
+- 若 CPA 只能省略空字段，则必须同时返回顶层 capability，例如 `proxy_url_included: true`，或等效响应头。
+- 不增加 `access_token`、`refresh_token`、完整认证 JSON 或 headers 的输出。
+- CPA 内部应从已加载的逻辑认证记录投影该字段；不得为了清单请求逐个再次下载/解析物理 JSON。
 
 ## 不可变边界：计费与请求链路
 
-下列组件完全不改行为、不改 SQL 口径、不改网络通道：
+以下组件绝不改变行为、SQL 口径或网络通道：
 
 - `collector`、RESP 消费、`usage_events` 写入、小时聚合、价格/成本计算；
-- CPA Core / `cli-proxy-api`、其容器、配置、数据卷与重启流程；
+- CPA Core / `cli-proxy-api` 的模型请求、账号选择、转发与数据卷；
 - Token Acquisition、自动恢复、502/503/精确 429 降优先级的业务规则；
-- 实际模型请求路径及其 headers、tokens、费用记录。
+- 实际模型请求的 headers、token 统计和费用记录。
 
-新列表路径仅允许：
+新列表路径只允许：
 
-- 向 CPA Core 的管理端点读取凭证索引或指定认证文件；
-- 对 CPAM SQLite 进行只读查询，或写入与用量表隔离的“凭证投影缓存”表；
-- 返回脱敏的列表投影。不得向浏览器、日志、缓存响应或普通 SQLite 字段写入 token / 完整认证 JSON。
+- 向 CPA 的**管理端点**读取分页凭证投影；
+- 对 CPAM SQLite 做只读查询，或写入与用量表隔离的凭证摘要/代理投影缓存；
+- 返回脱敏的列表投影。
 
-每个列表请求的回归测试必须证明：不会调用模型/转发 API、不会插入或更新 `usage_events`、不会改变价格/费用聚合结果。
+不得写入 token、完整认证 JSON 或任何模型请求数据。每项列表回归测试必须证明：不会调用模型/转发 API、不会插入或更新 `usage_events`、不会改变价格/成本聚合。
 
-## 架构选择
-
-### 不采用：仅在前端加 `page/page_size`
-
-这会让默认页变快，但会破坏或退化以下现有语义：
-
-- 全局“最近请求”排序；
-- 搜索、状态/套餐/额度筛选后的真实总数；
-- Provider 计数和统计卡片；
-- 代理筛选的全启用账号范围；
-- 当前页封禁删除、批量更新等目标的稳定身份。
-
-### 采用：CPAM 聚合式凭证列表端点
-
-新增 CPAM 专用端点（名称在实施时按当前路由命名规范落地，例如 `/v0/management/credential-list`），前端凭证页只使用该端点。保留原 `/auth-files` 管理代理接口以保证现有编辑、上传、巡检和第三方兼容逻辑不变。
-
-新端点执行顺序：
+## 新请求链
 
 ```text
 浏览器
-  -> CPAM credential-list（page / page_size / filters / sort）
-      -> 凭证摘要索引（SQLite 持久化安全投影）
-      -> 当前页批量 join：最近请求、额度快照、巡检、恢复任务、代理投影
-      -> 返回当前页 50 条 + total + facets
-
-后台低优先级同步
-  -> CPA Core /v0/management/auth-files?page=N&page_size=M
-  -> 只提取安全列表字段，原子更新摘要索引
+  -> CPAM credential-list（页码 / 搜索 / 筛选 / 排序）
+      -> CPAM 凭证摘要索引、最近请求索引、额度/恢复任务摘要
+      -> 需要同步页时：
+         CPA /v0/management/auth-files?page=N&page_size=50&include_proxy_url=1
+      -> 返回当前页 50 条完整列表投影
 ```
 
-### 凭证摘要索引
+浏览器可以兼容访问 CPAM 的 `/v0/management/auth-files?page=N&page_size=50&include_proxy_url=1`；但 Accounts 页面最终使用 CPAM 聚合列表层，以保持全局“最近请求”排序、服务端筛选、统计卡片、代理筛选和稳定批量操作语义。
 
-索引按 CPA 连接作用域隔离。作用域只存不可逆摘要，绝不存 management key 明文。每条记录使用稳定凭证 identity（物理文件名、auth index、账号邮箱/provider 的规范化组合）并保存：
+也就是说，CPAM → CPA 的清单请求严格使用用户指定的分页 URL；浏览器 → CPAM 不必为了全局排序而被迫放弃聚合端点。
 
-- 名称、邮箱、provider、套餐、启用状态、priority、note、基础状态；
-- 与当前页展示有关的安全列表字段；
-- 代理 URL 的受保护投影、代理验证时间和失效标记；
-- 同步代次、来源更新时间、删除标记。
+## CPAM 配套改造
 
-不保存 `access_token`、`refresh_token`、`id_token`、完整 JSON、headers 或任何可用于认证的字段。代理 URL 若含用户名密码，持久化时使用现有 `data.key` 保护器加密；接口只向已经通过 Panel/管理认证的浏览器投影其当前允许显示的值。
+### 1. 真分页与分页缓存
 
-索引保留在 `usage.sqlite` 的独立表中，但绝不触碰 `usage_events`、用量汇总或定价表。事务短小；列表读取使用索引和分页索引，不做全表 JSON 解码。
+- `authFilesApi.list` 增加分页参数，默认发出：
 
-### 同步与新鲜度
+  ```text
+  /v0/management/auth-files?page=1&page_size=50&include_proxy_url=1
+  ```
 
-- 内存中的既有 auth-files 原始响应缓存继续存在，作为管理代理兼容层；新列表不再把它的完整 body 送往浏览器。
-- 首次没有索引时：默认列表直接用原生 CPA 的第一页快速返回，同时触发单飞、低优先级的分页索引构建；全局排序/复杂筛选显示“索引同步中”，不能静默给出错误的部分结果。
-- 存在历史索引时：立即以最近完整快照返回，后台使用 CPA 原生分页增量刷新。这样 CPAM 重启后也不会退回为一次全量浏览器下载。
-- 同步限制为独立低优先级队列，最多 1 个 inventory sweep、最多 2 个管理读取并发；不得占用 collector 的 RESP 通道，不得阻塞实际请求处理。
-- 刷新按钮请求强制同步当前页并使相关投影失效；不会把 3,000 条原始 JSON 返回给浏览器。
-- 任何经 CPAM 完成的上传、粘贴 JSON、编辑、启停、优先级修改、删除、OAuth 回写或 Token 自动恢复，必须原子更新或失效对应索引项及代理投影。外部直接修改 CPA 时由短 TTL / 后台同步发现。
+- CPAM proxy 的 auth-files 缓存升级为**分页变体缓存**。缓存键必须包含：
 
-## 代理 URL：解决延迟的具体方式
+  ```text
+  setup 安全摘要 + page + page_size + include_proxy_url
+  ```
 
-### 当前延迟的根因
+  不得只按 setup 缓存，否则第 1 页会错误地复用于第 2 页。
+- 所有 auth-files 上传、删除、启停、优先级、字段编辑、OAuth 回写和自动 Token 更新完成后，必须失效该 setup 的全部分页变体及摘要索引。
+- 每页最多 50（或受服务端硬限制的安全上限）；禁止 UI 再请求“全量 page_size=3000”。
 
-`note` 与基础凭证字段来自首条 `/auth-files` 响应；`proxy_url` 当前通常来自后续 `credential-runtime-metadata` 请求。后者会下载物理 JSON 文件并以 4 个并发解析，因此两者不是同一个接口，也不是同一时刻得到的数据。
+### 2. 普通列表禁止自动 runtime metadata 下载
 
-### 新行为
+- `proxy_url` 以 CPA 分页清单为权威来源，直接进入 AccountRow 和 CPAM 摘要索引。
+- 普通凭证页加载、翻页、排序、筛选时，**不再调用** `credential-runtime-metadata` 来读取代理。
+- `credential-runtime-metadata` 仅保留给：
+  - 打开单账号详情时的精确原始文件校验；
+  - CPA 不支持 `include_proxy_url` 的短期兼容降级；
+  - 明确的人工诊断操作。
+- Core capability 已确认后，列表场景不得静默回退为每页下载原始 JSON；若代理投影异常，显示明确错误并保留最后已知安全缓存值。
+- 自动恢复一次、恢复失败原因、`account_banned` 和“删除当前页已封禁账号”的判断改从 CPAM 本地 Token Recovery / 巡检摘要批量读取，不再绑定 runtime metadata 文件下载。
 
-1. 新列表端点把 `note` 和已缓存的安全 `proxy_url` 同时封装在当前页响应中；热缓存命中时两者同帧显示。
-2. 原生 `/auth-files` 本身携带 `proxy_url` 时，直接写入/刷新代理投影，不再额外下载该文件。
-3. 缓存缺失或过期时，列表仍立即显示；该单元格显示“代理读取中”，并把有限的刷新任务交给后台。完成后前端仅刷新该行投影，不重新加载整页。
-4. 代理投影新鲜期设为 60 秒、可用 stale 期为 10 分钟；CPAM 自己完成的凭证变更立即失效或直接写入新值，因此不会等待 TTL。
-5. 打开账号详情仍可使用精确的 `credential-runtime-metadata` 校验；它不再是普通列表的自动前置请求。
-6. 代理筛选弹窗直接查询全部“已启用”凭证的代理投影索引；只有缺失/过期项走受限后台补齐。结果返回前必须标明并等待未完成项，不能把未知代理误判为“未使用”。
+### 3. 代理筛选
 
-这样，正常列表打开时代理 URL 与备注在同一响应中显示；只有全新、外部刚修改、或缓存被主动清除的条目会有短暂的单行“读取中”。
+- 代理筛选读取 CPAM 凭证摘要索引中所有**已启用**账号的 `proxy_url`，不受当前页影响。
+- 不再用浏览器把全部账号切成 80 条一批、串行调用 runtime metadata。
+- 缓存不完整时，弹窗显示同步状态；未知代理不得被误判为“未使用”。
+- 所有比较继续保留现有规则：trim、去除末尾 `/`、完整 URL 比较、保存在 Manager Server。
 
-## 最近请求、额度和恢复状态
+### 4. 最近请求、额度和恢复状态
 
-- “最近请求”全局排序在服务端完成：复用已有轻量 recent index，并由 SQLite 索引完成排序和总数计算，绝不再要求浏览器持有全部凭证数组。
-- 当前页才批量 join 轻量的最近请求显示、用量窗口、Header/额度/Credits 快照、巡检摘要与 Token Recovery task 摘要。
-- 详情抽屉才请求完整历史、事件列表、完整窗口计算或认证文件运行时校验。
-- `已自动更新一次`、失败原因、`account_banned` 和当前页封禁删除候选直接来自恢复任务/巡检索引，不再依赖为页面下载原始 JSON。
-- Credits 合并规则和 5 小时 / 7 天 / 月额度规则不改；这里只改变其读取与展示的批量边界。
+- 最近请求全局排序在 CPAM 服务端完成，复用轻量 recent index；刷新后仍是全局正确顺序。
+- 当前页才批量 join 最近请求显示、用量窗口、Header/额度/Credits 快照、巡检摘要及 Token Recovery task 摘要。
+- 详情抽屉才请求完整历史、事件列表、完整窗口计算或原始文件运行时校验。
+- Credits 与 5 小时 / 7 天 / 月额度既有合并规则不变；只改变查询边界和传输量。
 
-## 前端行为
+## 首次加载与代理 URL 的最终行为
 
-- 凭证页请求参数包括页码、每页数量、搜索文本、provider、启用状态、运行状态、套餐、额度/风险筛选、排序字段和方向。
-- 输入搜索采用 250–400 ms debounce，条件变化重置为第 1 页。
-- “当前页更新”“删除当前页已封禁账号”“复制当前页账号”等现有按钮继续只作用于服务端返回的当前页，语义不变。
-- 如果未来增加“全部筛选结果批量操作”，必须传递服务器端 query snapshot / generation，并二次确认；禁止把浏览器当前行数组误当成全量目标。
-- 统计卡片及 Provider 数量由索引 facets 返回；可显示同步年龄，但不因后台刷新阻塞页面首屏。
-- 批量粘贴 JSON 成功后不再调用全量 `loadFiles()`；只失效列表 generation 并刷新当前查询页和 facets。
+| 场景 | `note` | `proxy_url` | 原始 JSON 下载 |
+|---|---|---|---|
+| CPA 已支持 `include_proxy_url=1` | 与列表同响应 | 与列表同响应 | 否 |
+| CPAM 代理投影热缓存 | 与列表同响应 | 与列表同响应 | 否 |
+| CPA 正在灰度/不支持 capability | 与列表同响应 | 明确兼容状态或最后已知值 | 仅受控诊断/兼容路径 |
+| 打开账号详情 | 同上 | 可重新精确校验 | 仅该账号/物理文件 |
+
+因此生产目标是：普通列表首屏中备注和代理 URL 同时显示，而不是先渲染备注、再异步补代理。
+
+## 搜索、筛选和批量行为
+
+- 搜索使用 250–400 ms debounce，条件变化重置至第 1 页。
+- Provider、套餐、状态、额度、风险等筛选及统计卡片由服务端索引返回；不再让浏览器持有 3,000 条原始行。
+- “当前页更新”“删除当前页已封禁账号”“复制当前页账号”继续只作用于服务端返回的当前页，语义不变。
+- 如果未来增加“全部筛选结果批量操作”，必须传服务器端 query snapshot / generation 并二次确认；禁止把前端行数组当作全量目标。
+- 批量粘贴 JSON 成功后，仅失效当前查询页、facets 与受影响索引；不再全量 `loadFiles()`。
 
 ## 错误与降级
 
-- CPAM 索引尚未构建：默认第一页可走 CPA 原生真实分页；复杂全局排序/筛选显式显示同步状态，不返回不完整的“总数”。
-- SQLite 轻量 metadata 查询失败：基础凭证页仍显示；最近请求/额度位置显示已有快照或 `-`，不阻塞列表。
-- 单条代理投影下载失败：该条显示“代理读取失败”，并在代理筛选中计为不完整，绝不归类为未使用。
-- CPA 管理读取超时：保留上一次完整安全索引，并显示其年龄；禁止回退为浏览器下载全量原始列表。
+- 凭证摘要索引尚未建好：默认第一页可直接走 CPA 的真实分页请求；复杂全局排序/筛选显式显示同步状态，不能返回不完整的伪全局结果。
+- SQLite 的轻量摘要查询失败：基础列表仍显示；最近请求/额度显示已有快照或 `-`，不能阻塞列表。
+- CPA 管理读取超时：保留最后一次完整安全索引并显示同步年龄；禁止退回浏览器全量下载。
+- 代理 capability 缺失或单项投影异常：不把该代理判断为未使用，也不自动触发全页 raw JSON 扫描。
 
 ## 验收与测试
 
 ### 正确性
 
-1. CPA 返回 3,000 条时，普通首屏网络响应最多携带 `page_size` 条摘要，不含 token / 原始认证 JSON。
-2. `note` 与已缓存 proxy URL 在同一次 list response 渲染；不触发页面级 `credential-runtime-metadata`。
-3. “最近请求”按全局最新时间排序，刷新后仍保持正确。
-4. 搜索和所有既有筛选的 total、facets、分页正确；当前页动作只命中当前服务端页。
-5. 代理筛选以所有已启用凭证为范围；未知项不可被判定为未使用。
-6. 上传、OAuth、自动恢复、删除、priority 修改后对应缓存立即失效/更新。
+1. 3,000 条凭证时，首屏浏览器响应最多包含 `page_size` 条摘要，不含 token / 完整认证 JSON。
+2. 请求参数精确为 `page`、`page_size`、`include_proxy_url=1`；每个页码的缓存变体彼此隔离。
+3. `note` 与 proxy URL 在同一列表响应渲染；普通列表不触发页面级 `credential-runtime-metadata`。
+4. 最近请求按全局最新时间排序，刷新后仍保持正确。
+5. 搜索、筛选、total、facets、分页与当前页动作均正确。
+6. 代理筛选以所有启用凭证为范围；未知项绝不判为未使用。
+7. 上传、OAuth、自动恢复、删除、priority 修改后，对应页、代理与索引立即失效/更新。
 
 ### 计费隔离
 
-1. 访问列表、翻页、搜索、刷新、打开代理筛选不会调用模型请求接口。
+1. 访问列表、翻页、搜索、刷新、代理筛选不会调用模型请求接口。
 2. 每项操作前后 `usage_events` 行数、成本汇总、collector 状态保持不变。
-3. 列表服务只允许查询管理 `/v0/management/auth-files` 系列，不允许进入 Collector、Pricing 或 Usage Writer。
-4. 下游高并发期间，inventory 后台队列并发受限，collector 的 RESP 配置和吞吐基线不变。
+3. 列表服务只允许访问管理 `/v0/management/auth-files` 系列；不得进入 Collector、Pricing 或 Usage Writer。
+4. 下游高并发期间，inventory 同步队列与管理读取并发受限，collector 的 RESP 配置与吞吐基线不变。
 
 ### 性能
 
 1. 3,000 条测试清单下，浏览器初始化只解码当前 50 条；不会构造/排序 3,000 个 React 行。
-2. 翻页仅请求一次当前页摘要和一次当前页批量轻量 metadata join。
-3. 普通打开列表不产生全量 history、全量 window usage、全量 runtime metadata 或全量原始 JSON 下载。
-4. 代理筛选热缓存不触发原始 JSON 下载；冷缓存下载受 2 并发上限且不阻塞列表。
+2. 翻页仅请求当前页摘要与当前页轻量本地 join，不下载原始认证 JSON。
+3. 正常打开列表不产生全量 history、全量 window usage、全量 runtime metadata 或全量原始 JSON 下载。
+4. 代理筛选热缓存不触发原始 JSON 下载；冷状态不能阻塞正常列表，也不能误判未使用代理。
 
 ## 实施范围
 
-仅修改 CPAM：`apps/manager-server`、`apps/web`、测试、二改记忆文档。不会修改 `cli-proxy-api`、CPA Core、Docker Core 容器、生产 CPA 数据卷或其配置。
+仅修改 CPAM：`apps/manager-server`、`apps/web`、测试及二改记忆文档。不会修改或重启 `cli-proxy-api`、CPA Core、CPA 数据卷或其配置。
