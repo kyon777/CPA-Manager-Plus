@@ -526,6 +526,27 @@ func (s *Service) InvalidateAuthFileInventory(ctx context.Context) {
 	s.invalidateAuthFileInventory(setup)
 }
 
+// ReadAuthFileInventory exposes only the bounded CPA management inventory
+// reader needed by CPAM's server-side credential list. It never proxies model
+// traffic and never persists the returned credential projection.
+func (s *Service) ReadAuthFileInventory(ctx context.Context, query url.Values) ([]byte, error) {
+	if s == nil {
+		return nil, errors.New("auth-file inventory reader is unavailable")
+	}
+	setup, ok, err := s.resolveSetup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("usage service is not configured")
+	}
+	entry, err := s.fetchAuthFileInventory(ctx, setup, normalizedAuthFileInventoryQuery(query))
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), entry.body...), nil
+}
+
 func authFileInventoryCacheKey(setup store.Setup, query string) string {
 	sum := sha256.Sum256([]byte(strings.TrimRight(strings.TrimSpace(setup.CPAUpstreamURL), "/") + "\x00" + setup.ManagementKey))
 	base := hex.EncodeToString(sum[:])

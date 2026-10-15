@@ -10,6 +10,7 @@ import (
 	authfilesbatchcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesbatch"
 	automationcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/automation"
 	codexinspectioncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/codexinspection"
+	credentiallistcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/credentiallist"
 	credentialruntimecontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/credentialruntime"
 	dashboardcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/dashboard"
 	healthcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/health"
@@ -44,6 +45,7 @@ func New(appCtx *app.Context) http.Handler {
 	codexInspectionHandler := &codexinspectioncontroller.Handler{App: appCtx}
 	tokenRecoveryHandler := &tokenrecoverycontroller.Handler{App: appCtx}
 	credentialRuntimeHandler := &credentialruntimecontroller.Handler{App: appCtx}
+	credentialListHandler := &credentiallistcontroller.Handler{App: appCtx}
 	dashboardHandler := &dashboardcontroller.Handler{App: appCtx}
 	monitoringHandler := &monitoringcontroller.Handler{App: appCtx}
 	quotaSnapshotHandler := &quotasnapshotcontroller.Handler{App: appCtx}
@@ -67,11 +69,12 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/usage-service/quota-cooldowns", middleware.WithCORS(appCtx.Config, quotaCooldownHandler.Handle))
 	mux.HandleFunc("/usage-service/quota-cooldowns/", middleware.WithCORS(appCtx.Config, quotaCooldownHandler.Handle))
 	mux.HandleFunc("/usage-service/proxy-filter", middleware.WithCORS(appCtx.Config, proxyFilterHandler.Handle))
+	mux.HandleFunc("/usage-service/credential-list", middleware.WithCORS(appCtx.Config, credentialListHandler.Handle))
 	mux.HandleFunc("/setup", middleware.WithCORS(appCtx.Config, setupHandler.Setup))
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
 	mux.HandleFunc("/favicon.ico", panelHandler.Favicon)
 	mux.HandleFunc("/apple-touch-icon.png", panelHandler.AppleTouchIcon)
-	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, authFileBatchUploadHandler, managerConfigHandler, proxyHandler))
+	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, credentialListHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, authFileBatchUploadHandler, managerConfigHandler, proxyHandler))
 
 	return middleware.Recovery(middleware.RequestLogger(mux))
 }
@@ -85,6 +88,7 @@ func rootHandler(
 	codexInspectionHandler *codexinspectioncontroller.Handler,
 	tokenRecoveryHandler *tokenrecoverycontroller.Handler,
 	credentialRuntimeHandler *credentialruntimecontroller.Handler,
+	credentialListHandler *credentiallistcontroller.Handler,
 	dashboardHandler *dashboardcontroller.Handler,
 	monitoringHandler *monitoringcontroller.Handler,
 	quotaSnapshotHandler *quotasnapshotcontroller.Handler,
@@ -120,6 +124,10 @@ func rootHandler(
 		}
 		if strings.TrimRight(r.URL.Path, "/") == "/v0/management/credential-runtime-metadata" {
 			middleware.WithCORS(appCtx.Config, credentialRuntimeHandler.Handle)(w, r)
+			return
+		}
+		if strings.TrimRight(r.URL.Path, "/") == "/usage-service/credential-list" {
+			middleware.WithCORS(appCtx.Config, credentialListHandler.Handle)(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/v0/management/dashboard/") {

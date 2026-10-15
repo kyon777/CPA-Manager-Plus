@@ -6,7 +6,7 @@ vi.mock('@/features/demo/demoMode', async (importOriginal) => ({
   isDemoMode: () => false,
 }));
 
-import { usageServiceApi } from './usageService';
+import { credentialListApi, usageServiceApi } from './usageService';
 
 const BASE = 'http://manager.local:18317';
 const KEY = 'manager-key';
@@ -19,9 +19,11 @@ const TARGET = {
 };
 
 let postSpy: ReturnType<typeof vi.spyOn>;
+let getSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   postSpy = vi.spyOn(axios, 'post').mockResolvedValue({ data: { items: [] } } as never);
+  getSpy = vi.spyOn(axios, 'get').mockResolvedValue({ data: { files: [] } } as never);
 });
 
 afterEach(() => {
@@ -29,6 +31,29 @@ afterEach(() => {
 });
 
 describe('credential runtime manager API', () => {
+  it('requests the bounded server-side credential list with proxy projection', async () => {
+    await credentialListApi.list(BASE, KEY, {
+      page: 3,
+      page_size: 50,
+      include_proxy_url: 1,
+      sort: 'recent_desc',
+    });
+
+    expect(getSpy).toHaveBeenCalledWith(
+      'http://manager.local:18317/usage-service/credential-list',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer manager-key' },
+        timeout: 30_000,
+        params: {
+          page: 3,
+          page_size: 50,
+          include_proxy_url: 1,
+          sort: 'recent_desc',
+        },
+      })
+    );
+  });
+
   it('posts only redacted visible-page locators to the metadata endpoint', async () => {
     const controller = new AbortController();
 

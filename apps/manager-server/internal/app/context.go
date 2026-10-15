@@ -20,6 +20,7 @@ import (
 	codexinspectionsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/codexinspection"
 	collectorsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
+	credentiallistsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentiallist"
 	credentialruntimesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialruntime"
 	dashboardsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/dashboard"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
@@ -68,6 +69,7 @@ type Context struct {
 	TokenRecoveryService           *tokenrecoverysvc.Service
 	TokenRecoveryAutomaticSignal   *tokenrecoverysvc.AutomaticSignalGate
 	CredentialRuntimeService       *credentialruntimesvc.Service
+	CredentialListService          *credentiallistsvc.Service
 	MonitoringService              *monitoringsvc.Service
 	QuotaSnapshotService           *quotasnapshotsvc.Service
 	ModelPriceService              *modelpricesvc.Service
@@ -204,6 +206,7 @@ func fromExisting(
 		authFileMutationCoordinator,
 		st,
 	)
+	credentialListService := credentiallistsvc.New(proxyService)
 	return &Context{
 		UpdateCheckService:   updatechecksvc.New(st, buildinfo.Version, buildinfo.SourceCommit, os.Getenv("CPAMP_UPDATE_CHECK_ENABLED") != "false"),
 		Config:               cfg,
@@ -228,6 +231,7 @@ func fromExisting(
 		TokenRecoveryService:         tokenRecoveryService,
 		TokenRecoveryAutomaticSignal: automaticTokenRecoverySignal,
 		CredentialRuntimeService:     credentialRuntimeService,
+		CredentialListService:        credentialListService,
 		MonitoringService:            monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
 		QuotaSnapshotService:         quotasnapshotsvc.New(st),
 		ModelPriceService:            modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),

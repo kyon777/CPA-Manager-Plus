@@ -1232,6 +1232,28 @@ export interface MonitoringAccountRecentIndexResponse {
   items: MonitoringAccountRecentIndexItem[];
 }
 
+export interface CredentialListRequest {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  provider?: string;
+  status?: string;
+  sort?: string;
+  include_proxy_url?: 0 | 1;
+}
+
+export interface CredentialListResponse {
+  files: AuthFileItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+  proxy_url_included: boolean;
+  sync_status: 'ready' | 'warming' | 'error' | string;
+  sync_age_ms?: number;
+  sync_error?: string;
+}
+
 export interface MonitoringAccountWindowUsageTarget {
   request_key?: string;
   row_key: string;
@@ -4380,6 +4402,49 @@ export const dashboardApi = {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
           params: query,
+        }
+      );
+      return response.data;
+    });
+  },
+};
+
+export const credentialListApi = {
+  list: async (
+    base: string,
+    managementKey: string | undefined,
+    request: CredentialListRequest = {},
+    signal?: AbortSignal
+  ): Promise<CredentialListResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      const demo = getDemoAuthFiles();
+      return {
+        files: demo.files as AuthFileItem[],
+        total: demo.files.length,
+        page: request.page ?? 1,
+        page_size: request.page_size ?? 50,
+        has_more: false,
+        proxy_url_included: true,
+        sync_status: 'ready',
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<CredentialListResponse>(
+        buildUrl(base, '/usage-service/credential-list'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          params: {
+            page: request.page ?? 1,
+            page_size: request.page_size ?? 50,
+            include_proxy_url: request.include_proxy_url ?? 1,
+            ...(request.search ? { search: request.search } : {}),
+            ...(request.provider ? { provider: request.provider } : {}),
+            ...(request.status ? { status: request.status } : {}),
+            ...(request.sort ? { sort: request.sort } : {}),
+          },
+          signal,
         }
       );
       return response.data;
