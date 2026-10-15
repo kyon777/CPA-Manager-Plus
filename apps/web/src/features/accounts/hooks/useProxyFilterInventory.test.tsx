@@ -55,11 +55,24 @@ describe('useProxyFilterInventory', () => {
   function Harness({
     active = true,
     targets = TARGETS,
+    projectedProxyURLs,
+    projectionComplete = false,
+    projectionPending = false,
   }: {
     active?: boolean;
     targets?: CredentialRuntimeMetadataTarget[];
+    projectedProxyURLs?: readonly string[];
+    projectionComplete?: boolean;
+    projectionPending?: boolean;
   }) {
-    const result = useProxyFilterInventory({ active, managerRequestScope: SCOPE, targets });
+    const result = useProxyFilterInventory({
+      active,
+      managerRequestScope: SCOPE,
+      targets,
+      projectedProxyURLs,
+      projectionComplete,
+      projectionPending,
+    });
     useEffect(() => {
       latest = result;
     }, [result]);
@@ -99,6 +112,39 @@ describe('useProxyFilterInventory', () => {
     expect(latest?.enabledCount).toBe(2);
     expect(latest?.loading).toBe(false);
     expect(latest?.error).toBe('');
+  });
+
+  it('uses the CPA list projection without downloading runtime metadata', async () => {
+    await act(async () => {
+      renderer = create(
+        <Harness
+          projectedProxyURLs={[' http://used:8080/ ', 'http://other:8080']}
+          projectionComplete
+        />
+      );
+      await flush();
+    });
+
+    expect(mocks.getCredentialRuntimeMetadata).not.toHaveBeenCalled();
+    expect(latest?.proxyURLs).toEqual(['http://used:8080', 'http://other:8080']);
+    expect(latest?.incompleteCount).toBe(0);
+    expect(latest?.loading).toBe(false);
+  });
+
+  it('waits for a warming CPA projection instead of scanning runtime metadata', async () => {
+    await act(async () => {
+      renderer = create(
+        <Harness
+          projectedProxyURLs={['http://known:8080']}
+          projectionPending
+        />
+      );
+      await flush();
+    });
+
+    expect(mocks.getCredentialRuntimeMetadata).not.toHaveBeenCalled();
+    expect(latest?.loading).toBe(true);
+    expect(latest?.incompleteCount).toBe(TARGETS.length);
   });
 
   it('marks an omitted target as incomplete instead of silently returning false matches', async () => {

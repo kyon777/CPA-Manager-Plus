@@ -1245,6 +1245,7 @@ export interface CredentialListRequest {
 export interface CredentialListResponse {
   files: AuthFileItem[];
   total: number;
+  inventory_total?: number;
   page: number;
   page_size: number;
   has_more: boolean;
@@ -1252,6 +1253,10 @@ export interface CredentialListResponse {
   sync_status: 'ready' | 'warming' | 'error' | string;
   sync_age_ms?: number;
   sync_error?: string;
+  proxy_urls?: string[];
+  enabled_credential_count?: number;
+  proxy_projection_complete?: boolean;
+  provider_counts?: Record<string, number>;
 }
 
 export interface MonitoringAccountWindowUsageTarget {

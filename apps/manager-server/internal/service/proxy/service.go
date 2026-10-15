@@ -27,10 +27,11 @@ import (
 )
 
 type Service struct {
-	managerConfigService *managerconfig.Service
-	store                *store.Store
-	authFileMutations    *cpaauthfiles.MutationCoordinator
-	authFileInventory    *authFileInventoryCache
+	managerConfigService      *managerconfig.Service
+	store                     *store.Store
+	authFileMutations         *cpaauthfiles.MutationCoordinator
+	authFileInventory         *authFileInventoryCache
+	credentialListInvalidator func()
 }
 
 const (
@@ -510,6 +511,19 @@ func (s *Service) invalidateAuthFileInventory(setup store.Setup) {
 		}
 	}
 	s.authFileInventory.mu.Unlock()
+	if s.credentialListInvalidator != nil {
+		s.credentialListInvalidator()
+	}
+}
+
+// SetCredentialListInvalidator connects the management mutation path to the
+// derived server-side credential list cache without introducing a package
+// dependency from proxy to credentiallist.
+func (s *Service) SetCredentialListInvalidator(invalidator func()) {
+	if s == nil {
+		return
+	}
+	s.credentialListInvalidator = invalidator
 }
 
 // InvalidateAuthFileInventory lets internal mutators such as the async batch
@@ -545,6 +559,23 @@ func (s *Service) ReadAuthFileInventory(ctx context.Context, query url.Values) (
 		return nil, err
 	}
 	return append([]byte(nil), entry.body...), nil
+}
+
+// AuthFileInventoryScope returns a non-secret digest for the active CPA setup.
+// Consumers use it to isolate derived list caches when the upstream URL or
+// management key is replaced; the key itself never leaves the setup store.
+func (s *Service) AuthFileInventoryScope(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", errors.New("auth-file inventory reader is unavailable")
+	}
+	setup, ok, err := s.resolveSetup(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", errors.New("usage service is not configured")
+	}
+	return authFileInventoryCacheKey(setup, ""), nil
 }
 
 func authFileInventoryCacheKey(setup store.Setup, query string) string {

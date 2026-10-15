@@ -25,6 +25,8 @@ export interface PanelFeatureAvailability {
   panelBase: string;
   managerServiceBase: string;
   managerServiceAvailable: boolean;
+  /** CPA paged auth-file projection is available on the detected Manager. */
+  credentialListAvailable?: boolean;
   requestMonitoringAvailable: boolean;
   modelPricesAvailable: boolean;
   serverCodexInspectionAvailable: boolean;
@@ -56,6 +58,7 @@ const buildUnavailableState = (
   panelBase: normalizeBase(input.panelBase),
   managerServiceBase: '',
   managerServiceAvailable: false,
+  credentialListAvailable: false,
   requestMonitoringAvailable: false,
   modelPricesAvailable: false,
   serverCodexInspectionAvailable: false,
@@ -100,6 +103,7 @@ export function resolvePanelFeatureAvailability(
     panelBase: normalizeBase(input.panelBase),
     managerServiceBase,
     managerServiceAvailable: true,
+    credentialListAvailable: true,
     requestMonitoringAvailable,
     modelPricesAvailable: true,
     serverCodexInspectionAvailable: hasCPAConnection,
@@ -176,6 +180,7 @@ const demoAvailability: PanelFeatureAvailability = {
   panelBase: DEMO_API_BASE,
   managerServiceBase: DEMO_API_BASE,
   managerServiceAvailable: true,
+  credentialListAvailable: true,
   requestMonitoringAvailable: true,
   modelPricesAvailable: true,
   serverCodexInspectionAvailable: true,

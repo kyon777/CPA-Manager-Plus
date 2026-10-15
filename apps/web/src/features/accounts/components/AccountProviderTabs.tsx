@@ -12,6 +12,8 @@ type AccountProviderTabRow = {
 
 interface AccountProviderTabsProps {
   rows: readonly AccountProviderTabRow[];
+  providerCounts?: Readonly<Record<string, number>>;
+  totalCount?: number;
   value: string;
   onChange: (provider: string) => void;
   resolvedTheme: ResolvedTheme;
@@ -21,6 +23,8 @@ const ALL_PROVIDERS = 'all';
 
 export function AccountProviderTabs({
   rows,
+  providerCounts,
+  totalCount,
   value,
   onChange,
   resolvedTheme,
@@ -28,10 +32,16 @@ export function AccountProviderTabs({
   const { t } = useTranslation();
 
   const tabs = useMemo<ReadonlyArray<SegmentedTabItem<string>>>(() => {
-    const counts = new Map<string, number>();
-    rows.forEach((row) => {
-      counts.set(row.provider, (counts.get(row.provider) ?? 0) + 1);
-    });
+    const counts = new Map<string, number>(
+      providerCounts
+        ? Object.entries(providerCounts).map(([provider, count]) => [provider, count])
+        : []
+    );
+    if (!providerCounts) {
+      rows.forEach((row) => {
+        counts.set(row.provider, (counts.get(row.provider) ?? 0) + 1);
+      });
+    }
 
     const providers = Array.from(counts.keys()).sort((left, right) => left.localeCompare(right));
     if (value !== ALL_PROVIDERS && !counts.has(value)) {
@@ -63,7 +73,7 @@ export function AccountProviderTabs({
     return [
       {
         id: ALL_PROVIDERS,
-        label: renderTabLabel(ALL_PROVIDERS, rows.length),
+        label: renderTabLabel(ALL_PROVIDERS, totalCount ?? rows.length),
         title: t('accounts.filter_all'),
       },
       ...providers.map((provider) => ({
@@ -72,7 +82,7 @@ export function AccountProviderTabs({
         title: getProviderLabel(provider, t),
       })),
     ];
-  }, [resolvedTheme, rows, t, value]);
+  }, [providerCounts, resolvedTheme, rows, t, totalCount, value]);
 
   return (
     <div className={styles.root}>

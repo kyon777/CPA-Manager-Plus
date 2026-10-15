@@ -74,6 +74,7 @@ vi.mock('@/stores', () => ({
 vi.mock('@/services/api', () => ({
   authFilesApi: {
     list: mocks.list,
+    listWithProxyProjection: mocks.list,
     lookup: mocks.lookup,
     saveJsonObject: mocks.saveJsonObject,
     uploadFiles: mocks.uploadFiles,
@@ -153,7 +154,8 @@ const mountUseAuthFilesData = (
     connectionFingerprint?: string
   ) => void,
   onCredentialFilesChanged?: (mutation: AuthFilesCredentialMutation) => void,
-  requestScope?: { apiBase: string; managementKey: string }
+  requestScope?: { apiBase: string; managementKey: string },
+  deferReloadAfterMutation = false
 ): UseAuthFilesDataHarness => {
   let currentConnectionFingerprint = connectionFingerprint;
   let lastLayoutConnectionFingerprint: string | undefined | symbol = Symbol('uninitialized');
@@ -175,6 +177,7 @@ const mountUseAuthFilesData = (
       connectionFingerprint: currentConnectionFingerprint,
       requestScope,
       onCredentialMutation: onCredentialFilesChanged,
+      deferReloadAfterMutation,
     });
     captureHook(value);
     useLayoutEffect(() => {
@@ -542,6 +545,41 @@ describe('prepareAuthFilesForUpload', () => {
 });
 
 describe('useAuthFilesData handleFileChange', () => {
+  it('does not reload the full inventory after upload when the server projection owns refreshes', async () => {
+    const onCredentialFilesChanged = vi.fn();
+    const hook = mountUseAuthFilesData(
+      undefined,
+      undefined,
+      onCredentialFilesChanged,
+      undefined,
+      true
+    );
+    const file = new File(['{}'], 'deferred.json', { type: 'application/json' });
+    mocks.uploadFiles.mockResolvedValueOnce({
+      status: 'ok',
+      uploaded: 1,
+      files: ['deferred.json'],
+      failed: [],
+    });
+
+    await act(async () => {
+      await hook
+        .getCurrent()
+        .handleFileChange({
+          target: { files: [file] as unknown as FileList, value: file.name },
+        } as unknown as Parameters<
+          ReturnType<typeof useAuthFilesData>['handleFileChange']
+        >[0]);
+    });
+
+    expect(onCredentialFilesChanged).toHaveBeenCalledWith({
+      kind: 'source-files-changed',
+      fileNames: ['deferred.json'],
+    });
+    expect(mocks.list).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
   it('auto-converts an uploaded sub2api export before calling the backend upload API', async () => {
     const onCredentialFilesChanged = vi.fn();
     const hook = mountUseAuthFilesData(undefined, undefined, onCredentialFilesChanged);

@@ -7,11 +7,17 @@ import { normalizeProxyFilterURLs } from '../model/proxyFilter';
  * little headroom for future request-size changes and split large inventories
  * deterministically. */
 const TARGET_BATCH_SIZE = 80;
+const EMPTY_PROJECTED_PROXY_URLS: readonly string[] = [];
 
 export type UseProxyFilterInventoryOptions = {
   active: boolean;
   managerRequestScope?: ApiClientRequestScope;
   targets: readonly CredentialRuntimeMetadataTarget[];
+  projectedProxyURLs?: readonly string[];
+  projectionComplete?: boolean;
+  /** CPA inventory is still warming; do not fall back to raw JSON metadata. */
+  projectionPending?: boolean;
+  projectedEnabledCount?: number;
 };
 
 export type UseProxyFilterInventoryResult = {
@@ -40,6 +46,10 @@ export const useProxyFilterInventory = ({
   active,
   managerRequestScope,
   targets,
+  projectedProxyURLs = EMPTY_PROJECTED_PROXY_URLS,
+  projectionComplete = false,
+  projectionPending = false,
+  projectedEnabledCount,
 }: UseProxyFilterInventoryOptions): UseProxyFilterInventoryResult => {
   const normalizedTargets = useMemo(
     () =>
@@ -55,6 +65,10 @@ export const useProxyFilterInventory = ({
   const apiBase = managerRequestScope?.apiBase.trim() ?? '';
   const managementKey = managerRequestScope?.managementKey ?? '';
   const enabled = active && Boolean(apiBase && managementKey);
+  const normalizedProjectedProxyURLs = useMemo(
+    () => normalizeProxyFilterURLs(projectedProxyURLs),
+    [projectedProxyURLs]
+  );
   const [proxyURLs, setProxyURLs] = useState<readonly string[]>([]);
   const [incompleteCount, setIncompleteCount] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -71,6 +85,30 @@ export const useProxyFilterInventory = ({
       setProxyURLs([]);
       setIncompleteCount(0);
       setLoading(false);
+      setError('');
+      return;
+    }
+
+    if (projectionComplete) {
+      setProxyURLs(normalizedProjectedProxyURLs);
+      setIncompleteCount(0);
+      setLoading(false);
+      setError('');
+      return;
+    }
+
+    if (projectionPending) {
+      // Keep any safe values already projected by the server, but mark the
+      // inventory incomplete while CPA finishes warming. In particular, do
+      // not issue the legacy credential-runtime-metadata scan here: an
+      // incomplete projection must never be interpreted as an unused proxy.
+      setProxyURLs(normalizedProjectedProxyURLs);
+      setIncompleteCount(
+        typeof projectedEnabledCount === 'number' && Number.isFinite(projectedEnabledCount)
+          ? Math.max(0, Math.trunc(projectedEnabledCount))
+          : normalizedTargets.length
+      );
+      setLoading(true);
       setError('');
       return;
     }
@@ -135,7 +173,16 @@ export const useProxyFilterInventory = ({
         setLoading(false);
       }
     }
-  }, [apiBase, enabled, managementKey, normalizedTargets]);
+  }, [
+    apiBase,
+    enabled,
+    managementKey,
+    normalizedProjectedProxyURLs,
+    normalizedTargets,
+    projectionComplete,
+    projectionPending,
+    projectedEnabledCount,
+  ]);
 
   useEffect(() => {
     generationRef.current += 1;
@@ -149,7 +196,13 @@ export const useProxyFilterInventory = ({
 
   return {
     proxyURLs,
-    enabledCount: normalizedTargets.length,
+    enabledCount:
+      projectionComplete &&
+      typeof projectedEnabledCount === 'number' &&
+      Number.isFinite(projectedEnabledCount) &&
+      projectedEnabledCount >= 0
+        ? Math.trunc(projectedEnabledCount)
+        : normalizedTargets.length,
     incompleteCount,
     loading,
     error,

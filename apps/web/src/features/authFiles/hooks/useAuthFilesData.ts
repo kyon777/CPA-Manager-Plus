@@ -78,6 +78,10 @@ export type AuthFilesCredentialMutation =
   | {
       kind: 'status-changed';
       selectionKeys: string[];
+    }
+  | {
+      kind: 'fields-changed';
+      selectionKeys: string[];
     };
 
 export type UseAuthFilesDataResult = {
@@ -94,6 +98,10 @@ export type UseAuthFilesDataResult = {
   batchFieldsUpdating: boolean;
   fileInputRef: RefObject<HTMLInputElement | null>;
   loadFiles: (options?: { throwOnError?: boolean }) => Promise<AuthFileItem[] | undefined>;
+  /** Replace the visible inventory with a server-projected page. */
+  replaceFiles: (nextFiles: AuthFileItem[]) => void;
+  /** Synchronize an external paged-list load state without fetching files. */
+  setLoadState: (state: { loading?: boolean; error?: string }) => void;
   handleUploadClick: () => void;
   handleFileChange: (event: ChangeEvent<HTMLInputElement>) => Promise<void>;
   savePastedAuthJson: (
@@ -751,6 +759,13 @@ type UseAuthFilesDataOptions = {
   connectionFingerprint?: string | null;
   requestScope?: AuthFilesApiRequestScope;
   onCredentialMutation?: (mutation: AuthFilesCredentialMutation) => void;
+  /**
+   * When the Manager Server owns the visible paged projection, mutation
+   * callbacks invalidate that projection and a full auth-files reload would
+   * defeat the bounded-list design. Explicit user refreshes still call
+   * `loadFiles` directly.
+   */
+  deferReloadAfterMutation?: boolean | (() => boolean);
 };
 
 export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuthFilesDataResult {
@@ -759,6 +774,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
   const connectionFingerprint = options.connectionFingerprint?.trim() ?? '';
   const requestScope = options.requestScope;
   const onCredentialMutation = options.onCredentialMutation;
+  const deferReloadAfterMutation = options.deferReloadAfterMutation;
 
   const [files, setFiles] = useState<AuthFileItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -789,6 +805,18 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
   const commitFiles = useCallback((next: SetStateAction<AuthFileItem[]>) => {
     filesRevisionRef.current += 1;
     setFiles(next);
+  }, []);
+  const replaceFiles = useCallback(
+    (nextFiles: AuthFileItem[]) => {
+      commitFiles(Array.isArray(nextFiles) ? nextFiles : []);
+      setError('');
+      setLoading(false);
+    },
+    [commitFiles]
+  );
+  const setLoadState = useCallback((state: { loading?: boolean; error?: string }) => {
+    if (state.loading !== undefined) setLoading(state.loading);
+    if (state.error !== undefined) setError(state.error);
   }, []);
 
   useLayoutEffect(() => {
@@ -852,7 +880,10 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     [onCredentialMutation]
   );
   const notifyCredentialSelectionChanged = useCallback(
-    (kind: 'credential-refreshed' | 'status-changed', selectionKeys: string[]) => {
+    (
+      kind: 'credential-refreshed' | 'status-changed' | 'fields-changed',
+      selectionKeys: string[]
+    ) => {
       const normalizedKeys = Array.from(new Set(selectionKeys.filter((key) => key.length > 0)));
       if (normalizedKeys.length > 0)
         onCredentialMutation?.({ kind, selectionKeys: normalizedKeys });
@@ -963,8 +994,8 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       setError('');
       try {
         const data = requestScope
-          ? await authFilesApi.list(requestScope)
-          : await authFilesApi.list();
+          ? await authFilesApi.listWithProxyProjection(requestScope)
+          : await authFilesApi.listWithProxyProjection();
         if (!isCurrentRequest()) {
           if (options?.throwOnError) throw new Error(t('notification.refresh_failed'));
           return;
@@ -987,6 +1018,17 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       }
     },
     [commitFiles, connectionFingerprint, requestScope, t]
+  );
+
+  const reloadAfterMutation = useCallback(
+    async (options?: { throwOnError?: boolean }): Promise<AuthFileItem[] | undefined> => {
+      const shouldDefer =
+        deferReloadAfterMutation === true ||
+        (typeof deferReloadAfterMutation === 'function' && deferReloadAfterMutation());
+      if (shouldDefer) return undefined;
+      return loadFiles(options);
+    },
+    [deferReloadAfterMutation, loadFiles]
   );
 
   const handleUploadClick = useCallback(() => {
@@ -1061,7 +1103,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
               failures.length ? 'warning' : 'success'
             );
           }
-          await loadFiles();
+          await reloadAfterMutation();
           if (!isCurrentOperation()) return;
         }
 
@@ -1088,9 +1130,9 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     },
     [
       clearInspectionOwnershipForFile,
-      loadFiles,
       notifySourceFilesChanged,
       requestScope,
+      reloadAfterMutation,
       showNotification,
       t,
     ]
@@ -1155,7 +1197,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
             const affectedNames = [...failedNames, ...unresolvedNames];
             if (result.uploaded > 0) {
               try {
-                await loadFiles({ throwOnError: true });
+                await reloadAfterMutation({ throwOnError: true });
                 if (!isCurrentOperation()) return savedFileNames;
               } catch (reloadError) {
                 if (!isCurrentOperation()) return savedFileNames;
@@ -1195,7 +1237,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
           );
         };
         try {
-          await loadFiles({ throwOnError: true });
+          await reloadAfterMutation({ throwOnError: true });
           if (!isCurrentOperation()) return savedFileNames;
         } catch (reloadError) {
           if (!isCurrentOperation()) return savedFileNames;
@@ -1220,9 +1262,9 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     },
     [
       clearInspectionOwnershipForFile,
-      loadFiles,
       notifySourceFilesChanged,
       requestScope,
+      reloadAfterMutation,
       showNotification,
       t,
     ]
@@ -1967,10 +2009,18 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
           failedNames.add(group.name);
         });
 
+        const successfulSelectionKeys = results.flatMap((result, index) => {
+          if (result.status !== 'fulfilled') return [];
+          return executableGroups[index].targets.map((target) =>
+            getAuthFileStatusSelectionKey(target)
+          );
+        });
+        notifyCredentialSelectionChanged('fields-changed', successfulSelectionKeys);
+
         if (!singleTarget) {
           if (success > 0) {
             try {
-              await loadFiles({ throwOnError: true });
+              await reloadAfterMutation({ throwOnError: true });
               if (authFilesOperationGenerationRef.current !== generation) return null;
             } catch (err: unknown) {
               if (authFilesOperationGenerationRef.current !== generation) return null;
@@ -2021,7 +2071,15 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
         }
       }
     },
-    [commitFiles, deselectAll, loadFiles, requestScope, showNotification, t]
+    [
+      commitFiles,
+      deselectAll,
+      notifyCredentialSelectionChanged,
+      reloadAfterMutation,
+      requestScope,
+      showNotification,
+      t,
+    ]
   );
 
   const batchDownload = useCallback(
@@ -2198,6 +2256,8 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     batchFieldsUpdating,
     fileInputRef,
     loadFiles,
+    replaceFiles,
+    setLoadState,
     handleUploadClick,
     handleFileChange,
     savePastedAuthJson,

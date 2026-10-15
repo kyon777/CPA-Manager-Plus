@@ -1249,6 +1249,17 @@ export const authFilesApi = {
     return dedupeAuthFilesResponse(response);
   },
 
+  listWithProxyProjection: async (
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<AuthFilesResponse> => {
+    const config = {
+      ...(requestScope ? createScopedApiRequestConfig(requestScope) : {}),
+      params: { include_proxy_url: 1 },
+    };
+    const response = await apiClient.get<AuthFilesResponse>('/auth-files', config);
+    return dedupeAuthFilesResponse(response);
+  },
+
   list: async (requestScope?: AuthFilesApiRequestScope) => {
     const response = requestScope
       ? await apiClient.get<AuthFilesResponse>(

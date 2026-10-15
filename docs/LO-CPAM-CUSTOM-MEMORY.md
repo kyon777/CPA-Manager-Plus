@@ -147,3 +147,17 @@ USAGE_QUERY_LIMIT=50000
 - 不在生产 dirty source 上做上游合并。
 - 不用上游分支直接覆盖 `lo/custom`，不执行会丢失二改的 `reset --hard`。
 - 不把 CPAM 的自定义功能提交给 `seakee/CPA-Manager-Plus` 上游。
+
+## 2026-10-15：CPAM 凭证列表服务端分页与高并发优化
+
+本次二改只涉及 CPAM Manager Server/Web，不修改 CPA Core、`cli-proxy-api`、计费采集器或 `usage_events` 数据结构。
+
+- 新增 `GET /usage-service/credential-list` 服务端分页投影。前端首屏只请求当前页（默认最多 50 条），Manager 向 CPA Core 请求 `/v0/management/auth-files?page=1&page_size=50&include_proxy_url=1`，后台按页预热其余清单。
+- 投影同一响应返回 `note`、`proxy_url`、`priority` 等非敏感字段；服务端清理 token、headers、secret 等敏感字段。`proxy_urls`、启用数量、provider 统计只用于凭证列表/IP 筛选，不参与计费。
+- 列表快照按 CPA setup（上游 URL + 管理 Key 的非秘密 SHA-256）和 proxy 投影变体隔离，30 秒 TTL；凭证上传、删除、状态/字段修改会失效快照。首次并发请求通过 in-flight 合并，只让一个请求访问 CPA Core。
+- “最近请求”排序使用现有 `usage_events` 索引读取，并按快照缓存 5 秒；读取失败时仅回退确定性排序，不影响列表或用量/计费数据。
+- 前端对搜索输入做 300ms debounce，服务端负责搜索、provider/status 筛选和分页；请求过期会 abort。分页模式下只对当前页懒加载 `credential-runtime-metadata`，代理筛选优先使用 CPA 投影，投影预热期间不会退回下载全量原始 JSON。
+- 账号 mutation 后只刷新当前 Manager 页；显式工作区刷新在分页模式下同样走当前页接口，避免重新下载 3000 个原始凭证。旧 Manager（404/405）保留 legacy 全量路径，其他错误不隐式触发大下载。
+- `enabled_credential_count` 即使为 0 也显式返回，避免前端把“没有启用账号”误判为字段缺失。
+
+验证边界：所有改动仅在 CPAM 隔离 worktree 构建；更新或部署时不得触碰 CPA Core / `cli-proxy-api`，不得迁移或覆盖 `usage.sqlite`、`data.key`、secrets。
