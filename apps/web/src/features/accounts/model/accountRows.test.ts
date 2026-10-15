@@ -11,6 +11,7 @@ import {
   buildAccountInspectionBySelectionKey,
   buildAccountMetrics,
   buildAccountRows as buildAccountRowsBase,
+  applyEnabledCredentialListMetric,
   filterSuppressedAccountInspectionResults,
   findAccountRowForInspectionTarget,
   filterAccountRows,
@@ -115,6 +116,58 @@ const buildAccountRows = (
   );
 
 describe('accountRows', () => {
+  it('uses the ready enabled query total for the normal-available card', () => {
+    const metrics = applyEnabledCredentialListMetric(
+      {
+        total: 50,
+        available: 45,
+        needsAttention: 0,
+        quotaRisk: 5,
+        disabled: 0,
+        unconfirmed: 0,
+        needsInspectionAction: 0,
+      },
+      { status: 'enabled', serverPaged: true, syncStatus: 'ready', total: 292 }
+    );
+
+    expect(metrics.available).toBe(292);
+    expect(metrics.total).toBe(50);
+  });
+
+  it('keeps page-local metrics while the enabled snapshot is warming', () => {
+    const metrics = applyEnabledCredentialListMetric(
+      {
+        total: 50,
+        available: 45,
+        needsAttention: 0,
+        quotaRisk: 5,
+        disabled: 0,
+        unconfirmed: 0,
+        needsInspectionAction: 0,
+      },
+      { status: 'enabled', serverPaged: true, syncStatus: 'warming', total: 35 }
+    );
+
+    expect(metrics.available).toBe(45);
+  });
+
+  it('does not replace health metrics for other status filters', () => {
+    const metrics = applyEnabledCredentialListMetric(
+      {
+        total: 50,
+        available: 45,
+        needsAttention: 0,
+        quotaRisk: 5,
+        disabled: 0,
+        unconfirmed: 0,
+        needsInspectionAction: 0,
+      },
+      { status: 'available', serverPaged: true, syncStatus: 'ready', total: 202 }
+    );
+
+    expect(metrics.available).toBe(45);
+  });
+
   it('suppresses only handled inspection authentication results for the reauthenticated identity', () => {
     const authenticationResult: AccountInspectionResult = {
       id: 1,

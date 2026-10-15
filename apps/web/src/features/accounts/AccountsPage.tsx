@@ -123,6 +123,7 @@ import {
 } from '@/features/accounts/model/credentialRuntimeMetadata';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
+  applyEnabledCredentialListMetric,
   buildAccountInspectionBySelectionKey,
   buildAccountMetrics,
   buildAccountRows,
@@ -4668,17 +4669,23 @@ export function AccountsPage() {
   ]);
   const metrics = useMemo(() => {
     const localMetrics = buildAccountMetrics(rows, {
-        pendingActionsByRowKey: actionCandidatesByRowKey,
-        quotaCooldownsByRowKey,
-        requestEvidenceBySelectionKey,
-      });
+      pendingActionsByRowKey: actionCandidatesByRowKey,
+      quotaCooldownsByRowKey,
+      requestEvidenceBySelectionKey,
+    });
     const inventoryTotal =
       serverCredentialListEnabled && serverCredentialListPage.data?.inventory_total !== undefined
         ? serverCredentialListPage.data.inventory_total
         : undefined;
-    return inventoryTotal === undefined
+    const metricsWithInventoryTotal = inventoryTotal === undefined
       ? localMetrics
       : { ...localMetrics, total: inventoryTotal };
+    return applyEnabledCredentialListMetric(metricsWithInventoryTotal, {
+      status: statusFilter,
+      serverPaged: serverCredentialListEnabled,
+      syncStatus: serverCredentialListPage.data?.sync_status,
+      total: serverCredentialListPage.data?.total,
+    });
   }, [
     actionCandidatesByRowKey,
     quotaCooldownsByRowKey,
@@ -4686,6 +4693,7 @@ export function AccountsPage() {
     rows,
     serverCredentialListEnabled,
     serverCredentialListPage.data,
+    statusFilter,
   ]);
   const providerOptions = useMemo(() => getProviderOptions(rows), [rows]);
   const planOptions = useMemo(() => getPlanOptions(rows, t), [rows, t]);

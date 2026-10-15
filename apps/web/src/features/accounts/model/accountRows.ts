@@ -705,6 +705,31 @@ export const buildAccountMetrics = (
   return metrics;
 };
 
+export interface EnabledCredentialListMetricOptions {
+  status: AccountStatusFilter;
+  serverPaged: boolean;
+  syncStatus?: string;
+  total?: number;
+}
+
+export const applyEnabledCredentialListMetric = (
+  metrics: AccountMetrics,
+  options: EnabledCredentialListMetricOptions
+): AccountMetrics => {
+  const total = options.total;
+  if (
+    options.status !== 'enabled' ||
+    !options.serverPaged ||
+    options.syncStatus !== 'ready' ||
+    typeof total !== 'number' ||
+    !Number.isInteger(total) ||
+    total < 0
+  ) {
+    return metrics;
+  }
+  return { ...metrics, available: total };
+};
+
 const isAccountRowAvailable = (
   row: AccountRow,
   requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
