@@ -651,7 +651,9 @@ func parseInventory(body []byte, clock ...func() time.Time) (*snapshot, error) {
 	var envelope struct {
 		Files            []map[string]any `json:"files"`
 		Total            int              `json:"total"`
-		HasMore          bool             `json:"has_more"`
+		// A pointer distinguishes an explicit false on the final paginated
+		// response from an omitted field in older/non-paged CPA responses.
+		HasMore          *bool            `json:"has_more"`
 		ProxyURLIncluded bool             `json:"proxy_url_included"`
 	}
 	if strings.HasPrefix(trimmed, "[") {
@@ -676,6 +678,10 @@ func parseInventory(body []byte, clock ...func() time.Time) (*snapshot, error) {
 	if total < len(items) {
 		total = len(items)
 	}
+	hasMore := total > len(items)
+	if envelope.HasMore != nil {
+		hasMore = *envelope.HasMore
+	}
 	now := time.Now
 	if len(clock) > 0 && clock[0] != nil {
 		now = clock[0]
@@ -685,8 +691,8 @@ func parseInventory(body []byte, clock ...func() time.Time) (*snapshot, error) {
 		totalHint:        total,
 		proxyURLIncluded: envelope.ProxyURLIncluded || hasProxyField(items),
 		updatedAt:        now(),
-		warming:          envelope.HasMore || total > len(items),
-		complete:         !(envelope.HasMore || total > len(items)),
+		warming:          hasMore,
+		complete:         !hasMore,
 	}, nil
 }
 

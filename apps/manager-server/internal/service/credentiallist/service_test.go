@@ -302,3 +302,13 @@ func TestWarmingDoesNotStopAtTheFirstPageWhenCPAOmitsTotal(t *testing.T) {
 	}
 	t.Fatal("snapshot did not finish warming")
 }
+
+func TestParseInventoryHonorsExplicitHasMoreFalseOnFinalPage(t *testing.T) {
+	parsed, err := parseInventory([]byte(`{"files":[{"name":"last.json"}],"total":426,"page":9,"page_size":50,"has_more":false}`))
+	if err != nil {
+		t.Fatalf("parse final page: %v", err)
+	}
+	if parsed.warming || !parsed.complete {
+		t.Fatalf("final page with explicit has_more=false was treated as warming: %#v", parsed)
+	}
+}
