@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	DefaultTimeout                  = 30 * time.Second
+	DefaultTimeout                  = 60 * time.Second
 	defaultMaxAuthFilesResponseSize = 64 * 1024 * 1024
 	maxActionResponseSize           = 4 * 1024 * 1024
 )

@@ -232,19 +232,24 @@ describe('accounts workspace wiring', () => {
     );
   });
 
-  it('uses the paged credential projection for recovery state instead of raw JSON metadata', () => {
-    expect(accountsPageSource).toContain('buildEmbeddedCredentialRuntimeMetadataItems');
-    expect(accountsPageSource).toContain('const pageEmbeddedCredentialRuntimeItems = useMemo(');
-    expect(accountsPageSource).toContain('seedItems: pageEmbeddedCredentialRuntimeItems');
-    expect(accountsPageSource).toContain('fetchMetadata: !serverCredentialListEnabled');
+  it('uses one full proxy-projected inventory while keeping runtime recovery reads page-scoped', () => {
+    expect(accountsPageSource).not.toContain('useCredentialListPage');
+    expect(accountsPageSource).not.toContain('serverCredentialListEnabled');
+    expect(accountsPageSource).toContain('void loadFiles();');
+    expect(accountsPageSource).toContain('fetchMetadata: false');
+    expect(accountsPageSource).toContain('lookupRecoveryTasks: true');
+    expect(accountsPageSource).toContain('proxyFilterEnabledRows.flatMap');
   });
 
-  it('uses the Manager global health projection for server-paged cards', () => {
+  it('builds health cards from the full in-memory credential inventory', () => {
+    expect(accountsPageSource).not.toContain('globalCredentialMetrics');
+    expect(accountsPageSource).toContain('buildAccountMetrics(rows, {');
+    expect(accountsPageSource).toContain("const enabledCredentialListSummary = statusFilter === 'enabled';");
+    expect(accountsPageSource).toContain('fullInventory: true');
     expect(accountsPageSource).toContain(
-      "serverCredentialListPage.data?.global_metrics_status === 'ready'"
+      '<AccountMetricsGrid metrics={metrics} enabledSummary={enabledCredentialListSummary} />'
     );
-    expect(accountsPageSource).toContain('globalCredentialMetrics.needs_attention');
-    expect(accountsPageSource).toContain('globalSummaryPending={globalCredentialMetricsPending}');
+    expect(accountsPageSource).not.toContain('globalSummaryPending={globalCredentialMetricsPending}');
   });
 
   it.each([en, ru, zhCN, zhTW])('defines page-scoped metric copy in every locale', (locale) => {

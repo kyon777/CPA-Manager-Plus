@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -74,7 +67,6 @@ import {
   getScopedQuotaState,
 } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { useDebounce } from '@/hooks/useDebounce';
 import { useInterval } from '@/hooks/useInterval';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
@@ -93,7 +85,6 @@ import {
 } from '@/features/accounts/hooks/useCredentialInspectionSnapshot';
 import { useAccountsWorkspaceRefresh } from '@/features/accounts/hooks/useAccountsWorkspaceRefresh';
 import { useCredentialRuntimeMetadata } from '@/features/accounts/hooks/useCredentialRuntimeMetadata';
-import { useCredentialListPage } from '@/features/accounts/hooks/useCredentialListPage';
 import { useProxyFilterInventory } from '@/features/accounts/hooks/useProxyFilterInventory';
 import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderSnapshotsLoader';
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
@@ -115,7 +106,6 @@ import {
 } from '@/features/oauth/codexReauthModel';
 import { runCredentialVisibilityRetry } from '@/features/accounts/model/accountCredentialVisibilityRetry';
 import {
-  buildEmbeddedCredentialRuntimeMetadataItems,
   buildPageAccountBannedRows,
   buildCredentialRuntimeMetadataTargets,
   buildPageRecoveryCandidates,
@@ -127,6 +117,7 @@ import {
   buildAccountInspectionBySelectionKey,
   buildAccountMetrics,
   buildAccountRows,
+  applyEnabledCredentialListMetric,
   filterSuppressedAccountInspectionResults,
   findAccountRowForInspectionTarget,
   filterAccountRows,
@@ -146,10 +137,6 @@ import {
   type AccountStatusFilter,
 } from '@/features/accounts/model/accountRows';
 import { isEnabledProxyFilterCredential } from '@/features/accounts/model/proxyFilter';
-import {
-  buildCredentialListRequest,
-  isServerCredentialListEligible,
-} from '@/features/accounts/model/credentialListQuery';
 import {
   buildInspectionCodexQuotaState,
   getEffectiveAccountInspectionAction,
@@ -194,7 +181,7 @@ import {
   buildAccountHistoryByRowKey,
   buildAccountHistoryTargetBatches,
   buildAccountHistoryTargetEntries,
-  retainAccountHistoryRowKeys,
+  selectUncachedAccountHistoryTargetEntries,
   type AccountHistoryTargetEntry,
 } from '@/features/accounts/model/accountHistoryRows';
 import { mapWithConcurrency } from '@/features/accounts/model/asyncPool';
@@ -1347,15 +1334,8 @@ export function AccountsPage() {
   const credentialMutationHandlerRef = useRef<(mutation: AuthFilesCredentialMutation) => void>(
     () => undefined
   );
-  const [serverCredentialListRevision, setServerCredentialListRevision] = useState(0);
-  const serverCredentialListMutationModeRef = useRef(false);
-  const shouldDeferCredentialMutationReload = useCallback(
-    () => serverCredentialListMutationModeRef.current,
-    []
-  );
   const handledRuntimeRecoveryCompletionsRef = useRef(new Set<string>());
   const handleCredentialMutation = useCallback((mutation: AuthFilesCredentialMutation) => {
-    setServerCredentialListRevision((revision) => revision + 1);
     credentialMutationHandlerRef.current(mutation);
   }, []);
 
@@ -1372,8 +1352,6 @@ export function AccountsPage() {
     batchFieldsUpdating,
     fileInputRef,
     loadFiles,
-    replaceFiles = () => undefined,
-    setLoadState = () => undefined,
     handleUploadClick,
     handleFileChange,
     savePastedAuthJson,
@@ -1393,7 +1371,6 @@ export function AccountsPage() {
     connectionFingerprint,
     requestScope: authFilesRequestScope,
     onCredentialMutation: handleCredentialMutation,
-    deferReloadAfterMutation: shouldDeferCredentialMutationReload,
   });
 
   const [oauthViewMode, setOauthViewMode] = useState<'diagram' | 'list'>('list');
@@ -1556,85 +1533,6 @@ export function AccountsPage() {
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => initialWorkspaceUrlState.current.pageSize);
-  const deferredCredentialSearch = useDebounce(search, 300);
-  const serverCredentialListEligible = useMemo(
-    () =>
-      isServerCredentialListEligible({
-        activeView,
-        managerStorageAvailable,
-        credentialListAvailable: featureAvailability.credentialListAvailable,
-        pageSize,
-        provider: providerFilter,
-        status: statusFilter,
-        plan: planFilter,
-        quotaBand: quotaBandFilter,
-        operational: effectiveOperationalFilter,
-        sort: accountSort,
-      }),
-    [
-      accountSort,
-      activeView,
-      featureAvailability.credentialListAvailable,
-      effectiveOperationalFilter,
-      managerStorageAvailable,
-      pageSize,
-      planFilter,
-      providerFilter,
-      quotaBandFilter,
-      statusFilter,
-    ]
-  );
-  const [serverCredentialListFallback, setServerCredentialListFallback] = useState(false);
-  const serverCredentialListEnabled = serverCredentialListEligible && !serverCredentialListFallback;
-  serverCredentialListMutationModeRef.current = serverCredentialListEnabled;
-  const serverCredentialListRequest = useMemo(
-    () =>
-      buildCredentialListRequest({
-        page,
-        pageSize,
-        search: deferredCredentialSearch,
-        provider: providerFilter,
-        status: statusFilter,
-        sort: accountSort,
-      }),
-    [
-      accountSort,
-      deferredCredentialSearch,
-      page,
-      pageSize,
-      providerFilter,
-      statusFilter,
-    ]
-  );
-  const serverCredentialListPage = useCredentialListPage({
-    active: serverCredentialListEnabled,
-    managerRequestScope,
-    request: serverCredentialListRequest,
-    revision: serverCredentialListRevision,
-  });
-  const { reload: reloadServerCredentialList } = serverCredentialListPage;
-
-  // The visible account refresh must stay on the bounded Manager projection.
-  // Falling back to `loadFiles()` here would reintroduce a full raw-inventory
-  // download when the user presses the normal workspace refresh button.
-  const reloadVisibleCredentialList = useCallback(async () => {
-    if (serverCredentialListEnabled) {
-      await reloadServerCredentialList();
-      return;
-    }
-    await loadFiles();
-  }, [loadFiles, reloadServerCredentialList, serverCredentialListEnabled]);
-
-  useEffect(() => {
-    if (!serverCredentialListEligible) {
-      setServerCredentialListFallback(false);
-    }
-  }, [serverCredentialListEligible]);
-  useEffect(() => {
-    // A changed Manager/CPA setup may have gained the paged endpoint even if
-    // the previous connection had fallen back to the legacy path.
-    setServerCredentialListFallback(false);
-  }, [managerConnectionFingerprint, featureAvailability.managerServiceBase]);
   const [usageRows, setUsageRows] = useState<UsageValueRow[]>([]);
   const [accountHistoryByRowKey, setAccountHistoryByRowKey] = useState<
     Map<string, MonitoringAccountHistoryItem>
@@ -1818,6 +1716,8 @@ export function AccountsPage() {
   const accountRecentIndexAbortRef = useRef<AbortController | null>(null);
   const accountHistoryRequestVersionsRef = useRef<Map<string, symbol>>(new Map());
   const accountHistoryPendingRequestsRef = useRef<Set<symbol>>(new Set());
+  const accountHistoryLoadedRowKeysRef = useRef<Set<string>>(new Set());
+  const accountHistoryCacheScopeRef = useRef('');
   const accountHistoryAutoLoadKeyRef = useRef<string | null>(null);
   const accountHistoryAutoRequestContextKeyRef = useRef<string | null>(null);
   const accountRecentIndexAutoLoadKeyRef = useRef<string | null>(null);
@@ -2388,6 +2288,8 @@ export function AccountsPage() {
     accountHistoryRefreshPromiseRef.current = null;
     accountHistoryRequestVersionsRef.current.clear();
     accountHistoryPendingRequestsRef.current.clear();
+    accountHistoryLoadedRowKeysRef.current.clear();
+    accountHistoryCacheScopeRef.current = '';
     accountHistoryAutoLoadKeyRef.current = null;
     accountHistoryAutoRequestContextKeyRef.current = null;
     accountRecentIndexAutoLoadKeyRef.current = null;
@@ -2484,15 +2386,15 @@ export function AccountsPage() {
         ? Promise.resolve()
         : synchronizedDirectReauth || synchronizedExternalArtifacts
           ? Promise.resolve()
-          : reloadVisibleCredentialList(),
+          : loadFiles(),
       loadHeaderSnapshots(),
     ]);
     setAccountHistoryAutoRefreshRevision((current) => current + 1);
   }, [
     credentialEvidenceScopeKey,
+    loadFiles,
     loadHeaderSnapshots,
     loadInspectionSummary,
-    reloadVisibleCredentialList,
     retryPendingInspectionCredentialMutations,
     synchronizeExternalCredentialMutationMarkers,
     synchronizeInspectionCredentialMutations,
@@ -2528,56 +2430,8 @@ export function AccountsPage() {
   useHeaderRefresh(refreshActiveWorkspace);
 
   useEffect(() => {
-    if (!serverCredentialListEnabled || !serverCredentialListPage.data) return;
-    replaceFiles(serverCredentialListPage.data.files);
-  }, [
-    replaceFiles,
-    serverCredentialListEnabled,
-    serverCredentialListPage.data,
-  ]);
-
-  useEffect(() => {
-    if (
-      !serverCredentialListEligible ||
-      serverCredentialListPage.loading ||
-      !serverCredentialListPage.error ||
-      ![404, 405].includes(serverCredentialListPage.status ?? 0)
-    ) {
-      return;
-    }
-    // Older Manager builds (or a temporarily unavailable endpoint) must keep
-    // the legacy full-inventory path usable instead of leaving the page blank.
-    setServerCredentialListFallback(true);
-  }, [
-    serverCredentialListEligible,
-    serverCredentialListEnabled,
-    serverCredentialListPage.error,
-    serverCredentialListPage.loading,
-    serverCredentialListPage.status,
-  ]);
-
-  useEffect(() => {
-    if (!serverCredentialListEnabled || !serverCredentialListPage.error) return;
-    // Do not leave the legacy auth-files spinner running forever when the
-    // Manager projection is temporarily unavailable. Keep the page bounded
-    // and surface the actual Manager error instead of downloading 3,000 raw
-    // credentials as an implicit fallback.
-    setLoadState({ loading: false, error: serverCredentialListPage.error });
-  }, [
-    serverCredentialListEnabled,
-    serverCredentialListPage.error,
-    setLoadState,
-  ]);
-
-  useEffect(() => {
-    if (serverCredentialListEnabled || featureAvailability.checking) return;
     void loadFiles();
-  }, [
-    connectionFingerprint,
-    featureAvailability.checking,
-    loadFiles,
-    serverCredentialListEnabled,
-  ]);
+  }, [connectionFingerprint, loadFiles]);
 
   useEffect(() => {
     if (!connectionFingerprint || loading || error) return;
@@ -3515,6 +3369,9 @@ export function AccountsPage() {
       });
       return;
     }
+    // Editing note/priority/proxy fields does not invalidate authentication or
+    // quota evidence; retain the existing status snapshot until a real
+    // credential mutation arrives.
     if (mutation.kind === 'fields-changed') return;
     invalidateCodexCredentialStatusForSelectionKeys(mutation.selectionKeys);
   };
@@ -4411,56 +4268,37 @@ export function AccountsPage() {
     () => buildCredentialRuntimeMetadataTargets(proxyFilterEnabledRows),
     [proxyFilterEnabledRows]
   );
+  // CPA now emits proxy_url with the regular auth-files inventory.  Keep the
+  // modal on that same response: opening the proxy filter must not download
+  // every credential JSON merely to rediscover its proxy.
   const proxyFilterProjectedURLs = useMemo(
-    () => {
-      if (serverCredentialListEnabled && serverCredentialListPage.data) {
-        return serverCredentialListPage.data.proxy_urls ?? [];
-      }
-      return proxyFilterEnabledRows.flatMap((row) => {
-          const raw = row.raw as Record<string, unknown>;
-          const value = raw.proxy_url ?? raw.proxyUrl ?? raw['proxy-url'];
-          return typeof value === 'string' && value.trim() ? [value] : [];
-        });
-    },
-    [
-      proxyFilterEnabledRows,
-      serverCredentialListEnabled,
-      serverCredentialListPage.data,
-    ]
+    () =>
+      proxyFilterEnabledRows.flatMap((row) => {
+        const raw = row.raw as Record<string, unknown>;
+        const value = raw.proxy_url ?? raw.proxyUrl ?? raw['proxy-url'];
+        return typeof value === 'string' && value.trim() ? [value] : [];
+      }),
+    [proxyFilterEnabledRows]
   );
   const proxyFilterProjectionComplete = useMemo(
-    () => {
-      if (serverCredentialListEnabled) {
-        return serverCredentialListPage.data?.proxy_projection_complete === true;
-      }
-      return proxyFilterEnabledRows.every((row) => {
-          const raw = row.raw as Record<string, unknown>;
-          return Object.prototype.hasOwnProperty.call(raw, 'proxy_url') ||
-            Object.prototype.hasOwnProperty.call(raw, 'proxyUrl') ||
-            Object.prototype.hasOwnProperty.call(raw, 'proxy-url');
-        });
-    },
-    [
-      proxyFilterEnabledRows,
-      serverCredentialListEnabled,
-      serverCredentialListPage.data,
-    ]
+    () =>
+      proxyFilterEnabledRows.every((row) => {
+        const raw = row.raw as Record<string, unknown>;
+        return (
+          Object.prototype.hasOwnProperty.call(raw, 'proxy_url') ||
+          Object.prototype.hasOwnProperty.call(raw, 'proxyUrl') ||
+          Object.prototype.hasOwnProperty.call(raw, 'proxy-url')
+        );
+      }),
+    [proxyFilterEnabledRows]
   );
-  const proxyFilterProjectedEnabledCount =
-    serverCredentialListEnabled && serverCredentialListPage.data?.proxy_projection_complete === true
-      ? serverCredentialListPage.data.enabled_credential_count
-      : undefined;
   const proxyFilterInventory = useProxyFilterInventory({
     active: proxyFilterOpen && activeView === 'accounts',
     managerRequestScope,
     targets: proxyFilterTargets,
     projectedProxyURLs: proxyFilterProjectedURLs,
     projectionComplete: proxyFilterProjectionComplete,
-    projectionPending:
-      serverCredentialListEnabled &&
-      (serverCredentialListPage.data === null ||
-        serverCredentialListPage.data.sync_status === 'warming'),
-    projectedEnabledCount: proxyFilterProjectedEnabledCount,
+    projectedEnabledCount: proxyFilterEnabledRows.length,
   });
   const codexStatusBySelectionKey = useMemo(() => {
     const statusMap = new Map<string, ReturnType<typeof getAuthFileCodexStatus>>();
@@ -4667,59 +4505,23 @@ export function AccountsPage() {
     quotaCooldowns,
     rows,
   ]);
-  const globalCredentialMetrics =
-    serverCredentialListEnabled &&
-    (serverCredentialListPage.data?.global_metrics_status === 'ready' ||
-      serverCredentialListPage.data?.global_metrics_status === 'stale')
-      ? serverCredentialListPage.data.global_metrics
-      : undefined;
-  const globalCredentialMetricsReady = Boolean(globalCredentialMetrics);
-  const globalCredentialMetricsPending =
-    serverCredentialListEnabled &&
-    !globalCredentialMetricsReady;
-  const enabledCredentialListSummary =
-    statusFilter === 'enabled' && Boolean(globalCredentialMetrics);
-  const metrics = useMemo(() => {
-    if (globalCredentialMetrics) {
-      return {
-        total: globalCredentialMetrics.total,
-        // Preserve the established enabled-filter affordance: when the
-        // operator explicitly selects 已启用, the green card is the exact
-        // global enabled count rather than only the healthy subset.
-        available:
-          statusFilter === 'enabled'
-            ? globalCredentialMetrics.enabled
-            : globalCredentialMetrics.available,
-        needsAttention: globalCredentialMetrics.needs_attention,
-        quotaRisk: globalCredentialMetrics.quota_risk,
-        disabled: globalCredentialMetrics.disabled,
-        unconfirmed: globalCredentialMetrics.unconfirmed,
-        needsInspectionAction: globalCredentialMetrics.needs_inspection_action,
-      };
-    }
-    const localMetrics = buildAccountMetrics(rows, {
-      pendingActionsByRowKey: actionCandidatesByRowKey,
-      quotaCooldownsByRowKey,
-      requestEvidenceBySelectionKey,
-    });
-    const inventoryTotal =
-      serverCredentialListEnabled && serverCredentialListPage.data?.inventory_total !== undefined
-        ? serverCredentialListPage.data.inventory_total
-        : undefined;
-    const metricsWithInventoryTotal = inventoryTotal === undefined
-      ? localMetrics
-      : { ...localMetrics, total: inventoryTotal };
-    return metricsWithInventoryTotal;
-  }, [
-    actionCandidatesByRowKey,
-    quotaCooldownsByRowKey,
-    requestEvidenceBySelectionKey,
-    rows,
-    serverCredentialListEnabled,
-    serverCredentialListPage.data,
-    globalCredentialMetrics,
-    statusFilter,
-  ]);
+  const enabledCredentialListSummary = statusFilter === 'enabled';
+  const metrics = useMemo(
+    () => {
+      const localMetrics = buildAccountMetrics(rows, {
+        pendingActionsByRowKey: actionCandidatesByRowKey,
+        quotaCooldownsByRowKey,
+        requestEvidenceBySelectionKey,
+      });
+      return applyEnabledCredentialListMetric(localMetrics, {
+        status: statusFilter,
+        serverPaged: false,
+        fullInventory: true,
+        total: rows.filter((row) => !row.disabled).length,
+      });
+    },
+    [actionCandidatesByRowKey, quotaCooldownsByRowKey, requestEvidenceBySelectionKey, rows, statusFilter]
+  );
   const providerOptions = useMemo(() => getProviderOptions(rows), [rows]);
   const planOptions = useMemo(() => getPlanOptions(rows, t), [rows, t]);
   const planFilterValue = useMemo(
@@ -4777,13 +4579,6 @@ export function AccountsPage() {
     ]
   );
   const filteredRows = useMemo(() => {
-    if (serverCredentialListEnabled && !serverCredentialListPage.data) return [];
-    // The Manager projection already applied the active provider/status/search
-    // query and returned the exact page. Re-running the full legacy row
-    // predicate here would make a stale page flicker during debounced search
-    // and could discard rows whose lightweight projection intentionally omits
-    // quota/runtime fields.
-    if (serverCredentialListEnabled) return rows;
     const operationalRows = baseFilteredRows.filter((row) => {
       if (effectiveOperationalFilter === 'all') return true;
       if (effectiveOperationalFilter === 'reauth') {
@@ -4829,49 +4624,33 @@ export function AccountsPage() {
     quotaCooldownsByRowKey,
     recommendationBySelectionKey,
     requestEvidenceBySelectionKey,
-    rows,
-    serverCredentialListEnabled,
-    serverCredentialListPage.data,
   ]);
 
-  const filteredRowCount = serverCredentialListEnabled
-    ? (serverCredentialListPage.data?.total ?? filteredRows.length)
-    : filteredRows.length;
-  const totalPages = Math.max(1, Math.ceil(filteredRowCount / pageSize));
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const pageRows = useMemo(
-    () =>
-      serverCredentialListEnabled
-        ? filteredRows
-        : filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize),
-    [currentPage, filteredRows, pageSize, serverCredentialListEnabled]
+    () => filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [currentPage, filteredRows, pageSize]
   );
   const pageCredentialRuntimeTargets = useMemo(
     () => buildCredentialRuntimeMetadataTargets(pageRows),
     [pageRows]
   );
-  const pageEmbeddedCredentialRuntimeItems = useMemo(
-    () =>
-      serverCredentialListEnabled
-        ? buildEmbeddedCredentialRuntimeMetadataItems(pageRows)
-        : [],
-    [pageRows, serverCredentialListEnabled]
-  );
   const {
     itemsByClientKey: credentialRuntimeItemsByClientKey,
     applyBatchTasks: applyCredentialRuntimeBatchTasks,
   } = useCredentialRuntimeMetadata({
-    // Server paging carries proxy_url directly from CPA and a redacted recovery
-    // task from Manager SQLite. Avoid downloading raw credential JSON for every
-    // visible row; retain only lightweight polling while a task is pending.
+    // proxy_url already arrives with the full auth-files inventory. Query only
+    // the compact Manager recovery-task state for the visible page; do not
+    // make credential-runtime-metadata download original account JSON.
     active: activeView === 'accounts' && pageRows.length > 0,
     managerRequestScope,
     targets: pageCredentialRuntimeTargets,
-    seedItems: pageEmbeddedCredentialRuntimeItems,
-    fetchMetadata: !serverCredentialListEnabled,
+    fetchMetadata: false,
+    lookupRecoveryTasks: true,
   });
-  const paginationStartItem = filteredRowCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
-  const paginationEndItem = Math.min(filteredRowCount, currentPage * pageSize);
+  const paginationStartItem = filteredRows.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const paginationEndItem = Math.min(filteredRows.length, currentPage * pageSize);
   const pageAuthFiles = useMemo(() => pageRows.map((row) => row.raw), [pageRows]);
   const filteredAuthFiles = useMemo(() => filteredRows.map((row) => row.raw), [filteredRows]);
   const selectablePageRows = useMemo(() => pageRows.filter((row) => !row.runtimeOnly), [pageRows]);
@@ -6612,22 +6391,15 @@ export function AccountsPage() {
     async (
       targetEntries?: AccountHistoryTargetEntry[]
     ): Promise<Map<string, AccountHistoryLoadOutcome>> => {
-      const entries = targetEntries ?? accountHistoryTargets;
+      const visibleEntries = targetEntries ?? accountHistoryTargets;
       const mergeResult = targetEntries !== undefined;
       const controllerRef = mergeResult ? accountHistoryTargetAbortRef : accountHistoryAutoAbortRef;
       const managerServiceBase = featureAvailability.managerServiceBase;
       const outcomes = new Map<string, AccountHistoryLoadOutcome>();
-      if (!mergeResult) {
-        const activeRowKeys = new Set(entries.map((entry) => entry.rowKey));
-        accountHistoryRequestVersionsRef.current = retainAccountHistoryRowKeys(
-          accountHistoryRequestVersionsRef.current,
-          activeRowKeys
-        );
-        setAccountHistoryByRowKey((current) => retainAccountHistoryRowKeys(current, activeRowKeys));
-        setAccountHistoryErrorsByRowKey((current) =>
-          retainAccountHistoryRowKeys(current, activeRowKeys)
-        );
-      }
+
+      // A page flip must cancel its obsolete request before consulting the
+      // cache. Otherwise an older page can finish after the visible page has
+      // already changed.
       if (
         !mergeResult &&
         controllerRef.current &&
@@ -6639,8 +6411,23 @@ export function AccountsPage() {
       controllerRef.current = null;
       if (!mergeResult) {
         accountHistoryAutoRequestContextKeyRef.current = null;
+        const cacheScope = [
+          connectionFingerprint,
+          managerConnectionFingerprint,
+          accountHistoryAutoRefreshRevision,
+        ].join('\u0000');
+        if (accountHistoryCacheScopeRef.current !== cacheScope) {
+          accountHistoryCacheScopeRef.current = cacheScope;
+          accountHistoryLoadedRowKeysRef.current.clear();
+        }
       }
 
+      const entries = mergeResult
+        ? visibleEntries
+        : selectUncachedAccountHistoryTargetEntries(
+            visibleEntries,
+            accountHistoryLoadedRowKeysRef.current
+          );
       if (
         featureAvailability.checking ||
         !featureAvailability.requestMonitoringAvailable ||
@@ -6648,16 +6435,7 @@ export function AccountsPage() {
         !managementKey ||
         entries.length === 0
       ) {
-        if (!mergeResult) {
-          setAccountHistoryByRowKey(new Map());
-        }
         setAccountHistoryLoading(accountHistoryPendingRequestsRef.current.size > 0);
-        setAccountHistoryErrorsByRowKey((current) => {
-          if (!mergeResult) return current.size === 0 ? current : new Map();
-          const next = new Map(current);
-          entries.forEach((entry) => next.delete(entry.rowKey));
-          return next.size === current.size ? current : next;
-        });
         return outcomes;
       }
 
@@ -6720,25 +6498,13 @@ export function AccountsPage() {
           );
         });
         setAccountHistoryByRowKey((current) => {
-          const merged = mergeResult
-            ? new Map(current)
-            : new Map<string, MonitoringAccountHistoryItem>();
+          const merged = new Map(current);
           entries.forEach((entry) => {
             const requestVersion = requestVersions.get(entry.rowKey);
             if (accountHistoryRequestVersionsRef.current.get(entry.rowKey) !== requestVersion) {
-              if (!mergeResult) {
-                const currentItem = current.get(entry.rowKey);
-                if (currentItem) merged.set(entry.rowKey, currentItem);
-              }
               return;
             }
-            if (failedRows.has(entry.rowKey)) {
-              if (!mergeResult) {
-                const currentItem = current.get(entry.rowKey);
-                if (currentItem) merged.set(entry.rowKey, currentItem);
-              }
-              return;
-            }
+            if (failedRows.has(entry.rowKey)) return;
             merged.delete(entry.rowKey);
             const nextItem = nextHistory.get(entry.rowKey);
             if (nextItem) merged.set(entry.rowKey, nextItem);
@@ -6767,7 +6533,12 @@ export function AccountsPage() {
             return;
           }
           const error = failedRows.get(entry.rowKey);
-          outcomes.set(entry.rowKey, error ? { status: 'error', error } : { status: 'success' });
+          if (error) {
+            outcomes.set(entry.rowKey, { status: 'error', error });
+            return;
+          }
+          accountHistoryLoadedRowKeysRef.current.add(entry.rowKey);
+          outcomes.set(entry.rowKey, { status: 'success' });
         });
         return outcomes;
       } catch (err: unknown) {
@@ -6806,15 +6577,17 @@ export function AccountsPage() {
     },
     [
       accountHistoryAutoContextKey,
+      accountHistoryAutoRefreshRevision,
       accountHistoryTargets,
+      connectionFingerprint,
       featureAvailability.checking,
       featureAvailability.managerServiceBase,
       featureAvailability.requestMonitoringAvailable,
       managementKey,
+      managerConnectionFingerprint,
       t,
     ]
   );
-
   useEffect(() => {
     if (activeView !== 'accounts') {
       accountHistoryAutoLoadKeyRef.current = null;
@@ -7907,7 +7680,7 @@ export function AccountsPage() {
                     );
                     gatewaySyncSuccess = false;
                   }
-                  await Promise.allSettled([reloadVisibleCredentialList(), loadQuotaCooldowns()]);
+                  await Promise.allSettled([loadFiles(), loadQuotaCooldowns()]);
                 }
               } catch (recoverErr) {
                 console.warn(
@@ -7956,9 +7729,9 @@ export function AccountsPage() {
       featureAvailability.managerServiceBase,
       invalidateCodexCredentialStatusForSelectionKeys,
       loadCodexResetCreditDetails,
+      loadFiles,
       loadQuotaCooldowns,
       managementKey,
-      reloadVisibleCredentialList,
       setCodexQuota,
       showConfirmation,
       showNotification,
@@ -7976,17 +7749,13 @@ export function AccountsPage() {
       setStatusUpdating(true);
       try {
         await batchSetStatus(patchTargets, enabled);
-        // `batchSetStatus` emits a mutation revision; the paged Manager
-        // projection will refresh the visible page without a second full
-        // inventory download. Keep the legacy read-back for unsupported
-        // filters/older Manager builds.
-        if (patchTargets.length > 1 && !serverCredentialListEnabled) await loadFiles();
+        if (patchTargets.length > 1) await loadFiles();
         deselectAll();
       } finally {
         setStatusUpdating(false);
       }
     },
-    [batchSetStatus, deselectAll, loadFiles, selectedRows, serverCredentialListEnabled]
+    [batchSetStatus, deselectAll, loadFiles, selectedRows]
   );
 
   const patchPriorityRows = useCallback(
@@ -8648,16 +8417,6 @@ export function AccountsPage() {
     <>
       <AccountProviderTabs
         rows={rows}
-        providerCounts={
-          serverCredentialListEnabled && serverCredentialListPage.data?.sync_status === 'ready'
-            ? serverCredentialListPage.data.provider_counts
-            : undefined
-        }
-        totalCount={
-          serverCredentialListEnabled && serverCredentialListPage.data?.sync_status === 'ready'
-            ? (serverCredentialListPage.data.inventory_total ?? serverCredentialListPage.data.total)
-            : undefined
-        }
         value={providerFilter}
         onChange={setProviderFilter}
         resolvedTheme={resolvedTheme}
@@ -9247,7 +9006,7 @@ export function AccountsPage() {
   const renderPagination = () => (
     <div className={styles.accountsPagination}>
       <PaginationControls
-        count={filteredRowCount}
+        count={filteredRows.length}
         currentPage={currentPage}
         totalPages={totalPages}
         startItem={paginationStartItem}
@@ -11052,11 +10811,7 @@ export function AccountsPage() {
 
   const renderAccountsOverview = () => (
     <>
-      <AccountMetricsGrid
-        metrics={metrics}
-        enabledSummary={enabledCredentialListSummary}
-        globalSummaryPending={globalCredentialMetricsPending}
-      />
+      <AccountMetricsGrid metrics={metrics} enabledSummary={enabledCredentialListSummary} />
       {error ? <div className={styles.errorBox}>{error}</div> : null}
       {loading ? (
         <div className={styles.loadingPanel}>

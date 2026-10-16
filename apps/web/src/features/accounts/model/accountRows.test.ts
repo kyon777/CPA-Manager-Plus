@@ -134,6 +134,29 @@ describe('accountRows', () => {
     expect(metrics.total).toBe(50);
   });
 
+  it('uses the complete locally loaded inventory for the enabled summary card', () => {
+    const metrics = applyEnabledCredentialListMetric(
+      {
+        total: 426,
+        available: 45,
+        needsAttention: 0,
+        quotaRisk: 5,
+        disabled: 134,
+        unconfirmed: 0,
+        needsInspectionAction: 0,
+      },
+      {
+        status: 'enabled',
+        serverPaged: false,
+        fullInventory: true,
+        total: 292,
+      }
+    );
+
+    expect(metrics.available).toBe(292);
+    expect(metrics.total).toBe(426);
+  });
+
   it('keeps page-local metrics until the enabled projection is complete', () => {
     const metrics = applyEnabledCredentialListMetric(
       {

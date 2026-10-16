@@ -19,6 +19,16 @@ export const retainAccountHistoryRowKeys = <T>(
   return new Map(Array.from(current.entries()).filter(([rowKey]) => activeRowKeys.has(rowKey)));
 };
 
+/**
+ * Keep a session-local cache for the page-sized detailed history read.  The
+ * lightweight recent-request index remains global; this only prevents a page
+ * flip from requesting the same expensive history rows again.
+ */
+export const selectUncachedAccountHistoryTargetEntries = (
+  entries: readonly AccountHistoryTargetEntry[],
+  cachedRowKeys: ReadonlySet<string>
+): AccountHistoryTargetEntry[] => entries.filter((entry) => !cachedRowKeys.has(entry.rowKey));
+
 export const buildAccountHistoryTargetBatches = (
   entries: AccountHistoryTargetEntry[]
 ): AccountHistoryTargetEntry[][] => {

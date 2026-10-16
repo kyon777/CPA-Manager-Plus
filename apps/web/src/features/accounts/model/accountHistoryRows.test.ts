@@ -6,6 +6,7 @@ import {
   buildAccountHistoryTargetBatches,
   buildAccountHistoryTargetEntries,
   retainAccountHistoryRowKeys,
+  selectUncachedAccountHistoryTargetEntries,
 } from './accountHistoryRows';
 
 const makeRow = (overrides: Partial<AccountRow>): AccountRow =>
@@ -72,6 +73,17 @@ describe('accountHistoryRows', () => {
       new Map([['active-row', 'keep']])
     );
     expect(retainAccountHistoryRowKeys(current, new Set(current.keys()))).toBe(current);
+  });
+
+  it('selects only visible-page history targets absent from the in-memory cache', () => {
+    const entries = [
+      { rowKey: 'cached-row', target: { row_key: 'cached-row' } },
+      { rowKey: 'missing-row', target: { row_key: 'missing-row' } },
+    ];
+
+    expect(
+      selectUncachedAccountHistoryTargetEntries(entries, new Set(['cached-row']))
+    ).toEqual([{ rowKey: 'missing-row', target: { row_key: 'missing-row' } }]);
   });
 
   it('builds strict account-history targets from current account rows', () => {

@@ -10,6 +10,7 @@ import type { ApiClientRequestScope } from '@/services/api/client';
 import { isPendingRecoveryStatus } from '../model/credentialRuntimeMetadata';
 
 const RECOVERY_POLL_INTERVAL_MS = 2_000;
+const EMPTY_SEED_ITEMS: readonly CredentialRuntimeMetadataItem[] = [];
 
 export type UseCredentialRuntimeMetadataOptions = {
   active: boolean;
@@ -22,10 +23,16 @@ export type UseCredentialRuntimeMetadataOptions = {
    */
   seedItems?: readonly CredentialRuntimeMetadataItem[];
   /**
-   * Legacy and diagnostic callers still fetch runtime metadata.  Paged list
-   * callers set this false and retain only lightweight recovery-task polling.
+   * Legacy and diagnostic callers still fetch runtime metadata. Set false when
+   * the normal auth-files list already carries proxy_url and raw credential
+   * JSON must not be downloaded for list rendering.
    */
   fetchMetadata?: boolean;
+  /**
+   * Read only redacted token-recovery task rows for the visible page. This is
+   * a Manager SQLite query and never asks CPA for the credential JSON.
+   */
+  lookupRecoveryTasks?: boolean;
 };
 
 export type UseCredentialRuntimeMetadataResult = {
@@ -107,6 +114,22 @@ const itemSignature = (items: readonly CredentialRuntimeMetadataItem[]): string 
     )
     .join('\u001e');
 
+const toRecoveryLookupTargets = (
+  targets: readonly CredentialRuntimeMetadataTarget[]
+): TokenRecoveryBatchTargetRequest[] =>
+  targets.flatMap((target) => {
+    if (target.provider !== 'codex') return [];
+    return [
+      {
+        clientKey: target.clientKey,
+        fileName: target.fileName,
+        ...(target.authIndex ? { authIndex: target.authIndex } : {}),
+        ...(target.accountEmail ? { accountEmail: target.accountEmail } : {}),
+        provider: 'codex' as const,
+      },
+    ];
+  });
+
 const toPendingRecoveryTargets = (
   targets: readonly CredentialRuntimeMetadataTarget[],
   itemsByClientKey: ReadonlyMap<string, CredentialRuntimeMetadataItem>
@@ -130,14 +153,19 @@ export const useCredentialRuntimeMetadata = ({
   active,
   managerRequestScope,
   targets,
-  seedItems = [],
+  seedItems = EMPTY_SEED_ITEMS,
   fetchMetadata = true,
+  lookupRecoveryTasks = false,
 }: UseCredentialRuntimeMetadataOptions): UseCredentialRuntimeMetadataResult => {
   const normalizedTargets = normalizeMetadataTargets(targets);
   const normalizedTargetSignature = targetSignature(normalizedTargets);
   const seededItemSignature = itemSignature(seedItems);
+  // The signature deliberately governs this identity: parents frequently
+  // allocate an equivalent seed array during a render, and recreating this
+  // map would otherwise retrigger the metadata initialization effect.
   const seededItemsByClientKey = useMemo(
     () => toItemsByClientKey(seedItems),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- semantic item signature is the cache key.
     [seededItemSignature]
   );
   const managerApiBase = managerRequestScope?.apiBase.trim() ?? '';
@@ -145,6 +173,7 @@ export const useCredentialRuntimeMetadata = ({
   const enabled =
     active && Boolean(managerApiBase && managerManagementKey && normalizedTargets.length > 0);
   const metadataFetchEnabled = enabled && fetchMetadata;
+  const recoveryLookupEnabled = enabled && lookupRecoveryTasks && !metadataFetchEnabled;
   const scopeSignature = [managerApiBase, managerManagementKey, normalizedTargetSignature].join(
     '\u0000'
   );
@@ -158,6 +187,8 @@ export const useCredentialRuntimeMetadata = ({
   const targetsRef = useRef(normalizedTargets);
   const generationRef = useRef(0);
   const metadataAbortRef = useRef<AbortController | null>(null);
+  const recoveryLookupGenerationRef = useRef(0);
+  const recoveryLookupAbortRef = useRef<AbortController | null>(null);
 
   itemsRef.current = itemsByClientKey;
   targetsRef.current = normalizedTargets;
@@ -215,7 +246,7 @@ export const useCredentialRuntimeMetadata = ({
         setLoading(false);
       }
     }
-  }, [managerApiBase, managerManagementKey, metadataFetchEnabled, replaceItems, scopeSignature]);
+  }, [managerApiBase, managerManagementKey, metadataFetchEnabled, replaceItems]);
 
   useEffect(() => {
     generationRef.current += 1;
@@ -250,9 +281,71 @@ export const useCredentialRuntimeMetadata = ({
     seededItemsByClientKey,
   ]);
 
-  const pendingRecoverySignature = useMemo(
-    () => targetSignature(toPendingRecoveryTargets(normalizedTargets, itemsByClientKey)),
-    [itemsByClientKey, normalizedTargetSignature, normalizedTargets]
+  useEffect(() => {
+    const generation = recoveryLookupGenerationRef.current + 1;
+    recoveryLookupGenerationRef.current = generation;
+    recoveryLookupAbortRef.current?.abort();
+    recoveryLookupAbortRef.current = null;
+    if (!recoveryLookupEnabled) return;
+
+    const requestTargets = toRecoveryLookupTargets(targetsRef.current);
+    if (requestTargets.length === 0) return;
+    const controller = new AbortController();
+    recoveryLookupAbortRef.current = controller;
+    setLoading(true);
+    setError('');
+    void (async () => {
+      try {
+        // The Manager route accepts at most 100 targets. Current list pages
+        // are <= 50, but chunk here so an operator-selected page size cannot
+        // silently turn a recovery lookup into a 400 response.
+        const items: TokenRecoveryBatchItem[] = [];
+        for (let index = 0; index < requestTargets.length; index += 100) {
+          const response = await usageServiceApi.queryTokenRecoveryBatch(
+            managerApiBase,
+            managerManagementKey,
+            requestTargets.slice(index, index + 100),
+            controller.signal
+          );
+          items.push(...(response.items ?? []));
+        }
+        if (recoveryLookupGenerationRef.current !== generation || controller.signal.aborted) {
+          return;
+        }
+        applyBatchTasks(items);
+        setError('');
+      } catch (requestError) {
+        if (
+          recoveryLookupGenerationRef.current !== generation ||
+          isAbortError(requestError, controller.signal)
+        ) {
+          return;
+        }
+        setError(errorMessage(requestError));
+      } finally {
+        if (recoveryLookupGenerationRef.current === generation && !controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      recoveryLookupGenerationRef.current += 1;
+      controller.abort();
+      if (recoveryLookupAbortRef.current === controller) {
+        recoveryLookupAbortRef.current = null;
+      }
+    };
+  }, [
+    applyBatchTasks,
+    managerApiBase,
+    managerManagementKey,
+    recoveryLookupEnabled,
+    scopeSignature,
+  ]);
+
+  const pendingRecoverySignature = targetSignature(
+    toPendingRecoveryTargets(normalizedTargets, itemsByClientKey)
   );
 
   useEffect(() => {

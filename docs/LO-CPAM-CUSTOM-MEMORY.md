@@ -176,3 +176,40 @@ USAGE_QUERY_LIMIT=50000
 - 摘要由 Manager Server 后台读取只读证据（最近请求、巡检、恢复/操作队列、额度冷却和 Header/Credits 快照）并按 `disabled → needs_attention → quota_risk → available → unconfirmed` 互斥归类；不读取或写回凭证 Token，不写入 usage/billing/quota 表。
 - 前端仅在 `ready/stale` 时采用全局卡片；首次 `warming` 或证据暂不可用时保留当前页回退并显示“全局摘要同步中”。选择“已启用”时绿色卡仍显示全局 enabled 总数，其余卡片保持全局分类。
 - 摘要按完整库存指纹缓存 15 秒，CPA 清单 mutation 通过现有 invalidator 清空；该功能仅改 CPAM，不改 CPA Core、`cli-proxy-api`、计费、巡检调度和 502/503/精确限流 429 降优先级逻辑。
+## 2026-10-16: Full inventory list plus visible-page hydration
+
+This replaces the 2026-10-15 browser server-paging main path. The Manager
+`/usage-service/credential-list` implementation and its snapshot/global-summary
+code may remain for other capabilities, but normal credential-list rendering
+must not call it. During every future "update CPAM" merge, preserve:
+
+- The normal list's only initialization and refresh path is
+  `useAuthFilesData.loadFiles()`, which reads the complete CPA
+  `/v0/management/auth-files?include_proxy_url=1` inventory. Browser memory
+  performs global filtering, ordering, provider counts, health-card metrics
+  and local pagination. Do not reconnect `useCredentialListPage`,
+  `serverCredentialListEnabled`, or credential-list projection fallback code.
+- When the status filter is `enabled`, preserve the established card contract:
+  the green card label is `Enabled` and its value is the exact complete local
+  enabled-inventory count, not merely the healthy subset on the visible page.
+- `note` and `proxy_url` arrive in the same complete auth-files response.
+  Proxy filtering reads `proxy_url` from enabled full-list rows; opening that
+  modal must not scan all credential JSON through `credential-runtime-metadata`.
+- Global latest-request ordering stays on `account-recent-index`. Detailed
+  history, list window usage, and recovery state request only the visible page
+  (normally <= 50 rows). Page/filter changes abort stale work. Successfully
+  loaded history stays in the in-memory session cache; explicit refresh or a
+  connection-scope change invalidates it.
+- Normal full-list recovery state uses the lightweight Manager SQLite
+  `POST /v0/management/token-recovery/query` batch route and polls only
+  pending tasks. It must not use `credential-runtime-metadata`. The route has
+  a 100-target cap, so callers must chunk target arrays.
+- Management read budgets are 60 seconds in `REQUEST_TIMEOUT_MS`,
+  `USAGE_SERVICE_TIMEOUT_MS`, and `cpaauthfiles.DefaultTimeout`. This changes
+  only CPAM management reads: never CPA scheduling, downstream business
+  requests, billing, inspection, or the priority worker.
+- Do not modify, restart, build, or deploy CPA Core / `cli-proxy-api`; this is
+  CPAM Web and Manager Server work only.
+
+The 2026-10-15 paging/global-summary sections above are historic design
+records. This section is the current production behavior if they conflict.

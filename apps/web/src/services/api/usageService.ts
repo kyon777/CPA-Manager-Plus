@@ -2298,7 +2298,7 @@ export interface MonitoringAnalyticsResponse {
   drilldown_preview?: MonitoringAnalyticsEventsResponse;
 }
 
-const USAGE_SERVICE_TIMEOUT_MS = 30 * 1000;
+export const USAGE_SERVICE_TIMEOUT_MS = 60 * 1000;
 const USAGE_SERVICE_TRANSFER_TIMEOUT_MS = 60 * 1000;
 const USAGE_IMPORT_CHUNK_TIMEOUT_MS = 5 * 60 * 1000;
 const USAGE_ARCHIVE_OPERATION_TIMEOUT_MS = 0;

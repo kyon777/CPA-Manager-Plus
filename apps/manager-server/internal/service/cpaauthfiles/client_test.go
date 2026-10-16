@@ -10,7 +10,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestDefaultTimeoutAllowsFullCredentialInventoryRead(t *testing.T) {
+	if DefaultTimeout != 60*time.Second {
+		t.Fatalf("DefaultTimeout = %s, want %s", DefaultTimeout, 60*time.Second)
+	}
+}
 
 func TestParseAndVerifyIdentity(t *testing.T) {
 	files, err := Parse([]byte(`{"auth_files":[{"id":"runtime-codex","name":"codex-auth.json","auth_index":"7","provider":"codex","account":"user@example.com","account_id":"acct-123","disabled":"true"}]}`))

@@ -708,6 +708,8 @@ export const buildAccountMetrics = (
 export interface EnabledCredentialListMetricOptions {
   status: AccountStatusFilter;
   serverPaged: boolean;
+  /** The browser has the complete local auth-files inventory. */
+  fullInventory?: boolean;
   // Kept for backwards-compatible callers. Transport readiness alone does not
   // prove that the filtered inventory is complete.
   syncStatus?: string;
@@ -722,8 +724,8 @@ export const applyEnabledCredentialListMetric = (
   const total = options.total;
   if (
     options.status !== 'enabled' ||
-    !options.serverPaged ||
-    options.projectionComplete !== true ||
+    (!options.serverPaged && options.fullInventory !== true) ||
+    (options.serverPaged && options.projectionComplete !== true) ||
     typeof total !== 'number' ||
     !Number.isInteger(total) ||
     total < 0

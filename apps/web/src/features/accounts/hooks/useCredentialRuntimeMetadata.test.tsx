@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -66,19 +67,25 @@ describe('useCredentialRuntimeMetadata', () => {
     active = true,
     seedItems,
     fetchMetadata,
+    lookupRecoveryTasks,
   }: {
     targets: CredentialRuntimeMetadataTarget[];
     active?: boolean;
     seedItems?: CredentialRuntimeMetadataItem[];
     fetchMetadata?: boolean;
+    lookupRecoveryTasks?: boolean;
   }) {
-    latest = useCredentialRuntimeMetadata({
+    const next = useCredentialRuntimeMetadata({
       active,
       managerRequestScope: SCOPE,
       targets,
       seedItems,
       fetchMetadata,
+      lookupRecoveryTasks,
     });
+    useEffect(() => {
+      latest = next;
+    }, [next]);
     return null;
   }
 
@@ -172,6 +179,50 @@ describe('useCredentialRuntimeMetadata', () => {
       expect.any(AbortSignal)
     );
   });
+  it('loads visible-page recovery tasks without downloading credential runtime metadata', async () => {
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [
+        {
+          clientKey: 'row-a',
+          task: {
+            id: 7,
+            status: 'auto_failed_manual_only',
+            fileName: 'a.json',
+            provider: 'codex',
+            mode: 'auto',
+            lastErrorCode: 'account_banned',
+          },
+        },
+      ],
+    } satisfies TokenRecoveryBatchResponse);
+
+    await act(async () => {
+      renderer = create(
+        <Harness targets={[TARGET_A]} fetchMetadata={false} lookupRecoveryTasks />
+      );
+      await flush();
+    });
+
+    expect(mocks.getCredentialRuntimeMetadata).not.toHaveBeenCalled();
+    expect(mocks.queryTokenRecoveryBatch).toHaveBeenCalledWith(
+      SCOPE.apiBase,
+      SCOPE.managementKey,
+      [
+        {
+          clientKey: 'row-a',
+          fileName: 'a.json',
+          authIndex: '7',
+          accountEmail: 'a@example.com',
+          provider: 'codex',
+        },
+      ],
+      expect.any(AbortSignal)
+    );
+    expect(latest?.itemsByClientKey.get('row-a')?.recoveryTask?.status).toBe(
+      'auto_failed_manual_only'
+    );
+  });
+
   it('does not poll a terminal recovery task', async () => {
     vi.useFakeTimers();
     mocks.getCredentialRuntimeMetadata.mockResolvedValue({
