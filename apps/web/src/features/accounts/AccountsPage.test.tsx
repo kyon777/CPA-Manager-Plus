@@ -11704,7 +11704,6 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockClear();
     mocks.getAccountHistory
       .mockImplementationOnce(() => staleHistory.promise)
-      .mockResolvedValueOnce(makeAccountHistoryResponse([]))
       .mockImplementationOnce(() => currentHistory.promise);
 
     mocks.showNotification.mockClear();
@@ -11727,7 +11726,9 @@ describe('AccountsPage replacement flows', () => {
       await Promise.resolve();
     });
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+    // The stable row is cached; only the recreated credential needs a fresh
+    // current-page history request after the stale targeted request is invalidated.
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
 
     staleHistory.resolve(
       makeAccountHistoryResponse([
@@ -11806,7 +11807,6 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockClear();
     mocks.getAccountHistory
       .mockImplementationOnce(() => staleHistory.promise)
-      .mockResolvedValueOnce(makeAccountHistoryResponse([]))
       .mockImplementationOnce(() => currentHistory.promise);
 
     mocks.showNotification.mockClear();
@@ -11828,7 +11828,9 @@ describe('AccountsPage replacement flows', () => {
       await Promise.resolve();
     });
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+    // The stable row is cached; only the recreated credential needs a fresh
+    // current-page history request after the stale targeted request is invalidated.
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
 
     staleHistory.reject(new Error('stale history offline'));
     await flushPromises();

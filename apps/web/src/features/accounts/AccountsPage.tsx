@@ -1718,6 +1718,8 @@ export function AccountsPage() {
   const accountHistoryPendingRequestsRef = useRef<Set<symbol>>(new Set());
   const accountHistoryLoadedRowKeysRef = useRef<Set<string>>(new Set());
   const accountHistoryCacheScopeRef = useRef('');
+  const accountHistoryInventoryRowKeysRef = useRef<ReadonlySet<string>>(new Set());
+  const accountHistoryTargetRequestRowKeysRef = useRef<ReadonlySet<string>>(new Set());
   const accountHistoryAutoLoadKeyRef = useRef<string | null>(null);
   const accountHistoryAutoRequestContextKeyRef = useRef<string | null>(null);
   const accountRecentIndexAutoLoadKeyRef = useRef<string | null>(null);
@@ -2290,6 +2292,8 @@ export function AccountsPage() {
     accountHistoryPendingRequestsRef.current.clear();
     accountHistoryLoadedRowKeysRef.current.clear();
     accountHistoryCacheScopeRef.current = '';
+    accountHistoryInventoryRowKeysRef.current = new Set();
+    accountHistoryTargetRequestRowKeysRef.current = new Set();
     accountHistoryAutoLoadKeyRef.current = null;
     accountHistoryAutoRequestContextKeyRef.current = null;
     accountRecentIndexAutoLoadKeyRef.current = null;
@@ -4689,9 +4693,18 @@ export function AccountsPage() {
     () => buildAccountHistoryTargetEntries(rows),
     [rows]
   );
+  const accountHistoryRows = useMemo(() => {
+    if (!selectedRow || pageRows.some((row) => row.selectionKey === selectedRow.selectionKey)) {
+      return pageRows;
+    }
+    // A deep link can open a detail drawer for an account outside the current
+    // page. It is still a single explicit on-demand row, not a full-inventory
+    // history request.
+    return [...pageRows, selectedRow];
+  }, [pageRows, selectedRow]);
   const accountHistoryTargets = useMemo(
-    () => buildAccountHistoryTargetEntries(pageRows),
-    [pageRows]
+    () => buildAccountHistoryTargetEntries(accountHistoryRows),
+    [accountHistoryRows]
   );
   const accountRecentIndexAutoContextKey = useMemo(
     () =>
@@ -4737,6 +4750,39 @@ export function AccountsPage() {
   );
   const accountRecentIndexAutoLoadKey = `${accountRecentIndexAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
   const accountHistoryAutoLoadKey = `${accountHistoryAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
+  useEffect(() => {
+    const currentRowKeys = new Set(rows.map((row) => row.selectionKey));
+    const removedRowKeys = Array.from(accountHistoryInventoryRowKeysRef.current).filter(
+      (rowKey) => !currentRowKeys.has(rowKey)
+    );
+    accountHistoryInventoryRowKeysRef.current = currentRowKeys;
+    if (removedRowKeys.length === 0) return;
+
+    const removedRowKeySet = new Set(removedRowKeys);
+    removedRowKeys.forEach((rowKey) => {
+      // A later re-created credential may reuse its selection key. Do not let
+      // the old cache or an in-flight targeted request become its history.
+      accountHistoryLoadedRowKeysRef.current.delete(rowKey);
+      accountHistoryRequestVersionsRef.current.set(rowKey, Symbol(`${rowKey}:removed`));
+    });
+    if (
+      Array.from(accountHistoryTargetRequestRowKeysRef.current).some((rowKey) =>
+        removedRowKeySet.has(rowKey)
+      )
+    ) {
+      accountHistoryTargetAbortRef.current?.abort();
+    }
+    setAccountHistoryByRowKey((current) => {
+      const next = new Map(current);
+      removedRowKeys.forEach((rowKey) => next.delete(rowKey));
+      return next.size === current.size ? current : next;
+    });
+    setAccountHistoryErrorsByRowKey((current) => {
+      const next = new Map(current);
+      removedRowKeys.forEach((rowKey) => next.delete(rowKey));
+      return next.size === current.size ? current : next;
+    });
+  }, [rows]);
   const usageValuesAutoLoadKey = useMemo(
     () =>
       JSON.stringify({
@@ -6441,6 +6487,11 @@ export function AccountsPage() {
 
       const controller = new AbortController();
       controllerRef.current = controller;
+      if (mergeResult) {
+        accountHistoryTargetRequestRowKeysRef.current = new Set(
+          entries.map((entry) => entry.rowKey)
+        );
+      }
       if (!mergeResult) {
         accountHistoryAutoRequestContextKeyRef.current = accountHistoryAutoContextKey;
       }
@@ -6567,6 +6618,9 @@ export function AccountsPage() {
       } finally {
         if (controllerRef.current === controller) {
           controllerRef.current = null;
+          if (mergeResult) {
+            accountHistoryTargetRequestRowKeysRef.current = new Set();
+          }
           if (!mergeResult) {
             accountHistoryAutoRequestContextKeyRef.current = null;
           }

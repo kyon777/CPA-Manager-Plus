@@ -43,7 +43,7 @@ describe('credential runtime manager API', () => {
       'http://manager.local:18317/usage-service/credential-list',
       expect.objectContaining({
         headers: { Authorization: 'Bearer manager-key' },
-        timeout: 30_000,
+        timeout: 60_000,
         params: {
           page: 3,
           page_size: 50,
@@ -65,7 +65,7 @@ describe('credential runtime manager API', () => {
       expect.objectContaining({
         headers: { Authorization: 'Bearer manager-key' },
         signal: controller.signal,
-        timeout: 30_000,
+        timeout: 60_000,
       })
     );
     expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('access_token');
@@ -79,7 +79,7 @@ describe('credential runtime manager API', () => {
       { targets: [TARGET] },
       expect.objectContaining({
         headers: { Authorization: 'Bearer manager-key' },
-        timeout: 30_000,
+        timeout: 60_000,
       })
     );
   });
@@ -92,7 +92,7 @@ describe('credential runtime manager API', () => {
       { targets: [TARGET] },
       expect.objectContaining({
         headers: { Authorization: 'Bearer manager-key' },
-        timeout: 30_000,
+        timeout: 60_000,
       })
     );
   });
