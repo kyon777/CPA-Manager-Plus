@@ -235,17 +235,7 @@ func (s *Service) uploadOne(ctx context.Context, setup store.Setup, file *Upload
 	if file == nil {
 		return "invalid auth-file", false
 	}
-	slots := s.uploadSlots
-	if slots == nil {
-		// Services are normally built by NewWithInventoryInvalidator. Keep a
-		// manually assembled Service bounded as well for package-level callers.
-		s.mu.Lock()
-		if s.uploadSlots == nil {
-			s.uploadSlots = make(chan struct{}, MaxUploadConcurrency)
-		}
-		slots = s.uploadSlots
-		s.mu.Unlock()
-	}
+	slots := s.getUploadSlots()
 	select {
 	case slots <- struct{}{}:
 	case <-ctx.Done():
@@ -261,6 +251,17 @@ func (s *Service) uploadOne(ctx context.Context, setup store.Setup, file *Upload
 		return safeError(err), false
 	}
 	return "", true
+}
+
+func (s *Service) getUploadSlots() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.uploadSlots == nil {
+		// Services are normally built by NewWithInventoryInvalidator. Keep a
+		// manually assembled Service bounded as well for package-level callers.
+		s.uploadSlots = make(chan struct{}, MaxUploadConcurrency)
+	}
+	return s.uploadSlots
 }
 
 func (s *Service) record(id, name, failure string, uploaded bool) {
