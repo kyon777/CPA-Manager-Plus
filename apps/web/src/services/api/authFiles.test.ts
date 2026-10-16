@@ -29,7 +29,12 @@ vi.mock('./client', () => ({
   }),
 }));
 
-import { applyAuthFileFieldsPatchToRecord, authFilesApi } from './authFiles';
+import {
+  applyAuthFileFieldsPatchToRecord,
+  authFilesApi,
+  MAX_AUTH_FILE_BATCH_BYTES,
+  MAX_AUTH_FILE_BATCH_FILES,
+} from './authFiles';
 import { sha256RawTextHex } from '@/utils/apiKeyHash';
 
 beforeEach(() => {
@@ -285,10 +290,13 @@ describe('authFilesApi list normalization', () => {
       proxy_url_included: true,
     });
 
-    const result = await authFilesApi.listPage({ page: 3, pageSize: 50 }, {
-      apiBase: 'http://old-cpa.local:8317',
-      managementKey: 'old-cpa-key',
-    });
+    const result = await authFilesApi.listPage(
+      { page: 3, pageSize: 50 },
+      {
+        apiBase: 'http://old-cpa.local:8317',
+        managementKey: 'old-cpa-key',
+      }
+    );
 
     expect(mocks.get).toHaveBeenCalledWith('/auth-files', {
       baseURL: 'http://old-cpa.local:8317/v0/management',
@@ -821,6 +829,89 @@ describe('authFilesApi save auth file upload contracts', () => {
       failed: [{ name: 'second-auth.json', error: 'upstream rejected second file' }],
     });
     expect(mocks.postForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('uploadFiles accepts exactly 300 files in one logical batch', async () => {
+    const names = Array.from(
+      { length: MAX_AUTH_FILE_BATCH_FILES },
+      (_, index) => `account-${index}.json`
+    );
+    mocks.postForm.mockResolvedValue({
+      id: 'job-300',
+      state: 'completed',
+      total: MAX_AUTH_FILE_BATCH_FILES,
+      completed: MAX_AUTH_FILE_BATCH_FILES,
+      uploaded: MAX_AUTH_FILE_BATCH_FILES,
+      failed: 0,
+      files: names.map((name) => ({ name })),
+      finished: true,
+    });
+
+    const files = names.map(
+      (name) => new File(['{"type":"codex"}'], name, { type: 'application/json' })
+    );
+
+    await expect(authFilesApi.uploadFiles(files)).resolves.toMatchObject({
+      status: 'ok',
+      uploaded: MAX_AUTH_FILE_BATCH_FILES,
+      failed: [],
+    });
+    expect(mocks.postForm).toHaveBeenCalledTimes(1);
+    const formData = mocks.postForm.mock.calls[0]?.[1] as FormData;
+    expect(formData.getAll('files')).toHaveLength(MAX_AUTH_FILE_BATCH_FILES);
+  });
+
+  it('uploadFiles rejects more than 300 files before making a request', async () => {
+    const files = Array.from(
+      { length: MAX_AUTH_FILE_BATCH_FILES + 1 },
+      (_, index) => new File(['{}'], `too-many-${index}.json`, { type: 'application/json' })
+    );
+
+    await expect(authFilesApi.uploadFiles(files)).rejects.toThrow(
+      `at most ${MAX_AUTH_FILE_BATCH_FILES}`
+    );
+    expect(mocks.postForm).not.toHaveBeenCalled();
+  });
+
+  it('uploadFiles splits chunks that exceed the safe request size and aggregates results', async () => {
+    const firstFile = new File(['first'], 'large-first.json', { type: 'application/json' });
+    const secondFile = new File(['second'], 'large-second.json', { type: 'application/json' });
+    Object.defineProperty(firstFile, 'size', {
+      configurable: true,
+      value: MAX_AUTH_FILE_BATCH_BYTES,
+    });
+    Object.defineProperty(secondFile, 'size', { configurable: true, value: 1 });
+    mocks.postForm
+      .mockResolvedValueOnce({
+        id: 'job-large-first',
+        state: 'completed',
+        total: 1,
+        completed: 1,
+        uploaded: 1,
+        failed: 0,
+        files: [{ name: firstFile.name }],
+        finished: true,
+      })
+      .mockResolvedValueOnce({
+        id: 'job-large-second',
+        state: 'partial',
+        total: 1,
+        completed: 1,
+        uploaded: 0,
+        failed: 1,
+        files: [{ name: secondFile.name, error: 'CPA rejected file' }],
+        finished: true,
+      });
+
+    await expect(authFilesApi.uploadFiles([firstFile, secondFile])).resolves.toEqual({
+      status: 'partial',
+      uploaded: 1,
+      files: [firstFile.name],
+      failed: [{ name: secondFile.name, error: 'CPA rejected file' }],
+    });
+    expect(mocks.postForm).toHaveBeenCalledTimes(2);
+    expect((mocks.postForm.mock.calls[0]?.[1] as FormData).getAll('files')).toHaveLength(1);
+    expect((mocks.postForm.mock.calls[1]?.[1] as FormData).getAll('files')).toHaveLength(1);
   });
 
   it('saveJsonObject throws Upload failed when backend reports zero uploaded files without explicit failures', async () => {
