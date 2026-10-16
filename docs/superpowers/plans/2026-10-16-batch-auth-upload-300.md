@@ -146,6 +146,12 @@ git diff a85e700094f5340c2e0e91eed881415f79755cb -- apps/manager-server apps/web
 
 Confirm no CPA Core, cli-proxy-api, usage.sqlite, quota-fetch, inspection, or reauthorization code changed.
 
+Verification note: the changed-scope web tests (299/299), type-check, build, and
+`internal/service/authfilesbatch` tests pass. The repository-wide Windows run
+still reports unrelated baseline failures in permission/process-lock tests and
+one timezone-sensitive demo assertion; the AccountsPage timeout passes when run
+in isolation with a 20-second test budget. No changed-scope test failed.
+
 - [x] **Step 3: Commit the verified implementation.**
 
 ~~~powershell
