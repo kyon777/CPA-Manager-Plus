@@ -24,6 +24,7 @@ import {
   createApiKeyModelPolicyBridgeHost,
   resolveApiKeyModelPolicyBridgeFrameOrigin,
 } from './pluginApiKeyModelPolicyBridge';
+import { replyToTrustedPluginFrame } from './pluginResourceBridgeReply';
 import styles from './PluginResourcePage.module.scss';
 
 const hasStatus = (error: unknown, status: number) => isRecord(error) && error.status === status;
@@ -174,9 +175,7 @@ export function PluginResourcePage() {
       getConfig: () => pluginsApi.getConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID),
       patchConfig: (patch) => pluginsApi.patchConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID, patch),
       reply: (source, response) => {
-        const target = iframeRef.current?.contentWindow;
-        if (!target || target !== source) return;
-        target.postMessage(response, rateLimitBridgeFrameOrigin);
+        replyToTrustedPluginFrame(source, rateLimitBridgeFrameOrigin, response);
       },
     });
     const onMessage = (event: MessageEvent<unknown>) => {
@@ -208,9 +207,7 @@ export function PluginResourcePage() {
         return response.items;
       },
       reply: (source, response) => {
-        const target = iframeRef.current?.contentWindow;
-        if (!target || target !== source) return;
-        target.postMessage(response, apiKeyModelPolicyBridgeFrameOrigin);
+        replyToTrustedPluginFrame(source, apiKeyModelPolicyBridgeFrameOrigin, response);
       },
     });
     const onMessage = (event: MessageEvent<unknown>) => {
