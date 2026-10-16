@@ -161,3 +161,11 @@ USAGE_QUERY_LIMIT=50000
 - `enabled_credential_count` 即使为 0 也显式返回，避免前端把“没有启用账号”误判为字段缺失。
 
 验证边界：所有改动仅在 CPAM 隔离 worktree 构建；更新或部署时不得触碰 CPA Core / `cli-proxy-api`，不得迁移或覆盖 `usage.sqlite`、`data.key`、secrets。
+### 分页列表语义与运行时元数据修复（2026-10-15）
+
+- 分页模式仍然保留 CPA 的 `include_proxy_url=1` 直接投影；`note` 与 `proxy_url` 随当前页清单一起返回，普通凭证列表首屏/翻页不得为了代理或恢复状态再下载每个账号的原始 JSON。
+- Manager 只对当前页 Codex 行从 CPAM SQLite 读取并附加**脱敏**的 `recovery_task`；任何认证 JSON 自身伪造的同名字段必须在投影前删除。浏览器以该任务状态渲染“已自动更新一次”、失败原因和当前页封禁删除按钮；仅对 `queued/running` 任务继续请求轻量 token-recovery batch 轮询。
+- `credential-runtime-metadata` 保留给旧 Manager 回退/显式诊断路径，但正常已启用分页列表不得调用它。代理筛选继续优先用完整的 Manager 投影；投影预热期间必须标为未完成，不能退回全量原始 JSON 扫描，也不能把未知代理误判为未使用。
+- 分页列表中的 `正常可用/需要处理/额度风险/已禁用/状态待确认` 是**当前页证据统计**，页面必须明确标为“当前页…”，不能伪装为全局调度状态；它们不会改变 CPA Core 调度。
+- 当筛选条件为“已启用”且 `proxy_projection_complete=true` 时，绿色卡使用 Manager 返回的精确筛选总数，标签必须为“已启用”，不能称“正常可用”。投影未完成时保留当前页值。
+- 此层不得修改 CPA Core、`cli-proxy-api`、`usage_events`、计费汇总、额度计算、巡检调度或 502/503/精确限流 429 降优先级 worker。

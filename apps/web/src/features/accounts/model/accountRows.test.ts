@@ -116,7 +116,7 @@ const buildAccountRows = (
   );
 
 describe('accountRows', () => {
-  it('uses the ready enabled query total for the normal-available card', () => {
+  it('uses the complete enabled query total for the enabled summary card', () => {
     const metrics = applyEnabledCredentialListMetric(
       {
         total: 50,
@@ -127,14 +127,14 @@ describe('accountRows', () => {
         unconfirmed: 0,
         needsInspectionAction: 0,
       },
-      { status: 'enabled', serverPaged: true, syncStatus: 'ready', total: 292 }
+      { status: 'enabled', serverPaged: true, projectionComplete: true, total: 292 }
     );
 
     expect(metrics.available).toBe(292);
     expect(metrics.total).toBe(50);
   });
 
-  it('keeps page-local metrics while the enabled snapshot is warming', () => {
+  it('keeps page-local metrics until the enabled projection is complete', () => {
     const metrics = applyEnabledCredentialListMetric(
       {
         total: 50,
@@ -145,7 +145,7 @@ describe('accountRows', () => {
         unconfirmed: 0,
         needsInspectionAction: 0,
       },
-      { status: 'enabled', serverPaged: true, syncStatus: 'warming', total: 35 }
+      { status: 'enabled', serverPaged: true, projectionComplete: false, total: 35 }
     );
 
     expect(metrics.available).toBe(45);
@@ -162,7 +162,30 @@ describe('accountRows', () => {
         unconfirmed: 0,
         needsInspectionAction: 0,
       },
-      { status: 'available', serverPaged: true, syncStatus: 'ready', total: 202 }
+      { status: 'available', serverPaged: true, projectionComplete: true, total: 202 }
+    );
+
+    expect(metrics.available).toBe(45);
+  });
+
+  it('does not trust a ready transport state before the full projection is complete', () => {
+    const metrics = applyEnabledCredentialListMetric(
+      {
+        total: 50,
+        available: 45,
+        needsAttention: 0,
+        quotaRisk: 5,
+        disabled: 0,
+        unconfirmed: 0,
+        needsInspectionAction: 0,
+      },
+      {
+        status: 'enabled',
+        serverPaged: true,
+        syncStatus: 'ready',
+        projectionComplete: false,
+        total: 292,
+      }
     );
 
     expect(metrics.available).toBe(45);

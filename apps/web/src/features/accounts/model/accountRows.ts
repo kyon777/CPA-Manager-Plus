@@ -708,7 +708,10 @@ export const buildAccountMetrics = (
 export interface EnabledCredentialListMetricOptions {
   status: AccountStatusFilter;
   serverPaged: boolean;
+  // Kept for backwards-compatible callers. Transport readiness alone does not
+  // prove that the filtered inventory is complete.
   syncStatus?: string;
+  projectionComplete?: boolean;
   total?: number;
 }
 
@@ -720,7 +723,7 @@ export const applyEnabledCredentialListMetric = (
   if (
     options.status !== 'enabled' ||
     !options.serverPaged ||
-    options.syncStatus !== 'ready' ||
+    options.projectionComplete !== true ||
     typeof total !== 'number' ||
     !Number.isInteger(total) ||
     total < 0

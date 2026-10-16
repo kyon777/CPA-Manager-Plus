@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountRow } from './accountRows';
-import type { CredentialRuntimeMetadataItem, TokenRecoveryStatus } from '@/services/api/usageService';
+import type {
+  CredentialRuntimeMetadataItem,
+  TokenRecoveryStatus,
+} from '@/services/api/usageService';
 import {
+  buildEmbeddedCredentialRuntimeMetadataItems,
   buildCredentialRuntimeMetadataTargets,
   buildPageAccountBannedRows,
   buildPageRecoveryCandidates,
@@ -43,6 +47,63 @@ const makeRow = (overrides: Partial<AccountRow> = {}): AccountRow =>
   }) as AccountRow;
 
 describe('credential runtime metadata model', () => {
+  it('uses only redacted embedded Codex recovery tasks from the visible page', () => {
+    const embedded = buildEmbeddedCredentialRuntimeMetadataItems([
+      makeRow({
+        raw: {
+          name: 'a.json',
+          email: 'person@example.com',
+          type: 'codex',
+          access_token: 'must-not-cross-the-list-boundary',
+          recovery_task: {
+            id: 17,
+            fileName: 'a.json',
+            provider: 'codex',
+            status: 'auto_failed_manual_only',
+            mode: 'auto',
+            lastErrorCode: 'account_banned',
+          },
+        },
+      }),
+      makeRow({
+        selectionKey: 'row-invalid',
+        fileName: 'invalid.json',
+        raw: { name: 'invalid.json', recovery_task: { id: 'not-a-number' } },
+      }),
+      makeRow({
+        selectionKey: 'row-xai',
+        fileName: 'xai.json',
+        provider: 'xai',
+        raw: {
+          name: 'xai.json',
+          recovery_task: {
+            id: 18,
+            fileName: 'xai.json',
+            provider: 'xai',
+            status: 'succeeded',
+            mode: 'manual',
+          },
+        },
+      }),
+    ]);
+
+    expect(embedded).toEqual([
+      {
+        clientKey: 'row-a',
+        recoveryTask: {
+          id: 17,
+          fileName: 'a.json',
+          provider: 'codex',
+          status: 'auto_failed_manual_only',
+          mode: 'auto',
+          lastErrorCode: 'account_banned',
+        },
+      },
+    ]);
+    expect(JSON.stringify(embedded)).not.toContain('access_token');
+    expect(JSON.stringify(embedded)).not.toContain('must-not-cross-the-list-boundary');
+  });
+
   it('selects only current-page Codex rows with terminal account_banned recovery errors', () => {
     const banned = makeRow({ selectionKey: 'row-banned', fileName: 'banned.json' });
     const caseVariant = makeRow({ selectionKey: 'row-case', fileName: 'case.json' });

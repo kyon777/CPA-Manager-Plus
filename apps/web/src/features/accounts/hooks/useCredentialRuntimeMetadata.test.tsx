@@ -1,6 +1,7 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
+  CredentialRuntimeMetadataItem,
   CredentialRuntimeMetadataResponse,
   CredentialRuntimeMetadataTarget,
   TokenRecoveryBatchResponse,
@@ -63,14 +64,20 @@ describe('useCredentialRuntimeMetadata', () => {
   function Harness({
     targets,
     active = true,
+    seedItems,
+    fetchMetadata,
   }: {
     targets: CredentialRuntimeMetadataTarget[];
     active?: boolean;
+    seedItems?: CredentialRuntimeMetadataItem[];
+    fetchMetadata?: boolean;
   }) {
     latest = useCredentialRuntimeMetadata({
       active,
       managerRequestScope: SCOPE,
       targets,
+      seedItems,
+      fetchMetadata,
     });
     return null;
   }
@@ -107,6 +114,64 @@ describe('useCredentialRuntimeMetadata', () => {
     expect(latest?.loading).toBe(false);
   });
 
+  it('uses embedded page recovery tasks without downloading raw credential metadata', async () => {
+    vi.useFakeTimers();
+    const seedItems: CredentialRuntimeMetadataItem[] = [
+      {
+        clientKey: 'row-a',
+        recoveryTask: {
+          id: 2,
+          status: 'manual_running',
+          fileName: 'a.json',
+          provider: 'codex',
+          mode: 'manual',
+        },
+      },
+    ];
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [
+        {
+          clientKey: 'row-a',
+          task: {
+            id: 2,
+            status: 'manual_running',
+            fileName: 'a.json',
+            provider: 'codex',
+            mode: 'manual',
+          },
+        },
+      ],
+    } satisfies TokenRecoveryBatchResponse);
+
+    await act(async () => {
+      renderer = create(
+        <Harness targets={[TARGET_A]} seedItems={seedItems} fetchMetadata={false} />
+      );
+      await flush();
+    });
+
+    expect(latest?.itemsByClientKey.get('row-a')?.recoveryTask?.status).toBe('manual_running');
+    expect(mocks.getCredentialRuntimeMetadata).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(mocks.queryTokenRecoveryBatch).toHaveBeenCalledWith(
+      SCOPE.apiBase,
+      SCOPE.managementKey,
+      [
+        {
+          clientKey: 'row-a',
+          fileName: 'a.json',
+          authIndex: '7',
+          accountEmail: 'a@example.com',
+          provider: 'codex',
+        },
+      ],
+      expect.any(AbortSignal)
+    );
+  });
   it('does not poll a terminal recovery task', async () => {
     vi.useFakeTimers();
     mocks.getCredentialRuntimeMetadata.mockResolvedValue({

@@ -115,6 +115,7 @@ import {
 } from '@/features/oauth/codexReauthModel';
 import { runCredentialVisibilityRetry } from '@/features/accounts/model/accountCredentialVisibilityRetry';
 import {
+  buildEmbeddedCredentialRuntimeMetadataItems,
   buildPageAccountBannedRows,
   buildCredentialRuntimeMetadataTargets,
   buildPageRecoveryCandidates,
@@ -4667,6 +4668,10 @@ export function AccountsPage() {
     quotaCooldowns,
     rows,
   ]);
+  const enabledCredentialListSummary =
+    serverCredentialListEnabled &&
+    statusFilter === 'enabled' &&
+    serverCredentialListPage.data?.proxy_projection_complete === true;
   const metrics = useMemo(() => {
     const localMetrics = buildAccountMetrics(rows, {
       pendingActionsByRowKey: actionCandidatesByRowKey,
@@ -4683,7 +4688,7 @@ export function AccountsPage() {
     return applyEnabledCredentialListMetric(metricsWithInventoryTotal, {
       status: statusFilter,
       serverPaged: serverCredentialListEnabled,
-      syncStatus: serverCredentialListPage.data?.sync_status,
+      projectionComplete: serverCredentialListPage.data?.proxy_projection_complete === true,
       total: serverCredentialListPage.data?.total,
     });
   }, [
@@ -4825,17 +4830,25 @@ export function AccountsPage() {
     () => buildCredentialRuntimeMetadataTargets(pageRows),
     [pageRows]
   );
+  const pageEmbeddedCredentialRuntimeItems = useMemo(
+    () =>
+      serverCredentialListEnabled
+        ? buildEmbeddedCredentialRuntimeMetadataItems(pageRows)
+        : [],
+    [pageRows, serverCredentialListEnabled]
+  );
   const {
     itemsByClientKey: credentialRuntimeItemsByClientKey,
     applyBatchTasks: applyCredentialRuntimeBatchTasks,
   } = useCredentialRuntimeMetadata({
-    // Keep recovery/banned-account state intact. With server paging this is
-    // bounded to the visible page instead of the full credential inventory;
-    // proxy filtering itself uses the CPA projection and does not need this
-    // request.
+    // Server paging carries proxy_url directly from CPA and a redacted recovery
+    // task from Manager SQLite. Avoid downloading raw credential JSON for every
+    // visible row; retain only lightweight polling while a task is pending.
     active: activeView === 'accounts' && pageRows.length > 0,
     managerRequestScope,
     targets: pageCredentialRuntimeTargets,
+    seedItems: pageEmbeddedCredentialRuntimeItems,
+    fetchMetadata: !serverCredentialListEnabled,
   });
   const paginationStartItem = filteredRowCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const paginationEndItem = Math.min(filteredRowCount, currentPage * pageSize);
@@ -11019,7 +11032,11 @@ export function AccountsPage() {
 
   const renderAccountsOverview = () => (
     <>
-      <AccountMetricsGrid metrics={metrics} />
+      <AccountMetricsGrid
+        metrics={metrics}
+        pageScopedHealth={serverCredentialListEnabled}
+        enabledSummary={enabledCredentialListSummary}
+      />
       {error ? <div className={styles.errorBox}>{error}</div> : null}
       {loading ? (
         <div className={styles.loadingPanel}>

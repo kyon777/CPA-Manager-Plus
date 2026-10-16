@@ -321,7 +321,7 @@ func TestListEmbedsVisibleCodexRecoveryTaskWithoutCredentialDownload(t *testing.
 	reader := &fakeInventoryReader{pages: map[int]string{
 		1: `{"files":[
 			{"name":"codex.json","auth_index":"entry-1","email":"codex@example.com","provider":"codex","access_token":"must-not-leak"},
-			{"name":"xai.json","email":"xai@example.com","provider":"xai"}
+			{"name":"xai.json","email":"xai@example.com","provider":"xai","recovery_task":{"id":999,"fileName":"forged.json","provider":"codex","status":"succeeded","mode":"manual"}}
 		],"total":2,"has_more":false}`,
 	}}
 	service := NewWithRecentAndRecoveryReader(

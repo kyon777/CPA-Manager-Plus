@@ -232,6 +232,35 @@ describe('accounts workspace wiring', () => {
     );
   });
 
+  it('uses the paged credential projection for recovery state instead of raw JSON metadata', () => {
+    expect(accountsPageSource).toContain('buildEmbeddedCredentialRuntimeMetadataItems');
+    expect(accountsPageSource).toContain('const pageEmbeddedCredentialRuntimeItems = useMemo(');
+    expect(accountsPageSource).toContain('seedItems: pageEmbeddedCredentialRuntimeItems');
+    expect(accountsPageSource).toContain('fetchMetadata: !serverCredentialListEnabled');
+  });
+
+  it('marks server-paged health cards as page scoped and uses only complete enabled totals', () => {
+    expect(accountsPageSource).toContain(
+      'projectionComplete: serverCredentialListPage.data?.proxy_projection_complete === true'
+    );
+    expect(accountsPageSource).toContain('pageScopedHealth={serverCredentialListEnabled}');
+    expect(accountsPageSource).toContain('enabledSummary={enabledCredentialListSummary}');
+  });
+
+  it.each([en, ru, zhCN, zhTW])('defines page-scoped metric copy in every locale', (locale) => {
+    const accounts = locale.accounts as Record<string, unknown>;
+    for (const key of [
+      'metric_enabled',
+      'metric_enabled_meta',
+      'metric_current_page',
+      'metric_current_page_meta',
+    ]) {
+      expect(accounts[key], key).toBeTypeOf('string');
+      expect(String(accounts[key]), key).not.toContain('?');
+    }
+    expect(String(accounts.metric_current_page)).toContain('{{label}}');
+  });
+
   it.each([en, ru, zhCN, zhTW])('defines the current-page banned deletion copy', (locale) => {
     const accounts = locale.accounts as Record<string, unknown>;
     for (const key of [

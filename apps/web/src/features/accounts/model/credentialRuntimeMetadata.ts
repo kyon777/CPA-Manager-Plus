@@ -64,6 +64,80 @@ const readRowAccountEmail = (row: AccountRow): string => {
   return normalizeEmail(row.accountLabel);
 };
 
+const readOptionalString = (record: Record<string, unknown>, key: string): string => {
+  const value = record[key];
+  return typeof value === 'string' ? value.trim() : '';
+};
+
+const readOptionalTimestamp = (record: Record<string, unknown>, key: string): number | null => {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+};
+
+// The Manager projection explicitly strips any same-named field from the
+// credential JSON before attaching this redacted SQLite task.  Parse only the
+// small public task shape here too, so a list row can never turn arbitrary
+// credential fields into runtime metadata.
+const readEmbeddedRecoveryTask = (value: unknown): TokenRecoveryTask | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const id = record.id;
+  const fileName = readOptionalString(record, 'fileName');
+  const provider = readOptionalString(record, 'provider');
+  const status = readOptionalString(record, 'status');
+  const mode = readOptionalString(record, 'mode');
+  if (
+    typeof id !== 'number' ||
+    !Number.isSafeInteger(id) ||
+    id <= 0 ||
+    !fileName ||
+    !provider ||
+    !status ||
+    !mode
+  ) {
+    return null;
+  }
+  const authIndex = readOptionalString(record, 'authIndex');
+  const accountEmail = readOptionalString(record, 'accountEmail');
+  const lastErrorCode = readOptionalString(record, 'lastErrorCode');
+  const lastErrorMessage = readOptionalString(record, 'lastErrorMessage');
+  const autoAttemptedAtMs = readOptionalTimestamp(record, 'autoAttemptedAtMs');
+  const lastSignalAtMs = readOptionalTimestamp(record, 'lastSignalAtMs');
+  const startedAtMs = readOptionalTimestamp(record, 'startedAtMs');
+  const completedAtMs = readOptionalTimestamp(record, 'completedAtMs');
+  const createdAtMs = readOptionalTimestamp(record, 'createdAtMs');
+  const updatedAtMs = readOptionalTimestamp(record, 'updatedAtMs');
+  return {
+    id,
+    fileName,
+    provider,
+    status,
+    mode,
+    ...(authIndex ? { authIndex } : {}),
+    ...(accountEmail ? { accountEmail } : {}),
+    ...(lastErrorCode ? { lastErrorCode } : {}),
+    ...(lastErrorMessage ? { lastErrorMessage } : {}),
+    ...(autoAttemptedAtMs === null ? {} : { autoAttemptedAtMs }),
+    ...(lastSignalAtMs === null ? {} : { lastSignalAtMs }),
+    ...(startedAtMs === null ? {} : { startedAtMs }),
+    ...(completedAtMs === null ? {} : { completedAtMs }),
+    ...(createdAtMs === null ? {} : { createdAtMs }),
+    ...(updatedAtMs === null ? {} : { updatedAtMs }),
+  };
+};
+
+export const buildEmbeddedCredentialRuntimeMetadataItems = (
+  rows: readonly AccountRow[]
+): CredentialRuntimeMetadataItem[] =>
+  rows.flatMap((row) => {
+    const clientKey = row.selectionKey.trim();
+    if (!clientKey || normalizeProvider(row.provider) !== 'codex') return [];
+    const raw = row.raw as Record<string, unknown>;
+    const task = readEmbeddedRecoveryTask(raw.recovery_task);
+    if (!task || normalizeProvider(task.provider) !== 'codex') return [];
+    return [{ clientKey, recoveryTask: task }];
+  });
+
 export const buildCredentialRuntimeMetadataTargets = (
   rows: readonly AccountRow[]
 ): CredentialRuntimeMetadataTarget[] =>
@@ -121,9 +195,8 @@ export const buildPageRecoveryCandidates = (
 export const isPendingRecoveryStatus = (status: TokenRecoveryStatus | null | undefined): boolean =>
   Boolean(status && pendingRecoveryStatuses.has(status));
 
-export const hasAutomaticRecoveryAttempt = (
-  task: TokenRecoveryTask | null | undefined
-): boolean => Boolean(task && (task.autoAttemptedAtMs ?? 0) > 0);
+export const hasAutomaticRecoveryAttempt = (task: TokenRecoveryTask | null | undefined): boolean =>
+  Boolean(task && (task.autoAttemptedAtMs ?? 0) > 0);
 
 export const formatRecoveryState = (
   task: TokenRecoveryTask | null | undefined

@@ -718,10 +718,17 @@ func parseInventory(body []byte, clock ...func() time.Time) (*snapshot, error) {
 }
 
 func (s *Service) attachVisibleRecoveryTasks(ctx context.Context, items []map[string]any) {
-	if s == nil || s.recovery == nil || len(items) == 0 {
+	if len(items) == 0 {
 		return
 	}
 	for _, item := range items {
+		// Credential JSON is untrusted input. Only the Manager's redacted,
+		// SQLite-backed task is allowed to use this response field; otherwise a
+		// user supplied recovery_task property could impersonate task state.
+		delete(item, "recovery_task")
+		if s == nil || s.recovery == nil {
+			continue
+		}
 		if !strings.EqualFold(readString(item, "provider", "type"), "codex") {
 			continue
 		}

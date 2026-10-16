@@ -15,6 +15,17 @@ export type UseCredentialRuntimeMetadataOptions = {
   active: boolean;
   managerRequestScope?: ApiClientRequestScope;
   targets: readonly CredentialRuntimeMetadataTarget[];
+  /**
+   * Redacted task state already carried by the paged credential-list response.
+   * Supplying it lets the list render recovery state without downloading each
+   * credential's original JSON merely to recover that same state.
+   */
+  seedItems?: readonly CredentialRuntimeMetadataItem[];
+  /**
+   * Legacy and diagnostic callers still fetch runtime metadata.  Paged list
+   * callers set this false and retain only lightweight recovery-task polling.
+   */
+  fetchMetadata?: boolean;
 };
 
 export type UseCredentialRuntimeMetadataResult = {
@@ -74,6 +85,28 @@ const toItemsByClientKey = (
   return next;
 };
 
+const recoveryTaskSignature = (
+  task: CredentialRuntimeMetadataItem['recoveryTask'] | undefined
+): string =>
+  task
+    ? [
+        task.id,
+        task.status,
+        task.mode,
+        task.updatedAtMs ?? '',
+        task.autoAttemptedAtMs ?? '',
+        task.lastErrorCode ?? '',
+        task.lastErrorMessage ?? '',
+      ].join('\u001f')
+    : '';
+
+const itemSignature = (items: readonly CredentialRuntimeMetadataItem[]): string =>
+  items
+    .map((item) =>
+      [item.clientKey, item.proxyUrl ?? '', recoveryTaskSignature(item.recoveryTask)].join('\u001f')
+    )
+    .join('\u001e');
+
 const toPendingRecoveryTargets = (
   targets: readonly CredentialRuntimeMetadataTarget[],
   itemsByClientKey: ReadonlyMap<string, CredentialRuntimeMetadataItem>
@@ -97,13 +130,21 @@ export const useCredentialRuntimeMetadata = ({
   active,
   managerRequestScope,
   targets,
+  seedItems = [],
+  fetchMetadata = true,
 }: UseCredentialRuntimeMetadataOptions): UseCredentialRuntimeMetadataResult => {
   const normalizedTargets = normalizeMetadataTargets(targets);
   const normalizedTargetSignature = targetSignature(normalizedTargets);
+  const seededItemSignature = itemSignature(seedItems);
+  const seededItemsByClientKey = useMemo(
+    () => toItemsByClientKey(seedItems),
+    [seededItemSignature]
+  );
   const managerApiBase = managerRequestScope?.apiBase.trim() ?? '';
   const managerManagementKey = managerRequestScope?.managementKey ?? '';
   const enabled =
     active && Boolean(managerApiBase && managerManagementKey && normalizedTargets.length > 0);
+  const metadataFetchEnabled = enabled && fetchMetadata;
   const scopeSignature = [managerApiBase, managerManagementKey, normalizedTargetSignature].join(
     '\u0000'
   );
@@ -146,7 +187,7 @@ export const useCredentialRuntimeMetadata = ({
   );
 
   const loadMetadata = useCallback(async (): Promise<void> => {
-    if (!enabled) return;
+    if (!metadataFetchEnabled) return;
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     metadataAbortRef.current?.abort();
@@ -174,7 +215,7 @@ export const useCredentialRuntimeMetadata = ({
         setLoading(false);
       }
     }
-  }, [enabled, managerApiBase, managerManagementKey, replaceItems, scopeSignature]);
+  }, [managerApiBase, managerManagementKey, metadataFetchEnabled, replaceItems, scopeSignature]);
 
   useEffect(() => {
     generationRef.current += 1;
@@ -187,14 +228,27 @@ export const useCredentialRuntimeMetadata = ({
       return;
     }
 
-    replaceItems(new Map());
+    replaceItems(seededItemsByClientKey);
+    if (!metadataFetchEnabled) {
+      setLoading(false);
+      setError('');
+      return;
+    }
     void loadMetadata();
     return () => {
       generationRef.current += 1;
       metadataAbortRef.current?.abort();
       metadataAbortRef.current = null;
     };
-  }, [enabled, loadMetadata, replaceItems, scopeSignature]);
+  }, [
+    enabled,
+    loadMetadata,
+    metadataFetchEnabled,
+    replaceItems,
+    scopeSignature,
+    seededItemSignature,
+    seededItemsByClientKey,
+  ]);
 
   const pendingRecoverySignature = useMemo(
     () => targetSignature(toPendingRecoveryTargets(normalizedTargets, itemsByClientKey)),
