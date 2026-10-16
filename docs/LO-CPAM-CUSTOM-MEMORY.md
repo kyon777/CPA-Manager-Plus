@@ -200,6 +200,13 @@ must not call it. During every future "update CPAM" merge, preserve:
   (normally <= 50 rows). Page/filter changes abort stale work. Successfully
   loaded history stays in the in-memory session cache; explicit refresh or a
   connection-scope change invalidates it.
+- A detail drawer opened through a deep link may add its one selected row to
+  the visible-page history request when that row is outside the page. This is
+  an explicit on-demand read, never a return to full-inventory history loads.
+  If a credential disappears and later reuses the same selection key, discard
+  its cached history and invalidate/abort a matching targeted history request
+  before the re-created row is loaded; otherwise stale history can attach to a
+  new credential.
 - Normal full-list recovery state uses the lightweight Manager SQLite
   `POST /v0/management/token-recovery/query` batch route and polls only
   pending tasks. It must not use `credential-runtime-metadata`. The route has
