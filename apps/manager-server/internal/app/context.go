@@ -206,7 +206,11 @@ func fromExisting(
 		authFileMutationCoordinator,
 		st,
 	)
-	credentialListService := credentiallistsvc.NewWithRecentReader(proxyService, st)
+	credentialListService := credentiallistsvc.NewWithRecentAndRecoveryReader(
+		proxyService,
+		st,
+		tokenRecoveryService,
+	)
 	proxyService.SetCredentialListInvalidator(credentialListService.Invalidate)
 	monitoringService := monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled)
 	return &Context{

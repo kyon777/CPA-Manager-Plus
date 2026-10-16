@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -44,6 +45,14 @@ type InventoryScopeReader interface {
 // billing aggregates into the credential list.
 type RecentReader interface {
 	RecentAccountRequests(context.Context, []store.LatestAccountRequestQuery, int) ([]store.LatestAccountRequest, error)
+}
+
+// RecoveryReader is the redacted durable-task projection used by the ordinary
+// credential list. It deliberately reads only Manager state: the list must
+// not download a credential JSON merely to display an automatic-recovery
+// attempt or its terminal reason.
+type RecoveryReader interface {
+	Get(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, bool, error)
 }
 
 type Request struct {
@@ -78,12 +87,13 @@ type Response struct {
 }
 
 type Service struct {
-	reader InventoryReader
-	recent RecentReader
-	now    func() time.Time
-	mu     sync.Mutex
-	cache  map[string]*snapshot
-	loads  map[string]*snapshotLoad
+	reader   InventoryReader
+	recent   RecentReader
+	recovery RecoveryReader
+	now      func() time.Time
+	mu       sync.Mutex
+	cache    map[string]*snapshot
+	loads    map[string]*snapshotLoad
 	// recentCache is keyed by the same setup/query variant as cache. The
 	// fingerprint inside each entry prevents a partially warmed or mutated
 	// snapshot from reusing an older recency projection.
@@ -125,10 +135,19 @@ type recentIndexEntry struct {
 }
 
 func New(reader InventoryReader, clock ...func() time.Time) *Service {
-	return NewWithRecentReader(reader, nil, clock...)
+	return NewWithRecentAndRecoveryReader(reader, nil, nil, clock...)
 }
 
 func NewWithRecentReader(reader InventoryReader, recent RecentReader, clock ...func() time.Time) *Service {
+	return NewWithRecentAndRecoveryReader(reader, recent, nil, clock...)
+}
+
+func NewWithRecentAndRecoveryReader(
+	reader InventoryReader,
+	recent RecentReader,
+	recovery RecoveryReader,
+	clock ...func() time.Time,
+) *Service {
 	now := time.Now
 	if len(clock) > 0 && clock[0] != nil {
 		now = clock[0]
@@ -136,6 +155,7 @@ func NewWithRecentReader(reader InventoryReader, recent RecentReader, clock ...f
 	return &Service{
 		reader:      reader,
 		recent:      recent,
+		recovery:    recovery,
 		now:         now,
 		cache:       make(map[string]*snapshot),
 		loads:       make(map[string]*snapshotLoad),
@@ -194,6 +214,7 @@ func (s *Service) List(ctx context.Context, request Request) (Response, error) {
 		}
 		pageItems = filtered[start:end]
 	}
+	s.attachVisibleRecoveryTasks(ctx, pageItems)
 	status := "ready"
 	if current.warming {
 		status = "warming"
@@ -649,12 +670,12 @@ func parseInventory(body []byte, clock ...func() time.Time) (*snapshot, error) {
 		return nil, errors.New("CPA auth-file inventory is empty")
 	}
 	var envelope struct {
-		Files            []map[string]any `json:"files"`
-		Total            int              `json:"total"`
+		Files []map[string]any `json:"files"`
+		Total int              `json:"total"`
 		// A pointer distinguishes an explicit false on the final paginated
 		// response from an omitted field in older/non-paged CPA responses.
-		HasMore          *bool            `json:"has_more"`
-		ProxyURLIncluded bool             `json:"proxy_url_included"`
+		HasMore          *bool `json:"has_more"`
+		ProxyURLIncluded bool  `json:"proxy_url_included"`
 	}
 	if strings.HasPrefix(trimmed, "[") {
 		var files []map[string]any
@@ -694,6 +715,34 @@ func parseInventory(body []byte, clock ...func() time.Time) (*snapshot, error) {
 		warming:          hasMore,
 		complete:         !hasMore,
 	}, nil
+}
+
+func (s *Service) attachVisibleRecoveryTasks(ctx context.Context, items []map[string]any) {
+	if s == nil || s.recovery == nil || len(items) == 0 {
+		return
+	}
+	for _, item := range items {
+		if !strings.EqualFold(readString(item, "provider", "type"), "codex") {
+			continue
+		}
+		target := model.TokenRecoveryTarget{
+			FileName:     readString(item, "name", "file_name", "fileName"),
+			AuthIndex:    readString(item, "auth_index", "authIndex"),
+			AccountEmail: readString(item, "account_snapshot", "accountSnapshot", "email", "account"),
+			Provider:     "codex",
+		}
+		if target.FileName == "" || (target.AuthIndex == "" && target.AccountEmail == "") {
+			continue
+		}
+		task, found, err := s.recovery.Get(ctx, target)
+		// A recovery-status read is display enrichment only. It must never make
+		// an otherwise valid inventory page disappear or force a CPA raw-file
+		// fallback when SQLite is briefly unavailable.
+		if err != nil || !found {
+			continue
+		}
+		item["recovery_task"] = task
+	}
 }
 
 func appendUniqueItems(existing, additions []map[string]any) []map[string]any {

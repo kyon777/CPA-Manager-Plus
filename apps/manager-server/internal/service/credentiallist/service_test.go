@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -29,6 +30,19 @@ func (r *fakeScopeReader) AuthFileInventoryScope(context.Context) (string, error
 }
 
 type fakeRecentReader struct{}
+
+type fakeRecoveryReader struct {
+	task  model.TokenRecoveryTask
+	found bool
+	err   error
+}
+
+func (r fakeRecoveryReader) Get(_ context.Context, target model.TokenRecoveryTarget) (model.TokenRecoveryTask, bool, error) {
+	if target.Provider != "codex" {
+		return model.TokenRecoveryTask{}, false, nil
+	}
+	return r.task, r.found, r.err
+}
 
 func (fakeRecentReader) RecentAccountRequests(_ context.Context, targets []store.LatestAccountRequestQuery, _ int) ([]store.LatestAccountRequest, error) {
 	result := make([]store.LatestAccountRequest, 0, len(targets))
@@ -301,6 +315,56 @@ func TestWarmingDoesNotStopAtTheFirstPageWhenCPAOmitsTotal(t *testing.T) {
 		time.Sleep(time.Millisecond * 5)
 	}
 	t.Fatal("snapshot did not finish warming")
+}
+
+func TestListEmbedsVisibleCodexRecoveryTaskWithoutCredentialDownload(t *testing.T) {
+	reader := &fakeInventoryReader{pages: map[int]string{
+		1: `{"files":[
+			{"name":"codex.json","auth_index":"entry-1","email":"codex@example.com","provider":"codex","access_token":"must-not-leak"},
+			{"name":"xai.json","email":"xai@example.com","provider":"xai"}
+		],"total":2,"has_more":false}`,
+	}}
+	service := NewWithRecentAndRecoveryReader(
+		reader,
+		nil,
+		fakeRecoveryReader{
+			found: true,
+			task: model.TokenRecoveryTask{
+				ID:               9,
+				FileName:         "codex.json",
+				AuthIndex:        "entry-1",
+				AccountEmail:     "codex@example.com",
+				Provider:         "codex",
+				Status:           model.TokenRecoveryStatusAutoFailedManualOnly,
+				Mode:             model.TokenRecoveryModeAuto,
+				LastErrorCode:    "account_banned",
+				LastErrorMessage: "account_banned: blocked",
+			},
+		},
+		time.Now,
+	)
+
+	response, err := service.List(context.Background(), Request{Page: 1, PageSize: 2})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(response.Files) != 2 {
+		t.Fatalf("visible files = %#v", response.Files)
+	}
+	task, ok := response.Files[0]["recovery_task"].(model.TokenRecoveryTask)
+	if !ok || task.ID != 9 || task.LastErrorCode != "account_banned" {
+		t.Fatalf("recovery task = %#v", response.Files[0]["recovery_task"])
+	}
+	if _, present := response.Files[1]["recovery_task"]; present {
+		t.Fatalf("non-Codex row unexpectedly has recovery task: %#v", response.Files[1])
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if strings.Contains(string(encoded), "access_token") || strings.Contains(string(encoded), "must-not-leak") {
+		t.Fatalf("credential token leaked in response: %s", encoded)
+	}
 }
 
 func TestParseInventoryHonorsExplicitHasMoreFalseOnFinalPage(t *testing.T) {
