@@ -1014,14 +1014,10 @@ describe('useAuthFilesData savePastedAuthJson', () => {
 
     await expect(
       hook.getCurrent().savePastedAuthJson('cpa', 'codex-account.json', JSON.stringify(records))
-    ).resolves.toEqual([]);
+    ).rejects.toThrow('auth_files.paste_error_too_many');
 
     expect(mocks.uploadFiles).not.toHaveBeenCalled();
     expect(mocks.list).not.toHaveBeenCalled();
-    expect(mocks.showNotification).toHaveBeenCalledWith(
-      'auth_files.paste_error_too_many',
-      'error'
-    );
     hook.unmount();
   });
 

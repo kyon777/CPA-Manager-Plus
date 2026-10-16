@@ -1196,11 +1196,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       try {
         const payloads = buildPastedAuthJsonPayloads(type, fileName, jsonText);
         if (payloads.length > MAX_AUTH_IMPORT_RECORDS) {
-          showNotification(
-            t('auth_files.paste_error_too_many', { max: MAX_AUTH_IMPORT_RECORDS }),
-            'error'
-          );
-          return [];
+          throw new Error(t('auth_files.paste_error_too_many', { max: MAX_AUTH_IMPORT_RECORDS }));
         }
         const savedFileNames = payloads.map((payload) => payload.fileName);
         if (payloads.length === 1) {
