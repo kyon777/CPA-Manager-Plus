@@ -68,6 +68,7 @@ describe('useCredentialListPage', () => {
   afterEach(() => {
     renderer?.unmount();
     renderer = null;
+    vi.useRealTimers();
   });
 
   it('loads the current page through manager server and exposes metadata', async () => {
@@ -94,5 +95,45 @@ describe('useCredentialListPage', () => {
     expect(mocks.list).not.toHaveBeenCalled();
     expect(latest?.data).toBeNull();
     expect(latest?.loading).toBe(false);
+  });
+
+  it('polls until the server global summary is ready', async () => {
+    vi.useFakeTimers();
+    mocks.list
+      .mockResolvedValueOnce({ ...RESPONSE, global_metrics_status: 'warming' })
+      .mockResolvedValueOnce({
+        ...RESPONSE,
+        global_metrics_status: 'warming',
+      })
+      .mockResolvedValueOnce({
+        ...RESPONSE,
+        global_metrics_status: 'ready',
+        global_metrics: {
+          total: 101,
+          enabled: 100,
+          available: 90,
+          needs_attention: 1,
+          quota_risk: 2,
+          disabled: 1,
+          unconfirmed: 7,
+          needs_inspection_action: 0,
+        },
+      });
+    await act(async () => {
+      renderer = create(<Harness />);
+      await flush();
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await flush();
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await flush();
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(3);
+    expect(latest?.data?.global_metrics_status).toBe('ready');
   });
 });

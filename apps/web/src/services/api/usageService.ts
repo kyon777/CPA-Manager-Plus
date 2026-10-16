@@ -1242,6 +1242,17 @@ export interface CredentialListRequest {
   include_proxy_url?: 0 | 1;
 }
 
+export interface CredentialListGlobalMetrics {
+  total: number;
+  enabled: number;
+  available: number;
+  needs_attention: number;
+  quota_risk: number;
+  disabled: number;
+  unconfirmed: number;
+  needs_inspection_action: number;
+}
+
 export interface CredentialListResponse {
   files: AuthFileItem[];
   total: number;
@@ -1257,6 +1268,9 @@ export interface CredentialListResponse {
   enabled_credential_count?: number;
   proxy_projection_complete?: boolean;
   provider_counts?: Record<string, number>;
+  global_metrics?: CredentialListGlobalMetrics;
+  global_metrics_status?: 'warming' | 'ready' | 'stale' | 'unavailable' | string;
+  global_metrics_generated_at_ms?: number;
 }
 
 export interface MonitoringAccountWindowUsageTarget {

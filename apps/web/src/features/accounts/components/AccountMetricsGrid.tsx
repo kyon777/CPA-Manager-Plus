@@ -9,16 +9,19 @@ import styles from '../AccountsPage.module.scss';
 
 interface AccountMetricsGridProps {
   metrics: AccountMetrics;
-  /** The list response contains one page, not a global health aggregate. */
+  /** Legacy compatibility for callers that intentionally render page-only cards. */
   pageScopedHealth?: boolean;
   /** The Manager returned an exact total for the active enabled filter. */
   enabledSummary?: boolean;
+  /** The server is still building the full-inventory projection. */
+  globalSummaryPending?: boolean;
 }
 
 export function AccountMetricsGrid({
   metrics,
   pageScopedHealth = false,
   enabledSummary = false,
+  globalSummaryPending = false,
 }: AccountMetricsGridProps) {
   const { t } = useTranslation();
   const pageScoped = (labelKey: string, metaKey: string) =>
@@ -38,12 +41,17 @@ export function AccountMetricsGrid({
   const quotaRisk = pageScoped('accounts.metric_quota_risk', 'accounts.metric_quota_risk_meta');
   const disabled = pageScoped('accounts.metric_disabled', 'accounts.metric_disabled_meta');
   const unconfirmed = pageScoped('accounts.metric_unconfirmed', 'accounts.metric_unconfirmed_meta');
+  const pendingMeta = globalSummaryPending
+    ? t('accounts.metric_global_summary_warming', { defaultValue: '全局摘要同步中' })
+    : '';
+  const withPendingMeta = (meta: string): string =>
+    pendingMeta ? `${meta} · ${pendingMeta}` : meta;
   const cards = [
     {
       key: 'total',
       label: t('accounts.metric_total'),
       value: metrics.total,
-      meta: t('accounts.metric_total_meta'),
+      meta: withPendingMeta(t('accounts.metric_total_meta')),
       icon: 'credential' as const,
       accent: 'blue' as const,
     },
@@ -51,7 +59,7 @@ export function AccountMetricsGrid({
       key: 'available',
       label: available.label,
       value: metrics.available,
-      meta: available.meta,
+      meta: withPendingMeta(available.meta),
       icon: 'available' as const,
       accent: 'green' as const,
     },
@@ -59,7 +67,7 @@ export function AccountMetricsGrid({
       key: 'attention',
       label: attention.label,
       value: metrics.needsAttention,
-      meta: attention.meta,
+      meta: withPendingMeta(attention.meta),
       icon: 'attention' as const,
       accent: 'red' as const,
     },
@@ -67,7 +75,7 @@ export function AccountMetricsGrid({
       key: 'quota-risk',
       label: quotaRisk.label,
       value: metrics.quotaRisk,
-      meta: quotaRisk.meta,
+      meta: withPendingMeta(quotaRisk.meta),
       icon: 'quota-risk' as const,
       accent: 'amber' as const,
     },
@@ -75,7 +83,7 @@ export function AccountMetricsGrid({
       key: 'disabled',
       label: disabled.label,
       value: metrics.disabled,
-      meta: disabled.meta,
+      meta: withPendingMeta(disabled.meta),
       icon: 'disabled' as const,
       accent: 'neutral' as const,
     },
@@ -83,7 +91,7 @@ export function AccountMetricsGrid({
       key: 'unconfirmed',
       label: unconfirmed.label,
       value: metrics.unconfirmed,
-      meta: unconfirmed.meta,
+      meta: withPendingMeta(unconfirmed.meta),
       icon: 'unconfirmed' as const,
       accent: 'violet' as const,
     },

@@ -1483,6 +1483,7 @@
     "metric_disabled_meta": "Currently disabled credentials",
     "metric_unconfirmed": "Unconfirmed",
     "metric_unconfirmed_meta": "No usable health or quota evidence",
+    "metric_global_summary_warming": "Global summary syncing",
     "selected_count": "{{count}} credentials selected",
     "batch_delete_preview_summary": "This selection contains {{rows}} credentials backed by {{files}} credential files.",
     "batch_delete_preview_file_scope": "Deletion is performed by file. Every credential backed by a listed file will be removed, and this cannot be undone.",

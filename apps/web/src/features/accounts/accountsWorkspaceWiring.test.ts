@@ -239,12 +239,12 @@ describe('accounts workspace wiring', () => {
     expect(accountsPageSource).toContain('fetchMetadata: !serverCredentialListEnabled');
   });
 
-  it('marks server-paged health cards as page scoped and uses only complete enabled totals', () => {
+  it('uses the Manager global health projection for server-paged cards', () => {
     expect(accountsPageSource).toContain(
-      'projectionComplete: serverCredentialListPage.data?.proxy_projection_complete === true'
+      "serverCredentialListPage.data?.global_metrics_status === 'ready'"
     );
-    expect(accountsPageSource).toContain('pageScopedHealth={serverCredentialListEnabled}');
-    expect(accountsPageSource).toContain('enabledSummary={enabledCredentialListSummary}');
+    expect(accountsPageSource).toContain('globalCredentialMetrics.needs_attention');
+    expect(accountsPageSource).toContain('globalSummaryPending={globalCredentialMetricsPending}');
   });
 
   it.each([en, ru, zhCN, zhTW])('defines page-scoped metric copy in every locale', (locale) => {
@@ -254,6 +254,7 @@ describe('accounts workspace wiring', () => {
       'metric_enabled_meta',
       'metric_current_page',
       'metric_current_page_meta',
+      'metric_global_summary_warming',
     ]) {
       expect(accounts[key], key).toBeTypeOf('string');
       expect(String(accounts[key]), key).not.toContain('?');

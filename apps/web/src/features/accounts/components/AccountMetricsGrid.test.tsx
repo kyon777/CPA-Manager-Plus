@@ -50,7 +50,7 @@ describe('AccountMetricsGrid', () => {
     expect(renderer!.root.findByProps({ 'aria-label': 'accounts.metrics_label' })).toBeTruthy();
   });
 
-  it('labels paged health evidence as current-page data while preserving an exact enabled total', () => {
+  it('renders global health labels for the server summary while it warms', () => {
     let renderer: ReactTestRenderer;
 
     act(() => {
@@ -65,8 +65,7 @@ describe('AccountMetricsGrid', () => {
             unconfirmed: 45,
             needsInspectionAction: 0,
           }}
-          pageScopedHealth
-          enabledSummary
+          globalSummaryPending
         />
       );
     });
@@ -74,13 +73,12 @@ describe('AccountMetricsGrid', () => {
     const cards = renderer!.root.findAllByType(SummaryCard);
     expect(cards.map((card) => card.props.label)).toEqual([
       'accounts.metric_total',
-      'accounts.metric_enabled',
-      'accounts.metric_current_page',
-      'accounts.metric_current_page',
-      'accounts.metric_current_page',
-      'accounts.metric_current_page',
+      'accounts.metric_available',
+      'accounts.metric_attention',
+      'accounts.metric_quota_risk',
+      'accounts.metric_disabled',
+      'accounts.metric_unconfirmed',
     ]);
-    expect(cards[1]?.props.meta).toBe('accounts.metric_enabled_meta');
-    expect(cards[5]?.props.meta).toBe('accounts.metric_current_page_meta');
+    expect(cards[5]?.props.meta).toContain('accounts.metric_global_summary_warming');
   });
 });

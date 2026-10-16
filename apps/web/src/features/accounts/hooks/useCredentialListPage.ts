@@ -139,12 +139,17 @@ export const useCredentialListPage = ({
   }, [enabled, reload, requestKey, revision]);
 
   useEffect(() => {
-    if (!enabled || data?.sync_status !== 'warming') return;
+    if (
+      !enabled ||
+      (data?.sync_status !== 'warming' && data?.global_metrics_status !== 'warming')
+    ) {
+      return;
+    }
     const timer = setTimeout(() => {
       void reload();
     }, 1000);
     return () => clearTimeout(timer);
-  }, [data?.sync_status, enabled, reload]);
+  }, [data, enabled, reload]);
 
   return { data, loading, error, status, reload };
 };

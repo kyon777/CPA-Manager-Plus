@@ -1481,6 +1481,7 @@
     "metric_disabled_meta": "当前禁用的凭证",
     "metric_unconfirmed": "状态待确认",
     "metric_unconfirmed_meta": "缺少可用的健康或额度证据",
+    "metric_global_summary_warming": "全局摘要同步中",
     "selected_count": "已选 {{count}} 个凭证",
     "batch_delete_preview_summary": "当前选择包含 {{rows}} 个凭证，对应 {{files}} 个凭证文件。",
     "batch_delete_preview_file_scope": "删除按文件执行：列表中文件关联的全部凭证都会被删除，且操作无法撤销。",

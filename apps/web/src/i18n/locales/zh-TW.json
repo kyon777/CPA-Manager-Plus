@@ -1481,6 +1481,7 @@
     "metric_disabled_meta": "目前停用的憑證",
     "metric_unconfirmed": "狀態待確認",
     "metric_unconfirmed_meta": "缺少可用的健康或額度證據",
+    "metric_global_summary_warming": "全域摘要同步中",
     "selected_count": "已選 {{count}} 個憑證",
     "batch_delete_preview_summary": "目前選擇包含 {{rows}} 個憑證，對應 {{files}} 個憑證檔案。",
     "batch_delete_preview_file_scope": "刪除按檔案執行：清單中檔案關聯的全部憑證都會被刪除，且操作無法復原。",

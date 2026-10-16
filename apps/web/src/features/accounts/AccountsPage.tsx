@@ -124,7 +124,6 @@ import {
 } from '@/features/accounts/model/credentialRuntimeMetadata';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
-  applyEnabledCredentialListMetric,
   buildAccountInspectionBySelectionKey,
   buildAccountMetrics,
   buildAccountRows,
@@ -4668,11 +4667,36 @@ export function AccountsPage() {
     quotaCooldowns,
     rows,
   ]);
-  const enabledCredentialListSummary =
+  const globalCredentialMetrics =
     serverCredentialListEnabled &&
-    statusFilter === 'enabled' &&
-    serverCredentialListPage.data?.proxy_projection_complete === true;
+    (serverCredentialListPage.data?.global_metrics_status === 'ready' ||
+      serverCredentialListPage.data?.global_metrics_status === 'stale')
+      ? serverCredentialListPage.data.global_metrics
+      : undefined;
+  const globalCredentialMetricsReady = Boolean(globalCredentialMetrics);
+  const globalCredentialMetricsPending =
+    serverCredentialListEnabled &&
+    !globalCredentialMetricsReady;
+  const enabledCredentialListSummary =
+    statusFilter === 'enabled' && Boolean(globalCredentialMetrics);
   const metrics = useMemo(() => {
+    if (globalCredentialMetrics) {
+      return {
+        total: globalCredentialMetrics.total,
+        // Preserve the established enabled-filter affordance: when the
+        // operator explicitly selects 已启用, the green card is the exact
+        // global enabled count rather than only the healthy subset.
+        available:
+          statusFilter === 'enabled'
+            ? globalCredentialMetrics.enabled
+            : globalCredentialMetrics.available,
+        needsAttention: globalCredentialMetrics.needs_attention,
+        quotaRisk: globalCredentialMetrics.quota_risk,
+        disabled: globalCredentialMetrics.disabled,
+        unconfirmed: globalCredentialMetrics.unconfirmed,
+        needsInspectionAction: globalCredentialMetrics.needs_inspection_action,
+      };
+    }
     const localMetrics = buildAccountMetrics(rows, {
       pendingActionsByRowKey: actionCandidatesByRowKey,
       quotaCooldownsByRowKey,
@@ -4685,12 +4709,7 @@ export function AccountsPage() {
     const metricsWithInventoryTotal = inventoryTotal === undefined
       ? localMetrics
       : { ...localMetrics, total: inventoryTotal };
-    return applyEnabledCredentialListMetric(metricsWithInventoryTotal, {
-      status: statusFilter,
-      serverPaged: serverCredentialListEnabled,
-      projectionComplete: serverCredentialListPage.data?.proxy_projection_complete === true,
-      total: serverCredentialListPage.data?.total,
-    });
+    return metricsWithInventoryTotal;
   }, [
     actionCandidatesByRowKey,
     quotaCooldownsByRowKey,
@@ -4698,6 +4717,7 @@ export function AccountsPage() {
     rows,
     serverCredentialListEnabled,
     serverCredentialListPage.data,
+    globalCredentialMetrics,
     statusFilter,
   ]);
   const providerOptions = useMemo(() => getProviderOptions(rows), [rows]);
@@ -11034,8 +11054,8 @@ export function AccountsPage() {
     <>
       <AccountMetricsGrid
         metrics={metrics}
-        pageScopedHealth={serverCredentialListEnabled}
         enabledSummary={enabledCredentialListSummary}
+        globalSummaryPending={globalCredentialMetricsPending}
       />
       {error ? <div className={styles.errorBox}>{error}</div> : null}
       {loading ? (

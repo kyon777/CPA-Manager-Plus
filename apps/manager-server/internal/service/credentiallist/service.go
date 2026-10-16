@@ -81,23 +81,40 @@ type Response struct {
 	ProxyURLs []string `json:"proxy_urls,omitempty"`
 	// Keep zero explicit: an empty enabled set is different from an omitted
 	// projection while the browser decides whether proxy filtering is complete.
-	EnabledCredentialCount  int            `json:"enabled_credential_count"`
-	ProxyProjectionComplete bool           `json:"proxy_projection_complete"`
-	ProviderCounts          map[string]int `json:"provider_counts,omitempty"`
+	EnabledCredentialCount     int            `json:"enabled_credential_count"`
+	ProxyProjectionComplete    bool           `json:"proxy_projection_complete"`
+	ProviderCounts             map[string]int `json:"provider_counts,omitempty"`
+	GlobalMetrics              *GlobalMetrics `json:"global_metrics,omitempty"`
+	GlobalMetricsStatus        string         `json:"global_metrics_status,omitempty"`
+	GlobalMetricsGeneratedAtMS int64          `json:"global_metrics_generated_at_ms,omitempty"`
 }
 
 type Service struct {
-	reader   InventoryReader
-	recent   RecentReader
-	recovery RecoveryReader
-	now      func() time.Time
-	mu       sync.Mutex
-	cache    map[string]*snapshot
-	loads    map[string]*snapshotLoad
+	reader        InventoryReader
+	recent        RecentReader
+	recovery      RecoveryReader
+	globalMetrics GlobalMetricsReader
+	now           func() time.Time
+	mu            sync.Mutex
+	cache         map[string]*snapshot
+	loads         map[string]*snapshotLoad
 	// recentCache is keyed by the same setup/query variant as cache. The
 	// fingerprint inside each entry prevents a partially warmed or mutated
 	// snapshot from reusing an older recency projection.
-	recentCache map[string]*recentIndexEntry
+	recentCache        map[string]*recentIndexEntry
+	globalMetricsCache map[string]*globalMetricsEntry
+}
+
+type globalMetricsEntry struct {
+	fingerprint string
+	metrics     GlobalMetrics
+	generatedAt time.Time
+	err         error
+	loading     bool
+	ready       bool
+	done        chan struct{}
+	stale       *GlobalMetrics
+	staleAt     time.Time
 }
 
 // snapshotLoad coalesces the first page fetch for a cache key. A busy panel
@@ -135,11 +152,11 @@ type recentIndexEntry struct {
 }
 
 func New(reader InventoryReader, clock ...func() time.Time) *Service {
-	return NewWithRecentAndRecoveryReader(reader, nil, nil, clock...)
+	return newService(reader, nil, nil, nil, clock...)
 }
 
 func NewWithRecentReader(reader InventoryReader, recent RecentReader, clock ...func() time.Time) *Service {
-	return NewWithRecentAndRecoveryReader(reader, recent, nil, clock...)
+	return newService(reader, recent, nil, nil, clock...)
 }
 
 func NewWithRecentAndRecoveryReader(
@@ -148,18 +165,30 @@ func NewWithRecentAndRecoveryReader(
 	recovery RecoveryReader,
 	clock ...func() time.Time,
 ) *Service {
+	return newService(reader, recent, recovery, nil, clock...)
+}
+
+func newService(
+	reader InventoryReader,
+	recent RecentReader,
+	recovery RecoveryReader,
+	globalMetrics GlobalMetricsReader,
+	clock ...func() time.Time,
+) *Service {
 	now := time.Now
 	if len(clock) > 0 && clock[0] != nil {
 		now = clock[0]
 	}
 	return &Service{
-		reader:      reader,
-		recent:      recent,
-		recovery:    recovery,
-		now:         now,
-		cache:       make(map[string]*snapshot),
-		loads:       make(map[string]*snapshotLoad),
-		recentCache: make(map[string]*recentIndexEntry),
+		reader:             reader,
+		recent:             recent,
+		recovery:           recovery,
+		globalMetrics:      globalMetrics,
+		now:                now,
+		cache:              make(map[string]*snapshot),
+		loads:              make(map[string]*snapshotLoad),
+		recentCache:        make(map[string]*recentIndexEntry),
+		globalMetricsCache: make(map[string]*globalMetricsEntry),
 	}
 }
 
@@ -228,21 +257,25 @@ func (s *Service) List(ctx context.Context, request Request) (Response, error) {
 			age = 0
 		}
 	}
+	globalMetrics, globalMetricsStatus, globalMetricsGeneratedAt := s.resolveGlobalMetrics(ctx, key, current)
 	return Response{
-		Files:                   pageItems,
-		Total:                   total,
-		InventoryTotal:          inventoryTotal(current),
-		Page:                    request.Page,
-		PageSize:                request.PageSize,
-		HasMore:                 start+request.PageSize < total,
-		ProxyURLIncluded:        current.proxyURLIncluded,
-		SyncStatus:              status,
-		SyncAgeMS:               age,
-		SyncError:               current.syncError,
-		ProxyURLs:               enabledProxyURLs(current.items),
-		EnabledCredentialCount:  countEnabledItems(current.items),
-		ProxyProjectionComplete: current.complete,
-		ProviderCounts:          providerCounts(current.items),
+		Files:                      pageItems,
+		Total:                      total,
+		InventoryTotal:             inventoryTotal(current),
+		Page:                       request.Page,
+		PageSize:                   request.PageSize,
+		HasMore:                    start+request.PageSize < total,
+		ProxyURLIncluded:           current.proxyURLIncluded,
+		SyncStatus:                 status,
+		SyncAgeMS:                  age,
+		SyncError:                  current.syncError,
+		ProxyURLs:                  enabledProxyURLs(current.items),
+		EnabledCredentialCount:     countEnabledItems(current.items),
+		ProxyProjectionComplete:    current.complete,
+		ProviderCounts:             providerCounts(current.items),
+		GlobalMetrics:              globalMetrics,
+		GlobalMetricsStatus:        globalMetricsStatus,
+		GlobalMetricsGeneratedAtMS: globalMetricsGeneratedAt,
 	}, nil
 }
 
@@ -595,6 +628,13 @@ func (s *Service) Invalidate() {
 	}
 	s.loads = make(map[string]*snapshotLoad)
 	s.recentCache = make(map[string]*recentIndexEntry)
+	for key, pending := range s.globalMetricsCache {
+		if pending != nil && pending.loading && pending.done != nil {
+			close(pending.done)
+		}
+		delete(s.globalMetricsCache, key)
+	}
+	s.globalMetricsCache = make(map[string]*globalMetricsEntry)
 	s.mu.Unlock()
 }
 

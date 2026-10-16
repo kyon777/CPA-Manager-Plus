@@ -68,6 +68,7 @@ CPA /v0/management/auth-files?page=...&include_proxy_url=1
 ## 缓存和失效
 
 - 摘要按完整库存快照指纹缓存，短 TTL 复用。
+- 后台证据扫描使用独立的有界超时；扫描超时只让摘要进入 `unavailable`/回退路径，不阻塞凭证列表或 CPA 请求。
 - CPA 库存变化、上传/删除/状态变更调用现有列表失效器；下一次完整快照会重新计算。
 - Manager SQLite 证据读取只读，不写 usage、quota、billing 表，不触碰 CPA 调度。
 - 首次 warming 期间前端保留已有摘要（若有），否则显示“全局摘要同步中”；同步完成后由现有轮询自然刷新。

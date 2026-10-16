@@ -206,10 +206,11 @@ func fromExisting(
 		authFileMutationCoordinator,
 		st,
 	)
-	credentialListService := credentiallistsvc.NewWithRecentAndRecoveryReader(
+	credentialListService := credentiallistsvc.NewWithRecentRecoveryAndGlobalMetricsReader(
 		proxyService,
 		st,
 		tokenRecoveryService,
+		credentiallistsvc.NewStoreGlobalMetricsReader(st, st),
 	)
 	proxyService.SetCredentialListInvalidator(credentialListService.Invalidate)
 	monitoringService := monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled)

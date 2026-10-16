@@ -166,6 +166,13 @@ USAGE_QUERY_LIMIT=50000
 - 分页模式仍然保留 CPA 的 `include_proxy_url=1` 直接投影；`note` 与 `proxy_url` 随当前页清单一起返回，普通凭证列表首屏/翻页不得为了代理或恢复状态再下载每个账号的原始 JSON。
 - Manager 只对当前页 Codex 行从 CPAM SQLite 读取并附加**脱敏**的 `recovery_task`；任何认证 JSON 自身伪造的同名字段必须在投影前删除。浏览器以该任务状态渲染“已自动更新一次”、失败原因和当前页封禁删除按钮；仅对 `queued/running` 任务继续请求轻量 token-recovery batch 轮询。
 - `credential-runtime-metadata` 保留给旧 Manager 回退/显式诊断路径，但正常已启用分页列表不得调用它。代理筛选继续优先用完整的 Manager 投影；投影预热期间必须标为未完成，不能退回全量原始 JSON 扫描，也不能把未知代理误判为未使用。
-- 分页列表中的 `正常可用/需要处理/额度风险/已禁用/状态待确认` 是**当前页证据统计**，页面必须明确标为“当前页…”，不能伪装为全局调度状态；它们不会改变 CPA Core 调度。
-- 当筛选条件为“已启用”且 `proxy_projection_complete=true` 时，绿色卡使用 Manager 返回的精确筛选总数，标签必须为“已启用”，不能称“正常可用”。投影未完成时保留当前页值。
+- 分页列表中的 `正常可用/需要处理/额度风险/已禁用/状态待确认` 卡片现在优先使用 Manager 生成的**完整库存全局摘要**；摘要 `warming/unavailable` 时才回退当前页估算，并显示同步提示。该投影只读 Manager 索引证据，不改变 CPA Core 调度。
+- 当筛选条件为“已启用”且全局摘要为 `ready/stale` 时，绿色卡使用 Manager 返回的精确全局 enabled 总数，标签必须为“已启用”，不能称“正常可用”。摘要未完成时保留当前页值并提示同步中。
 - 此层不得修改 CPA Core、`cli-proxy-api`、`usage_events`、计费汇总、额度计算、巡检调度或 502/503/精确限流 429 降优先级 worker。
+
+### 2026-10-15：CPAM 全局凭证健康摘要
+
+- `GET /usage-service/credential-list` 在完整库存快照完成后附带 `global_metrics`、`global_metrics_status` 与生成时间；统计独立于当前搜索、状态筛选和分页，因此当前页是旧的已启用账号时，新导入且尚无证据的账号仍会进入全局“状态待确认”。
+- 摘要由 Manager Server 后台读取只读证据（最近请求、巡检、恢复/操作队列、额度冷却和 Header/Credits 快照）并按 `disabled → needs_attention → quota_risk → available → unconfirmed` 互斥归类；不读取或写回凭证 Token，不写入 usage/billing/quota 表。
+- 前端仅在 `ready/stale` 时采用全局卡片；首次 `warming` 或证据暂不可用时保留当前页回退并显示“全局摘要同步中”。选择“已启用”时绿色卡仍显示全局 enabled 总数，其余卡片保持全局分类。
+- 摘要按完整库存指纹缓存 15 秒，CPA 清单 mutation 通过现有 invalidator 清空；该功能仅改 CPAM，不改 CPA Core、`cli-proxy-api`、计费、巡检调度和 502/503/精确限流 429 降优先级逻辑。
