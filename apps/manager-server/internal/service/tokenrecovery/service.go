@@ -188,7 +188,7 @@ func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) err
 		return ErrRecoveryUnavailable
 	}
 	locator := Locator{AuthIndex: task.AuthIndex, AccountEmail: task.AccountEmail}
-	credential, _, err := s.readCurrentCredential(ctx, task.FileName, locator)
+	credential, resolvedLocator, err := s.readCurrentCredential(ctx, task.FileName, locator)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) err
 	if err != nil {
 		return err
 	}
-	return s.writeCurrentCredential(ctx, task.FileName, locator, credential.Email, AcquisitionResult{
+	return s.writeCurrentCredential(ctx, task.FileName, resolvedLocator, credential.Email, AcquisitionResult{
 		Email:            acquired.Email,
 		AccessToken:      acquired.AccessToken,
 		RefreshToken:     acquired.RefreshToken,
@@ -208,25 +208,49 @@ func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) err
 	})
 }
 
-func (s *Service) readCurrentCredential(ctx context.Context, fileName string, locator Locator) (Credential, store.Setup, error) {
+func (s *Service) readCurrentCredential(ctx context.Context, fileName string, locator Locator) (Credential, Locator, error) {
 	release, err := s.mutationCoordinator.Acquire(ctx, fileName)
 	if err != nil {
-		return Credential{}, store.Setup{}, err
+		return Credential{}, Locator{}, err
 	}
 	defer release()
 	setup, err := s.resolveSetup(ctx)
 	if err != nil {
-		return Credential{}, store.Setup{}, err
+		return Credential{}, Locator{}, err
 	}
 	raw, err := s.authFiles.Download(ctx, setup.CPAUpstreamURL, setup.ManagementKey, fileName)
 	if err != nil {
-		return Credential{}, store.Setup{}, err
+		return Credential{}, Locator{}, err
 	}
-	credential, err := ReadCredential(raw, locator)
+	credential, resolvedLocator, err := readCredentialWithStaleAuthIndexFallback(raw, locator)
 	if err != nil {
-		return Credential{}, store.Setup{}, err
+		return Credential{}, Locator{}, err
 	}
-	return credential, setup, nil
+	return credential, resolvedLocator, nil
+}
+
+// readCredentialWithStaleAuthIndexFallback preserves the original auth-index
+// locator whenever it still resolves. A durable recovery task can outlive a
+// CPA credential import, however, and imports may assign a new auth_index to
+// the same physical file and email. In that narrow case, fall back to an
+// email-only lookup. ReadCredential accepts it only when exactly one current
+// record matches, so an array with duplicate emails remains ambiguous and is
+// never mutated.
+func readCredentialWithStaleAuthIndexFallback(raw []byte, locator Locator) (Credential, Locator, error) {
+	credential, err := ReadCredential(raw, locator)
+	if err == nil {
+		return credential, locator, nil
+	}
+	if !errors.Is(err, ErrCredentialNotFound) || strings.TrimSpace(locator.AuthIndex) == "" || normalizeEmail(locator.AccountEmail) == "" {
+		return Credential{}, Locator{}, err
+	}
+
+	fallback := Locator{AccountEmail: locator.AccountEmail}
+	credential, fallbackErr := ReadCredential(raw, fallback)
+	if fallbackErr != nil {
+		return Credential{}, Locator{}, fallbackErr
+	}
+	return credential, fallback, nil
 }
 
 func (s *Service) writeCurrentCredential(ctx context.Context, fileName string, locator Locator, originalEmail string, result AcquisitionResult) error {
