@@ -26,6 +26,8 @@ import { parseTimestampMs } from '@/utils/timestamp';
 import {
   buildAuthJsonFilePayloads,
   isSub2ApiAuthJsonInput,
+  MAX_AUTH_IMPORT_RECORDS,
+  MAX_AUTH_PASTE_JSON_INPUT_CHARS,
   type AuthJsonFilePayload,
   type AuthJsonInputType,
 } from '@/features/authFiles/sessionAuthConverter';
@@ -132,6 +134,8 @@ type AuthFilePreparationFailure = {
   name: string;
   error: string;
 };
+
+const AUTH_FILE_IMPORT_LIMIT_ERROR = 'AUTH_FILE_IMPORT_LIMIT_EXCEEDED';
 
 export type PreparedAuthFileUpload = {
   files: File[];
@@ -670,7 +674,8 @@ export const buildPastedAuthJsonPayloads = (
   type: AuthJsonInputType,
   fileName: string,
   jsonText: string
-): AuthJsonFilePayload[] => buildAuthJsonFilePayloads(type, fileName, jsonText);
+): AuthJsonFilePayload[] =>
+  buildAuthJsonFilePayloads(type, fileName, jsonText, new Date(), MAX_AUTH_PASTE_JSON_INPUT_CHARS);
 
 const appendUploadFileNameSuffix = (fileName: string, suffix: number) => {
   const baseName = fileName.toLowerCase().endsWith('.json')
@@ -705,6 +710,10 @@ const createUniqueConvertedAuthFiles = (
 };
 
 export const prepareAuthFilesForUpload = async (files: File[]): Promise<PreparedAuthFileUpload> => {
+  if (files.length > MAX_AUTH_IMPORT_RECORDS) {
+    throw new Error(AUTH_FILE_IMPORT_LIMIT_ERROR);
+  }
+
   const ordinaryFiles: File[] = [];
   const convertedPayloads: AuthJsonFilePayload[] = [];
   const failures: AuthFilePreparationFailure[] = [];
@@ -737,8 +746,14 @@ export const prepareAuthFilesForUpload = async (files: File[]): Promise<Prepared
           MAX_AUTH_FILE_SIZE
         )
       );
+      if (ordinaryFiles.length + convertedPayloads.length > MAX_AUTH_IMPORT_RECORDS) {
+        throw new Error(AUTH_FILE_IMPORT_LIMIT_ERROR);
+      }
       convertedSourceCount += 1;
     } catch (err) {
+      if (err instanceof Error && err.message === AUTH_FILE_IMPORT_LIMIT_ERROR) {
+        throw err;
+      }
       failures.push({
         name: file.name,
         error: err instanceof Error ? err.message : 'Failed to convert sub2api auth JSON',
@@ -1087,6 +1102,14 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
         event.target.value = '';
         return;
       }
+      if (validFiles.length > MAX_AUTH_IMPORT_RECORDS) {
+        showNotification(
+          t('auth_files.upload_error_too_many', { max: MAX_AUTH_IMPORT_RECORDS }),
+          'error'
+        );
+        event.target.value = '';
+        return;
+      }
 
       uploadOperationRef.current = operationToken;
       setUploading(true);
@@ -1131,7 +1154,14 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       } catch (err: unknown) {
         if (!isCurrentOperation()) return;
         const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-        showNotification(`${t('notification.upload_failed')}: ${errorMessage}`, 'error');
+        if (errorMessage === AUTH_FILE_IMPORT_LIMIT_ERROR) {
+          showNotification(
+            t('auth_files.upload_error_too_many', { max: MAX_AUTH_IMPORT_RECORDS }),
+            'error'
+          );
+        } else {
+          showNotification(`${t('notification.upload_failed')}: ${errorMessage}`, 'error');
+        }
       } finally {
         if (uploadOperationRef.current === operationToken) {
           uploadOperationRef.current = null;
@@ -1165,6 +1195,13 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       setAuthJsonPasteSaving(true);
       try {
         const payloads = buildPastedAuthJsonPayloads(type, fileName, jsonText);
+        if (payloads.length > MAX_AUTH_IMPORT_RECORDS) {
+          showNotification(
+            t('auth_files.paste_error_too_many', { max: MAX_AUTH_IMPORT_RECORDS }),
+            'error'
+          );
+          return [];
+        }
         const savedFileNames = payloads.map((payload) => payload.fileName);
         if (payloads.length === 1) {
           try {

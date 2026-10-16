@@ -527,6 +527,32 @@ describe('prepareAuthFilesForUpload', () => {
     }
   });
 
+  it('rejects a converted upload that expands beyond 300 auth files', async () => {
+    const file = new File(
+      [
+        JSON.stringify({
+          exported_at: '2026-06-01T12:00:00.000Z',
+          proxies: [],
+          accounts: Array.from({ length: 301 }, (_, index) => ({
+            name: `Account ${index}`,
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              access_token: `access-token-${index}`,
+              email: `account-${index}@example.com`,
+            },
+          })),
+        }),
+      ],
+      'too-many-sub2api-export.json',
+      { type: 'application/json' }
+    );
+
+    await expect(prepareAuthFilesForUpload([file])).rejects.toThrow(
+      'AUTH_FILE_IMPORT_LIMIT_EXCEEDED'
+    );
+  });
+
   it('reports an invalid detected sub2api export without uploading the source file', async () => {
     const file = new File(
       [
@@ -949,6 +975,53 @@ describe('useAuthFilesData savePastedAuthJson', () => {
     expect(uploadedJson).toEqual(records);
     expect(uploadedJson.every((item) => !Array.isArray(item))).toBe(true);
     expect(mocks.showNotification).toHaveBeenCalledWith('auth_files.paste_success_many', 'success');
+    hook.unmount();
+  });
+
+  it('uploads exactly 300 pasted CPA records and reloads the list once', async () => {
+    const hook = mountUseAuthFilesData();
+    const records = Array.from({ length: 300 }, (_, index) => ({
+      type: 'codex',
+      email: `batch-${index}@example.com`,
+      access_token: `token-${index}`,
+    }));
+    mocks.uploadFiles.mockImplementationOnce(async (files: File[]) => ({
+      status: 'ok',
+      uploaded: files.length,
+      files: files.map((file) => file.name),
+      failed: [],
+    }));
+
+    const savedNames = await hook
+      .getCurrent()
+      .savePastedAuthJson('cpa', 'codex-account.json', JSON.stringify(records));
+
+    expect(savedNames).toHaveLength(300);
+    expect(mocks.uploadFiles).toHaveBeenCalledTimes(1);
+    expect((mocks.uploadFiles.mock.calls[0]?.[0] as File[]).length).toBe(300);
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(mocks.showNotification).toHaveBeenCalledWith('auth_files.paste_success_many', 'success');
+    hook.unmount();
+  });
+
+  it('rejects 301 pasted CPA records before upload or list reload', async () => {
+    const hook = mountUseAuthFilesData();
+    const records = Array.from({ length: 301 }, (_, index) => ({
+      type: 'codex',
+      email: `too-many-${index}@example.com`,
+      access_token: `token-${index}`,
+    }));
+
+    await expect(
+      hook.getCurrent().savePastedAuthJson('cpa', 'codex-account.json', JSON.stringify(records))
+    ).resolves.toEqual([]);
+
+    expect(mocks.uploadFiles).not.toHaveBeenCalled();
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.paste_error_too_many',
+      'error'
+    );
     hook.unmount();
   });
 

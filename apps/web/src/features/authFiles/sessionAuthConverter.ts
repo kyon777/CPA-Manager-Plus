@@ -154,6 +154,8 @@ const FORBIDDEN_INVISIBLE_CODE_POINTS = new Set([
 
 const CREDENTIAL_CONTAINER_KEYS = ['credentials', 'auth', 'cookies'] as const;
 
+export const MAX_AUTH_IMPORT_RECORDS = 300;
+export const MAX_AUTH_PASTE_JSON_INPUT_CHARS = 48 * 1024 * 1024;
 const MAX_AUTH_JSON_INPUT_CHARS = 1_000_000;
 const MAX_JSON_TRAVERSAL_DEPTH = 64;
 const MAX_JSON_RECORDS = 5_000;
