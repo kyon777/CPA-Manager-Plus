@@ -148,6 +148,69 @@ func TestServiceRejectsStaleAuthIndexFallbackWhenEmailIsAmbiguous(t *testing.T) 
 	}
 }
 
+func TestServiceRecoversUniqueArrayEmailWhenStoredAuthIndexIsStale(t *testing.T) {
+	core := newRecoveryCore(t, []byte(`[
+  {"auth_index":"current-other","email":"other@example.com","access_token":"other-access","refresh_token":"other-refresh","id_token":"other-id"},
+  {"auth_index":"current-target","email":"person@example.com","access_token":"old-access","refresh_token":"old-refresh","id_token":"old-id","note":"keep target note"}
+]`))
+	acquirer := &fakeAcquirer{result: tokenacquisition.Result{
+		Email: "person@example.com", AccessToken: "new-access", RefreshToken: "new-refresh", IDToken: "new-id",
+	}}
+	service, ctx, cancel := newRecoveryService(t, core.server.URL, cpaauthfiles.NewMutationCoordinator(), acquirer)
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "stale-index", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusSucceeded)
+	if acquirer.callCount() != 1 || core.uploadCount() != 1 {
+		t.Fatalf("acquire/uploads = %d/%d, want 1/1", acquirer.callCount(), core.uploadCount())
+	}
+	merged := core.contents()
+	for _, want := range []string{
+		`"auth_index":"current-other"`, `"email":"other@example.com"`, `"access_token":"other-access"`,
+		`"auth_index":"current-target"`, `"access_token":"new-access"`, `"refresh_token":"new-refresh"`, `"id_token":"new-id"`, `"note":"keep target note"`,
+	} {
+		if !strings.Contains(merged, want) {
+			t.Fatalf("merged array auth JSON missing %s: %s", want, merged)
+		}
+	}
+}
+
+func TestServiceDoesNotFallbackWhenStoredAuthIndexMatchesRecordWithoutEmail(t *testing.T) {
+	core := newRecoveryCore(t, []byte(`[
+  {"auth_index":"task-index","access_token":"malformed-access","refresh_token":"malformed-refresh","id_token":"malformed-id"},
+  {"auth_index":"current-target","email":"person@example.com","access_token":"old-access","refresh_token":"old-refresh","id_token":"old-id"}
+]`))
+	acquirer := &fakeAcquirer{result: tokenacquisition.Result{
+		Email: "person@example.com", AccessToken: "new-access", RefreshToken: "new-refresh", IDToken: "new-id",
+	}}
+	service, ctx, cancel := newRecoveryService(t, core.server.URL, cpaauthfiles.NewMutationCoordinator(), acquirer)
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "task-index", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	failed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusAutoFailedManualOnly)
+	if failed.LastErrorCode != "credential_not_found" {
+		t.Fatalf("failure code = %q, want credential_not_found", failed.LastErrorCode)
+	}
+	if acquirer.callCount() != 0 || core.uploadCount() != 0 {
+		t.Fatalf("acquire/uploads = %d/%d, want 0/0", acquirer.callCount(), core.uploadCount())
+	}
+	if !strings.Contains(core.contents(), `"access_token":"old-access"`) {
+		t.Fatalf("target record was unexpectedly changed: %s", core.contents())
+	}
+}
+
 func TestServiceAutomaticFailureDoesNotPostAgainUntilManualRequest(t *testing.T) {
 	core := newRecoveryCore(t, []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old","refresh_token":"old","id_token":"old"}`))
 	acquirer := &fakeAcquirer{err: errors.New("external failure")}

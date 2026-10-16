@@ -241,7 +241,10 @@ func readCredentialWithStaleAuthIndexFallback(raw []byte, locator Locator) (Cred
 	if err == nil {
 		return credential, locator, nil
 	}
-	if !errors.Is(err, ErrCredentialNotFound) || strings.TrimSpace(locator.AuthIndex) == "" || normalizeEmail(locator.AccountEmail) == "" {
+	if !errors.Is(err, ErrCredentialNotFound) ||
+		strings.TrimSpace(locator.AuthIndex) == "" ||
+		normalizeEmail(locator.AccountEmail) == "" ||
+		authIndexPresentInAuthDocument(raw, locator.AuthIndex) {
 		return Credential{}, Locator{}, err
 	}
 
@@ -251,6 +254,33 @@ func readCredentialWithStaleAuthIndexFallback(raw []byte, locator Locator) (Cred
 		return Credential{}, Locator{}, fallbackErr
 	}
 	return credential, fallback, nil
+}
+
+// authIndexPresentInAuthDocument distinguishes a genuinely stale locator from
+// an index that still resolves to a malformed record. The latter must fail
+// closed: falling back by email could otherwise select a different record in
+// the same array and overwrite its tokens.
+func authIndexPresentInAuthDocument(raw []byte, authIndex string) bool {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return false
+	}
+	root, err := decodeAuthDocumentRoot(raw)
+	if err != nil {
+		return false
+	}
+	switch typed := root.(type) {
+	case map[string]any:
+		return firstNonEmptyField(typed, authIndexFieldNames...) == authIndex
+	case []any:
+		for _, value := range typed {
+			record, ok := value.(map[string]any)
+			if ok && firstNonEmptyField(record, authIndexFieldNames...) == authIndex {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Service) writeCurrentCredential(ctx context.Context, fileName string, locator Locator, originalEmail string, result AcquisitionResult) error {
