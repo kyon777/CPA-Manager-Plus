@@ -15,7 +15,9 @@ export const CACHE_EXPIRY_MS = 30 * 1000; // 与基线保持一致，减少管�
 // 网络与版本信息
 export const DEFAULT_API_PORT = 8317;
 export const MANAGEMENT_API_PREFIX = '/v0/management';
-export const REQUEST_TIMEOUT_MS = 60 * 1000;
+// Direct CPA API requests include full credential inventories and raw error-log reads.
+// Keep their client-side timeout consistent with the Manager Server request budget.
+export const REQUEST_TIMEOUT_MS = 4 * 60 * 1000;
 export const VERSION_HEADER_KEYS = ['x-cpa-version', 'x-server-version'];
 export const COMMIT_HEADER_KEYS = ['x-cpa-commit', 'x-server-commit'];
 export const BUILD_DATE_HEADER_KEYS = ['x-cpa-build-date', 'x-server-build-date'];
@@ -26,7 +28,7 @@ export const LOG_REFRESH_DELAY_MS = 500;
 // 日志相关
 export const MAX_LOG_LINES = 2000;
 export const LOG_FETCH_LIMIT = 2500;
-export const LOGS_TIMEOUT_MS = 60 * 1000;
+export const LOGS_TIMEOUT_MS = REQUEST_TIMEOUT_MS;
 
 export const MAX_AUTH_FILE_SIZE = 10 * 1024 * 1024;
 

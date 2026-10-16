@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { REQUEST_TIMEOUT_MS } from './constants';
+import { LOGS_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from './constants';
 
 describe('management request timeout', () => {
-  it('keeps a full credential inventory request alive for sixty seconds', () => {
-    expect(REQUEST_TIMEOUT_MS).toBe(60_000);
+  it('keeps direct CPA inventory and log requests alive for four minutes', () => {
+    expect(REQUEST_TIMEOUT_MS).toBe(240_000);
+    expect(LOGS_TIMEOUT_MS).toBe(240_000);
   });
 });
