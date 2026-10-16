@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	MaxFiles     = 100
-	MaxTotalSize = 32 * 1024 * 1024
-	jobTTL       = 30 * time.Minute
+	MaxFiles             = 300
+	MaxTotalSize         = 64 * 1024 * 1024
+	MaxUploadConcurrency = 8
+	jobTTL               = 30 * time.Minute
 )
 
 type SetupResolver interface {
@@ -61,6 +62,7 @@ type Service struct {
 	now         func() time.Time
 	mu          sync.Mutex
 	jobs        map[string]*job
+	uploadSlots chan struct{}
 }
 
 type job struct {
@@ -95,6 +97,7 @@ func NewWithInventoryInvalidator(
 		client:      configuredClient,
 		now:         time.Now,
 		jobs:        make(map[string]*job),
+		uploadSlots: make(chan struct{}, MaxUploadConcurrency),
 	}
 }
 
@@ -204,17 +207,60 @@ func (s *Service) run(id string) {
 		}
 		return
 	}
+	workerCount := MaxUploadConcurrency
+	if len(pending) < workerCount {
+		workerCount = len(pending)
+	}
+	indices := make(chan int)
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for worker := 0; worker < workerCount; worker++ {
+		go func() {
+			defer workers.Done()
+			for index := range indices {
+				file := &pending[index]
+				failure, uploaded := s.uploadOne(ctx, setup, file)
+				s.record(id, file.Name, failure, uploaded)
+			}
+		}()
+	}
 	for index := range pending {
-		file := &pending[index]
-		err := s.client.Upload(ctx, setup.CPAUpstreamURL, setup.ManagementKey, file.Name, file.Data)
+		indices <- index
+	}
+	close(indices)
+	workers.Wait()
+}
+
+func (s *Service) uploadOne(ctx context.Context, setup store.Setup, file *UploadFile) (string, bool) {
+	if file == nil {
+		return "invalid auth-file", false
+	}
+	slots := s.uploadSlots
+	if slots == nil {
+		// Services are normally built by NewWithInventoryInvalidator. Keep a
+		// manually assembled Service bounded as well for package-level callers.
+		s.mu.Lock()
+		if s.uploadSlots == nil {
+			s.uploadSlots = make(chan struct{}, MaxUploadConcurrency)
+		}
+		slots = s.uploadSlots
+		s.mu.Unlock()
+	}
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
 		zeroBytes(file.Data)
 		file.Data = nil
-		if err != nil {
-			s.record(id, file.Name, safeError(err), false)
-			continue
-		}
-		s.record(id, file.Name, "", true)
+		return safeError(ctx.Err()), false
 	}
+	err := s.client.Upload(ctx, setup.CPAUpstreamURL, setup.ManagementKey, file.Name, file.Data)
+	<-slots
+	zeroBytes(file.Data)
+	file.Data = nil
+	if err != nil {
+		return safeError(err), false
+	}
+	return "", true
 }
 
 func (s *Service) record(id, name, failure string, uploaded bool) {

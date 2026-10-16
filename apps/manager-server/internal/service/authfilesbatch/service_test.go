@@ -3,6 +3,8 @@ package authfilesbatch
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +54,75 @@ type testInventoryInvalidator struct {
 	calls int
 }
 
+type immediateUploadClient struct {
+	mu       sync.Mutex
+	uploaded []string
+}
+
+func (c *immediateUploadClient) Upload(
+	_ context.Context,
+	_ string,
+	_ string,
+	name string,
+	_ []byte,
+) error {
+	c.mu.Lock()
+	c.uploaded = append(c.uploaded, name)
+	c.mu.Unlock()
+	return nil
+}
+
+type blockingUploadClient struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	calls     int
+	entered   chan struct{}
+	release   <-chan struct{}
+}
+
+func (c *blockingUploadClient) Upload(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ string,
+	_ []byte,
+) error {
+	c.mu.Lock()
+	c.active++
+	c.calls++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	c.mu.Unlock()
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	<-c.release
+	c.mu.Lock()
+	c.active--
+	c.mu.Unlock()
+	return nil
+}
+
+func waitForFinished(t *testing.T, service *Service, id string) Status {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if status, found := service.Get(id); found && status.Finished {
+			return status
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	status, found := service.Get(id)
+	if !found {
+		t.Fatalf("batch %s disappeared before completion", id)
+	}
+	t.Fatalf("batch %s did not finish: %#v", id, status)
+	return Status{}
+}
+
 func (i *testInventoryInvalidator) InvalidateAuthFileInventory(context.Context) {
 	i.mu.Lock()
 	i.calls++
@@ -62,6 +133,88 @@ func (i *testInventoryInvalidator) CallCount() int {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return i.calls
+}
+
+func TestBatchUploadAcceptsUpTo300Files(t *testing.T) {
+	client := &immediateUploadClient{}
+	service := New(testSetupResolver{setup: store.Setup{
+		CPAUpstreamURL: "http://core.internal:8317",
+		ManagementKey:  "management-key",
+	}}, client)
+	files := make([]UploadFile, 300)
+	for index := range files {
+		files[index] = UploadFile{
+			Name: fmt.Sprintf("account-%03d.json", index),
+			Data: []byte("token"),
+		}
+	}
+	started, err := service.Start(context.Background(), files)
+	if err != nil {
+		t.Fatalf("start 300-file batch: %v", err)
+	}
+	status := waitForFinished(t, service, started.ID)
+	if status.State != "completed" || status.Uploaded != 300 || status.Failed != 0 {
+		t.Fatalf("300-file batch status = %#v", status)
+	}
+}
+
+func TestBatchUploadRejects301Files(t *testing.T) {
+	service := New(testSetupResolver{setup: store.Setup{
+		CPAUpstreamURL: "http://core.internal:8317",
+		ManagementKey:  "management-key",
+	}}, &immediateUploadClient{})
+	files := make([]UploadFile, 301)
+	for index := range files {
+		files[index] = UploadFile{
+			Name: fmt.Sprintf("account-%03d.json", index),
+			Data: []byte("token"),
+		}
+	}
+	if _, err := service.Start(context.Background(), files); err == nil || !strings.Contains(err.Error(), "300") {
+		t.Fatalf("301-file batch error = %v, want a 300-file limit error", err)
+	}
+}
+
+func TestBatchUploadUsesAtMostEightGlobalUploadSlots(t *testing.T) {
+	release := make(chan struct{})
+	client := &blockingUploadClient{
+		entered: make(chan struct{}, 16),
+		release: release,
+	}
+	service := New(testSetupResolver{setup: store.Setup{
+		CPAUpstreamURL: "http://core.internal:8317",
+		ManagementKey:  "management-key",
+	}}, client)
+	files := make([]UploadFile, 16)
+	for index := range files {
+		files[index] = UploadFile{
+			Name: fmt.Sprintf("account-%02d.json", index),
+			Data: []byte("token"),
+		}
+	}
+	started, err := service.Start(context.Background(), files)
+	if err != nil {
+		t.Fatalf("start concurrency batch: %v", err)
+	}
+	enteredEight := true
+	for index := 0; index < 8; index++ {
+		select {
+		case <-client.entered:
+		case <-time.After(time.Second):
+			enteredEight = false
+		}
+	}
+	close(release)
+	status := waitForFinished(t, service, started.ID)
+	if status.State != "completed" || status.Uploaded != len(files) {
+		t.Fatalf("concurrency batch status = %#v", status)
+	}
+	client.mu.Lock()
+	maxActive := client.maxActive
+	client.mu.Unlock()
+	if !enteredEight || maxActive < 2 || maxActive > 8 {
+		t.Fatalf("maximum concurrent uploads = %d (entered eight=%t), want 2..8", maxActive, enteredEight)
+	}
 }
 
 func TestBatchUploadInvalidatesCachedInventoryOnceAfterSuccessfulJob(t *testing.T) {
@@ -79,20 +232,16 @@ func TestBatchUploadInvalidatesCachedInventoryOnceAfterSuccessfulJob(t *testing.
 	if err != nil {
 		t.Fatalf("start batch upload: %v", err)
 	}
-	select {
-	case <-client.done:
-	case <-time.After(time.Second):
-		t.Fatal("batch upload did not finish")
-	}
-	if status, found := service.Get(started.ID); !found || !status.Finished {
-		t.Fatalf("job status after completion = %#v found=%t", status, found)
+	status := waitForFinished(t, service, started.ID)
+	if !status.Finished {
+		t.Fatalf("job status after completion = %#v", status)
 	}
 	if got := invalidator.CallCount(); got != 1 {
 		t.Fatalf("cached inventory invalidations = %d, want 1", got)
 	}
 }
 
-func TestBatchUploadStoresOnlySafeStatusAndRunsSerially(t *testing.T) {
+func TestBatchUploadStoresOnlySafeStatus(t *testing.T) {
 	client := &testUploadClient{done: make(chan struct{})}
 	service := New(testSetupResolver{setup: store.Setup{
 		CPAUpstreamURL: "http://core.internal:8317",
@@ -109,23 +258,16 @@ func TestBatchUploadStoresOnlySafeStatusAndRunsSerially(t *testing.T) {
 	if started.ID == "" || started.Total != 2 || started.Finished {
 		t.Fatalf("initial batch status = %#v", started)
 	}
-	select {
-	case <-client.done:
-	case <-time.After(time.Second):
-		t.Fatal("batch upload did not finish")
-	}
-
-	status, ok := service.Get(started.ID)
-	if !ok {
-		t.Fatal("completed batch status was not retained")
-	}
+	status := waitForFinished(t, service, started.ID)
 	if !status.Finished || status.State != "partial" || status.Uploaded != 1 || status.Failed != 1 {
 		t.Fatalf("completed batch status = %#v", status)
 	}
-	if len(status.Files) != 2 || status.Files[0].Name != "first.json" || status.Files[1].Name != "second.json" {
+	if len(status.Files) != 2 {
 		t.Fatalf("result files = %#v", status.Files)
 	}
+	resultNames := make(map[string]struct{}, len(status.Files))
 	for _, result := range status.Files {
+		resultNames[result.Name] = struct{}{}
 		if result.Name == "second.json" && result.Error == "" {
 			t.Fatalf("failure result = %#v", result)
 		}
@@ -133,9 +275,10 @@ func TestBatchUploadStoresOnlySafeStatusAndRunsSerially(t *testing.T) {
 			t.Fatalf("credential content leaked into status: %#v", result)
 		}
 	}
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	if got := client.uploaded; len(got) != 2 || got[0] != "first.json" || got[1] != "second.json" {
-		t.Fatalf("upload order = %#v, want serial input order", got)
+	if _, ok := resultNames["first.json"]; !ok {
+		t.Fatalf("first result missing: %#v", status.Files)
+	}
+	if _, ok := resultNames["second.json"]; !ok {
+		t.Fatalf("second result missing: %#v", status.Files)
 	}
 }
