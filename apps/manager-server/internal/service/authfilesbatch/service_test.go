@@ -185,16 +185,25 @@ func TestBatchUploadUsesAtMostEightGlobalUploadSlots(t *testing.T) {
 		CPAUpstreamURL: "http://core.internal:8317",
 		ManagementKey:  "management-key",
 	}}, client)
-	files := make([]UploadFile, 16)
-	for index := range files {
-		files[index] = UploadFile{
-			Name: fmt.Sprintf("account-%02d.json", index),
-			Data: []byte("token"),
+	buildFiles := func(prefix string) []UploadFile {
+		files := make([]UploadFile, 16)
+		for index := range files {
+			files[index] = UploadFile{
+				Name: fmt.Sprintf("%s-%02d.json", prefix, index),
+				Data: []byte("token"),
+			}
 		}
+		return files
 	}
-	started, err := service.Start(context.Background(), files)
+	firstBatch := buildFiles("first-account")
+	secondBatch := buildFiles("second-account")
+	firstStarted, err := service.Start(context.Background(), firstBatch)
 	if err != nil {
-		t.Fatalf("start concurrency batch: %v", err)
+		t.Fatalf("start first concurrency batch: %v", err)
+	}
+	secondStarted, err := service.Start(context.Background(), secondBatch)
+	if err != nil {
+		t.Fatalf("start second concurrency batch: %v", err)
 	}
 	enteredEight := true
 	for index := 0; index < 8; index++ {
@@ -205,9 +214,13 @@ func TestBatchUploadUsesAtMostEightGlobalUploadSlots(t *testing.T) {
 		}
 	}
 	close(release)
-	status := waitForFinished(t, service, started.ID)
-	if status.State != "completed" || status.Uploaded != len(files) {
-		t.Fatalf("concurrency batch status = %#v", status)
+	firstStatus := waitForFinished(t, service, firstStarted.ID)
+	secondStatus := waitForFinished(t, service, secondStarted.ID)
+	if firstStatus.State != "completed" || firstStatus.Uploaded != 16 {
+		t.Fatalf("first concurrency batch status = %#v", firstStatus)
+	}
+	if secondStatus.State != "completed" || secondStatus.Uploaded != 16 {
+		t.Fatalf("second concurrency batch status = %#v", secondStatus)
 	}
 	client.mu.Lock()
 	maxActive := client.maxActive
