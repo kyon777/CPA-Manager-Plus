@@ -79,3 +79,19 @@ func TestRewriteProxyURLRequiresUniqueArrayAuthIndexAndExpectedOldValue(t *testi
 		t.Fatalf("stale old URL error = %v", err)
 	}
 }
+
+func TestFetchWithProxyURLsRequestsProxyProjection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != authFilesPath || r.URL.Query().Get("include_proxy_url") != "1" {
+			t.Fatalf("request = %s", r.URL.String())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{
+			"id": "runtime-1", "name": "one.json", "proxy_url": "http://user:secret@proxy:8080",
+		}}})
+	}))
+	defer server.Close()
+	files, err := New(server.Client()).FetchWithProxyURLs(context.Background(), server.URL, "key")
+	if err != nil || len(files) != 1 || files[0].Raw["proxy_url"] != "http://user:secret@proxy:8080" {
+		t.Fatalf("files=%#v err=%v", files, err)
+	}
+}

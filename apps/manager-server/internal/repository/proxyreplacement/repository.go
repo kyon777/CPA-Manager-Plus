@@ -27,6 +27,7 @@ type Repository interface {
 	ClaimNextQueued(context.Context) (model.ProxyReplacementTask, bool, error)
 	RequeueRunningOnStartup(context.Context) (int64, error)
 	MarkItem(context.Context, int64, model.ProxyReplacementItemStatus, model.ProxyReplacementItemOutcome) error
+	ResetInFlightItems(context.Context) (int64, error)
 	CompleteTask(context.Context, int64) (model.ProxyReplacementTask, error)
 	ExpireDrafts(context.Context, int64) (int64, error)
 	UpsertProxyPoolState(context.Context, model.ProxyPoolState) (model.ProxyPoolState, error)
@@ -59,7 +60,12 @@ func (r *repository) CreateDraft(ctx context.Context, task model.ProxyReplacemen
 		task.CreatedAtMS = now
 	}
 	task.UpdatedAtMS = now
-	task.Status = model.ProxyReplacementTaskDraft
+	if task.Status == "" {
+		task.Status = model.ProxyReplacementTaskDraft
+	}
+	if task.Status != model.ProxyReplacementTaskDraft && task.Status != model.ProxyReplacementTaskUnavailable {
+		return model.ProxyReplacementTask{}, errors.New("proxy replacement draft status is invalid")
+	}
 	task.TotalCount = len(items)
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -285,6 +291,20 @@ func (r *repository) MarkItem(ctx context.Context, itemID int64, status model.Pr
 		return ErrTaskNotFound
 	}
 	return nil
+}
+
+// ResetInFlightItems makes interrupted writes/probes replay-safe after a
+// Manager restart. The worker re-reads CPA before every write, so a PATCH that
+// succeeded just before a crash is recognized as already applied.
+func (r *repository) ResetInFlightItems(ctx context.Context) (int64, error) {
+	now := time.Now().UnixMilli()
+	result, err := r.db.ExecContext(ctx, `update proxy_replacement_task_items set status = ?, updated_at_ms = ?
+		where status in (?, ?)`, model.ProxyReplacementItemPlanned, now,
+		model.ProxyReplacementItemWriting, model.ProxyReplacementItemRecheckRunning)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (r *repository) CompleteTask(ctx context.Context, taskID int64) (model.ProxyReplacementTask, error) {

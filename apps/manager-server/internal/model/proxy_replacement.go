@@ -65,6 +65,20 @@ type ProxyReplacementTarget struct {
 	AccountSnapshot string `json:"accountSnapshot,omitempty"`
 }
 
+// ProxyReplacementPreviewRequest is the browser-to-Manager request. It has no
+// management credentials, raw auth JSON, quota fields, or arbitrary patch map.
+type ProxyReplacementPreviewRequest struct {
+	Source          ProxyReplacementSource   `json:"source"`
+	Mode            ProxyReplacementMode     `json:"mode"`
+	UniformProxyURL string                   `json:"uniformProxyUrl,omitempty"`
+	Targets         []ProxyReplacementTarget `json:"targets"`
+}
+
+type ProxyPoolEntry struct {
+	URL   string         `json:"url"`
+	State ProxyPoolState `json:"state"`
+}
+
 type ProxyPoolState struct {
 	Fingerprint       string          `json:"fingerprint"`
 	Status            ProxyPoolStatus `json:"status"`

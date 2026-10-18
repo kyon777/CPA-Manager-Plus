@@ -1,0 +1,731 @@
+package proxyreplacement
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+)
+
+const previewTTL = 15 * time.Minute
+
+var (
+	ErrUnavailable    = errors.New("proxy replacement service is unavailable")
+	ErrInvalidRequest = errors.New("proxy replacement request is invalid")
+	ErrTaskExpired    = errors.New("proxy replacement preview has expired")
+)
+
+type TaskStore interface {
+	CreateDraft(context.Context, model.ProxyReplacementTask, []model.ProxyReplacementTaskItem) (model.ProxyReplacementTask, error)
+	GetTask(context.Context, int64, int, int) (model.ProxyReplacementTaskPage, error)
+	ConfirmDraft(context.Context, int64, int64) (model.ProxyReplacementTask, error)
+	ClaimNextQueued(context.Context) (model.ProxyReplacementTask, bool, error)
+	RequeueRunningOnStartup(context.Context) (int64, error)
+	MarkItem(context.Context, int64, model.ProxyReplacementItemStatus, model.ProxyReplacementItemOutcome) error
+	ResetInFlightItems(context.Context) (int64, error)
+	CompleteTask(context.Context, int64) (model.ProxyReplacementTask, error)
+	ExpireDrafts(context.Context, int64) (int64, error)
+}
+
+type SettingsStore interface {
+	LoadProxyFilterSettings(context.Context) (store.ProxyFilterSettings, bool, error)
+}
+
+type PoolStateStore interface {
+	List(context.Context) ([]model.ProxyPoolState, error)
+	MarkSuspect(context.Context, string, string) error
+}
+
+type SetupResolver interface {
+	ResolveSetup(context.Context) (store.Setup, bool, error)
+}
+
+// AuthFilesClient keeps the mutable CPA surface deliberately narrow. There is
+// no arbitrary field map; the only write primitive accepts proxy_url.
+type AuthFilesClient interface {
+	Fetch(context.Context, string, string) ([]cpaauthfiles.File, error)
+	ResolveStatusMutationTarget(context.Context, string, string, string, string) (cpaauthfiles.StatusMutationTarget, error)
+	PatchProxyURLTarget(context.Context, string, string, cpaauthfiles.StatusMutationTarget, string) error
+	Download(context.Context, string, string, string) ([]byte, error)
+	Upload(context.Context, string, string, string, []byte) error
+}
+
+type InventoryInvalidator interface {
+	InvalidateAuthFileInventory(context.Context)
+}
+
+type Rechecker interface {
+	RecheckProxyReplacement(context.Context, []model.ProxyReplacementTarget, int) []model.ProxyReplacementProbeResult
+}
+
+type Options struct {
+	Tasks               TaskStore
+	Settings            SettingsStore
+	PoolState           PoolStateStore
+	SetupResolver       SetupResolver
+	AuthFiles           AuthFilesClient
+	MutationCoordinator *cpaauthfiles.MutationCoordinator
+	Invalidator         InventoryInvalidator
+	Rechecker           Rechecker
+	Concurrency         int
+}
+
+type Service struct {
+	tasks               TaskStore
+	settings            SettingsStore
+	poolState           PoolStateStore
+	setupResolver       SetupResolver
+	authFiles           AuthFilesClient
+	mutationCoordinator *cpaauthfiles.MutationCoordinator
+	invalidator         InventoryInvalidator
+	rechecker           Rechecker
+	concurrency         int
+	now                 func() time.Time
+}
+
+func NewWithOptions(options Options) *Service {
+	coordinator := options.MutationCoordinator
+	if coordinator == nil {
+		coordinator = cpaauthfiles.NewMutationCoordinator()
+	}
+	client := options.AuthFiles
+	if client == nil {
+		client = cpaauthfiles.New(nil)
+	}
+	concurrency := options.Concurrency
+	if concurrency <= 0 || concurrency > 4 {
+		concurrency = 4
+	}
+	return &Service{
+		tasks:               options.Tasks,
+		settings:            options.Settings,
+		poolState:           options.PoolState,
+		setupResolver:       options.SetupResolver,
+		authFiles:           client,
+		mutationCoordinator: coordinator,
+		invalidator:         options.Invalidator,
+		rechecker:           options.Rechecker,
+		concurrency:         concurrency,
+		now:                 time.Now,
+	}
+}
+
+// CreatePreview freezes a validated mapping but never writes CPA. The
+// resulting draft expires after fifteen minutes and must be confirmed before
+// any account file is touched.
+func (s *Service) CreatePreview(ctx context.Context, request model.ProxyReplacementPreviewRequest) (model.ProxyReplacementTaskPage, error) {
+	if s == nil || s.tasks == nil || s.settings == nil || s.poolState == nil || s.setupResolver == nil || s.authFiles == nil {
+		return model.ProxyReplacementTaskPage{}, ErrUnavailable
+	}
+	request, err := normalizePreviewRequest(request)
+	if err != nil {
+		return model.ProxyReplacementTaskPage{}, err
+	}
+	settings, _, err := s.settings.LoadProxyFilterSettings(ctx)
+	if err != nil {
+		return model.ProxyReplacementTaskPage{}, fmt.Errorf("load saved proxy URLs: %w", err)
+	}
+	states, err := s.poolState.List(ctx)
+	if err != nil {
+		return model.ProxyReplacementTaskPage{}, fmt.Errorf("load proxy pool state: %w", err)
+	}
+	setup, configured, err := s.setupResolver.ResolveSetup(ctx)
+	if err != nil || !configured || strings.TrimSpace(setup.CPAUpstreamURL) == "" || strings.TrimSpace(setup.ManagementKey) == "" {
+		return model.ProxyReplacementTaskPage{}, fmt.Errorf("%w: CPA management connection is unavailable", ErrUnavailable)
+	}
+	files, err := s.fetchInventory(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+	if err != nil {
+		return model.ProxyReplacementTaskPage{}, fmt.Errorf("load credential inventory: %w", err)
+	}
+
+	items, excludedOld, err := buildPreviewItems(request, files)
+	if err != nil {
+		return model.ProxyReplacementTaskPage{}, err
+	}
+	taskOffset := stableTaskOffset(request.Targets)
+	task := model.ProxyReplacementTask{
+		Source:            request.Source,
+		Mode:              request.Mode,
+		Status:            model.ProxyReplacementTaskDraft,
+		TaskOffset:        taskOffset,
+		RecheckAfterWrite: request.Source == model.ProxyReplacementSourceInspection,
+		ExpiresAtMS:       s.currentTime().Add(previewTTL).UnixMilli(),
+	}
+	if request.Mode == model.ProxyReplacementModeUniform {
+		for index := range items {
+			items[index].NewProxyURL = request.UniformProxyURL
+			items[index].NewProxyFingerprint = model.ProxyFingerprint(request.UniformProxyURL)
+			items[index].AllocationSource = "uniform"
+		}
+	} else {
+		unused, all, counts := buildPoolCandidates(settings.URLs, states, files, excludedOld)
+		task.UnusedNormalCount = counts.unused
+		task.FallbackNormalCount = counts.fallback
+		task.SuspectExcludedCount = counts.suspect
+		assignments := allocatePool(int64(taskOffset), unused, all, len(items))
+		if len(assignments) != len(items) {
+			task.Status = model.ProxyReplacementTaskUnavailable
+			task.ExpiresAtMS = 0
+		} else {
+			for index, assignment := range assignments {
+				items[index].NewProxyURL = assignment.Candidate.URL
+				items[index].NewProxyFingerprint = assignment.Candidate.Fingerprint
+				items[index].AllocationSource = assignment.Source
+			}
+		}
+	}
+	for index := range items {
+		items[index].Status = model.ProxyReplacementItemPlanned
+	}
+	created, err := s.tasks.CreateDraft(ctx, task, items)
+	if err != nil {
+		return model.ProxyReplacementTaskPage{}, err
+	}
+	created.CanConfirm = created.Status == model.ProxyReplacementTaskDraft && created.ExpiresAtMS > s.currentTime().UnixMilli()
+	return model.ProxyReplacementTaskPage{
+		Task:     created,
+		Items:    items,
+		Page:     1,
+		PageSize: len(items),
+		Total:    len(items),
+	}, nil
+}
+
+type poolCandidateCounts struct {
+	unused   int
+	fallback int
+	suspect  int
+}
+
+func buildPoolCandidates(savedURLs []string, states []model.ProxyPoolState, files []cpaauthfiles.File, excludedOld map[string]struct{}) ([]proxyCandidate, []proxyCandidate, poolCandidateCounts) {
+	suspect := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		if state.Status == model.ProxyPoolStatusSuspect {
+			suspect[strings.TrimSpace(state.Fingerprint)] = struct{}{}
+		}
+	}
+	inUse := make(map[string]struct{})
+	for _, file := range files {
+		if file.Disabled {
+			continue
+		}
+		if fingerprint := model.ProxyFingerprint(proxyURLFromFile(file)); fingerprint != "" {
+			inUse[fingerprint] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{}, len(savedURLs))
+	all := make([]proxyCandidate, 0, len(savedURLs))
+	unused := make([]proxyCandidate, 0, len(savedURLs))
+	counts := poolCandidateCounts{}
+	for _, rawURL := range savedURLs {
+		url := model.NormalizeProxyURL(rawURL)
+		fingerprint := model.ProxyFingerprint(url)
+		if fingerprint == "" {
+			continue
+		}
+		if _, exists := seen[fingerprint]; exists {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		if _, isSuspect := suspect[fingerprint]; isSuspect {
+			counts.suspect++
+			continue
+		}
+		if _, blocked := excludedOld[fingerprint]; blocked {
+			continue
+		}
+		_, used := inUse[fingerprint]
+		candidate := proxyCandidate{URL: url, Fingerprint: fingerprint, InUse: used}
+		all = append(all, candidate)
+		if !used {
+			unused = append(unused, candidate)
+		}
+	}
+	counts.unused = len(unused)
+	counts.fallback = len(all) - len(unused)
+	return unused, all, counts
+}
+
+func buildPreviewItems(request model.ProxyReplacementPreviewRequest, files []cpaauthfiles.File) ([]model.ProxyReplacementTaskItem, map[string]struct{}, error) {
+	items := make([]model.ProxyReplacementTaskItem, 0, len(request.Targets))
+	excludedOld := make(map[string]struct{})
+	for index, target := range request.Targets {
+		file, found := findCurrentFile(files, target)
+		if !found {
+			return nil, nil, fmt.Errorf("%w: credential target %d is no longer present", ErrInvalidRequest, index+1)
+		}
+		oldProxyURL := model.NormalizeProxyURL(proxyURLFromFile(file))
+		item := model.ProxyReplacementTaskItem{
+			ItemOrder:           index,
+			Target:              target,
+			OldProxyURL:         oldProxyURL,
+			OldProxyFingerprint: model.ProxyFingerprint(oldProxyURL),
+		}
+		items = append(items, item)
+		if request.Source == model.ProxyReplacementSourceInspection && item.OldProxyFingerprint != "" {
+			excludedOld[item.OldProxyFingerprint] = struct{}{}
+		}
+	}
+	return items, excludedOld, nil
+}
+
+func normalizePreviewRequest(request model.ProxyReplacementPreviewRequest) (model.ProxyReplacementPreviewRequest, error) {
+	request.UniformProxyURL = model.NormalizeProxyURL(request.UniformProxyURL)
+	if len(request.Targets) == 0 || len(request.Targets) > 500 {
+		return model.ProxyReplacementPreviewRequest{}, fmt.Errorf("%w: target count must be between 1 and 500", ErrInvalidRequest)
+	}
+	switch request.Source {
+	case model.ProxyReplacementSourceInspection:
+		if request.Mode != model.ProxyReplacementModePool {
+			return model.ProxyReplacementPreviewRequest{}, fmt.Errorf("%w: inspection replacement requires pool mode", ErrInvalidRequest)
+		}
+	case model.ProxyReplacementSourceBatchUniform:
+		if request.Mode != model.ProxyReplacementModeUniform || request.UniformProxyURL == "" {
+			return model.ProxyReplacementPreviewRequest{}, fmt.Errorf("%w: batch uniform replacement requires a proxy URL", ErrInvalidRequest)
+		}
+	case model.ProxyReplacementSourceBatchPool:
+		if request.Mode != model.ProxyReplacementModePool {
+			return model.ProxyReplacementPreviewRequest{}, fmt.Errorf("%w: batch pool replacement requires pool mode", ErrInvalidRequest)
+		}
+	default:
+		return model.ProxyReplacementPreviewRequest{}, fmt.Errorf("%w: source is unsupported", ErrInvalidRequest)
+	}
+	seen := make(map[string]struct{}, len(request.Targets))
+	for index := range request.Targets {
+		target := request.Targets[index]
+		target.ClientKey = strings.TrimSpace(target.ClientKey)
+		target.FileName = strings.TrimSpace(target.FileName)
+		target.AuthIndex = strings.TrimSpace(target.AuthIndex)
+		target.AccountEmail = strings.ToLower(strings.TrimSpace(target.AccountEmail))
+		target.Provider = strings.ToLower(strings.TrimSpace(target.Provider))
+		target.RuntimeID = strings.TrimSpace(target.RuntimeID)
+		target.AccountID = strings.TrimSpace(target.AccountID)
+		target.AccountSnapshot = strings.TrimSpace(target.AccountSnapshot)
+		if target.ClientKey == "" || target.FileName == "" || target.Provider == "" || (target.AuthIndex == "" && target.RuntimeID == "") {
+			return model.ProxyReplacementPreviewRequest{}, fmt.Errorf("%w: target %d identity is incomplete", ErrInvalidRequest, index+1)
+		}
+		if _, duplicate := seen[target.ClientKey]; duplicate {
+			return model.ProxyReplacementPreviewRequest{}, fmt.Errorf("%w: duplicate target key", ErrInvalidRequest)
+		}
+		seen[target.ClientKey] = struct{}{}
+		request.Targets[index] = target
+	}
+	return request, nil
+}
+
+func findCurrentFile(files []cpaauthfiles.File, target model.ProxyReplacementTarget) (cpaauthfiles.File, bool) {
+	for _, file := range files {
+		if target.RuntimeID != "" && strings.TrimSpace(file.ID) != target.RuntimeID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(file.Name), target.FileName) {
+			continue
+		}
+		if target.AuthIndex != "" && strings.TrimSpace(file.AuthIndex) != target.AuthIndex {
+			continue
+		}
+		if target.Provider != "" && !strings.EqualFold(strings.TrimSpace(file.Provider), target.Provider) {
+			continue
+		}
+		if target.AccountEmail != "" && !strings.EqualFold(strings.TrimSpace(file.AccountSnapshot), target.AccountEmail) {
+			continue
+		}
+		return file, true
+	}
+	return cpaauthfiles.File{}, false
+}
+
+func proxyURLFromFile(file cpaauthfiles.File) string {
+	for _, key := range []string{"proxy_url", "proxyUrl", "proxy-url"} {
+		if raw, found := file.Raw[key]; found {
+			if value, ok := raw.(string); ok {
+				return model.NormalizeProxyURL(value)
+			}
+		}
+	}
+	return ""
+}
+
+// fetchInventory uses the CPA extension when available. Older tests and
+// deployments retain the base Fetch method while a current CPA can return
+// proxy_url with include_proxy_url=1 in the same snapshot.
+func (s *Service) fetchInventory(ctx context.Context, baseURL, managementKey string) ([]cpaauthfiles.File, error) {
+	if extended, ok := s.authFiles.(interface {
+		FetchWithProxyURLs(context.Context, string, string) ([]cpaauthfiles.File, error)
+	}); ok {
+		return extended.FetchWithProxyURLs(ctx, baseURL, managementKey)
+	}
+	return s.authFiles.Fetch(ctx, baseURL, managementKey)
+}
+
+func stableTaskOffset(targets []model.ProxyReplacementTarget) int {
+	hasher := fnv.New32a()
+	keys := make([]string, 0, len(targets))
+	for _, target := range targets {
+		keys = append(keys, strings.TrimSpace(target.ClientKey))
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		_, _ = hasher.Write([]byte(key))
+		_, _ = hasher.Write([]byte{0})
+	}
+	return int(hasher.Sum32() & 0x7fffffff)
+}
+
+func (s *Service) currentTime() time.Time {
+	if s != nil && s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// Confirm atomically queues the already frozen preview. It never recomputes a
+// mapping, so the operator confirms exactly the URLs shown in the preview.
+func (s *Service) Confirm(ctx context.Context, taskID int64) (model.ProxyReplacementTask, error) {
+	if s == nil || s.tasks == nil {
+		return model.ProxyReplacementTask{}, ErrUnavailable
+	}
+	if taskID <= 0 {
+		return model.ProxyReplacementTask{}, ErrInvalidRequest
+	}
+	_, _ = s.tasks.ExpireDrafts(ctx, s.currentTime().UnixMilli())
+	task, err := s.tasks.ConfirmDraft(ctx, taskID, s.currentTime().UnixMilli())
+	if err != nil {
+		if strings.Contains(err.Error(), "cannot be confirmed") {
+			return model.ProxyReplacementTask{}, ErrTaskExpired
+		}
+		return model.ProxyReplacementTask{}, err
+	}
+	return task, nil
+}
+
+// Recover makes previously interrupted work eligible for a fresh safe
+// execution. It intentionally does not launch uncontrolled background work;
+// the application lifecycle calls RunPending in its bounded worker loop.
+func (s *Service) Recover(ctx context.Context) error {
+	if s == nil || s.tasks == nil {
+		return ErrUnavailable
+	}
+	if _, err := s.tasks.ResetInFlightItems(ctx); err != nil {
+		return err
+	}
+	_, err := s.tasks.RequeueRunningOnStartup(ctx)
+	return err
+}
+
+// RunPending claims at most one durable task. The caller may invoke it in a
+// loop; that keeps shutdown and resource bounds controlled by App lifecycle.
+func (s *Service) RunPending(ctx context.Context) (bool, error) {
+	if s == nil || s.tasks == nil || s.setupResolver == nil || s.authFiles == nil || s.mutationCoordinator == nil {
+		return false, ErrUnavailable
+	}
+	_, _ = s.tasks.ExpireDrafts(ctx, s.currentTime().UnixMilli())
+	task, found, err := s.tasks.ClaimNextQueued(ctx)
+	if err != nil || !found {
+		return found, err
+	}
+	if err := s.executeTask(ctx, task); err != nil {
+		// The durable task remains running only for a process crash. A normal
+		// execution-level failure is represented through individual outcomes.
+		return true, err
+	}
+	return true, nil
+}
+
+func (s *Service) executeTask(ctx context.Context, task model.ProxyReplacementTask) error {
+	setup, configured, err := s.setupResolver.ResolveSetup(ctx)
+	if err != nil || !configured || strings.TrimSpace(setup.CPAUpstreamURL) == "" || strings.TrimSpace(setup.ManagementKey) == "" {
+		return s.failAllTaskItems(ctx, task.ID, "cpa_not_configured", "CPA 管理连接不可用")
+	}
+	page, err := s.tasks.GetTask(ctx, task.ID, 1, 1000)
+	if err != nil {
+		return err
+	}
+	items := page.Items
+	if len(items) == 0 {
+		_, err := s.tasks.CompleteTask(ctx, task.ID)
+		return err
+	}
+	files, err := s.fetchInventory(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+	if err != nil {
+		return s.failAllTaskItems(ctx, task.ID, "inventory_unavailable", "无法读取凭证清单")
+	}
+
+	jobs := groupPhysicalItems(items)
+	workerCount := s.concurrency
+	if workerCount > len(jobs) {
+		workerCount = len(jobs)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	work := make(chan []model.ProxyReplacementTaskItem)
+	var workers sync.WaitGroup
+	var changedMu sync.Mutex
+	changed := false
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for group := range work {
+				if s.executePhysicalItems(ctx, setup, files, group) {
+					changedMu.Lock()
+					changed = true
+					changedMu.Unlock()
+				}
+			}
+		}()
+	}
+	for _, group := range jobs {
+		work <- group
+	}
+	close(work)
+	workers.Wait()
+
+	if task.RecheckAfterWrite && s.rechecker != nil {
+		s.runRechecks(ctx, task.ID)
+	}
+	if _, err := s.tasks.CompleteTask(ctx, task.ID); err != nil {
+		return err
+	}
+	changedMu.Lock()
+	shouldInvalidate := changed
+	changedMu.Unlock()
+	if shouldInvalidate && s.invalidator != nil {
+		s.invalidator.InvalidateAuthFileInventory(context.Background())
+	}
+	return nil
+}
+
+func groupPhysicalItems(items []model.ProxyReplacementTaskItem) [][]model.ProxyReplacementTaskItem {
+	groups := make(map[string][]model.ProxyReplacementTaskItem)
+	keys := make([]string, 0)
+	for _, item := range items {
+		key := strings.ToLower(strings.TrimSpace(item.Target.FileName))
+		if _, exists := groups[key]; !exists {
+			keys = append(keys, key)
+		}
+		groups[key] = append(groups[key], item)
+	}
+	sort.Strings(keys)
+	result := make([][]model.ProxyReplacementTaskItem, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, groups[key])
+	}
+	return result
+}
+
+func (s *Service) executePhysicalItems(ctx context.Context, setup store.Setup, initialFiles []cpaauthfiles.File, items []model.ProxyReplacementTaskItem) bool {
+	if len(items) == 0 {
+		return false
+	}
+	release, err := s.mutationCoordinator.Acquire(ctx, items[0].Target.FileName)
+	if err != nil {
+		for _, item := range items {
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{
+				WriteErrorCode: "lock_failed", WriteErrorMessage: "凭证写入锁不可用",
+			})
+		}
+		return false
+	}
+	defer release()
+	changed := false
+	currentFiles := initialFiles
+	for _, item := range items {
+		_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriting, model.ProxyReplacementItemOutcome{})
+		current, found := findCurrentFile(currentFiles, item.Target)
+		if !found {
+			// The initial inventory is merely a snapshot. Re-fetch under this
+			// physical-file lock before declaring a target stale.
+			var fetchErr error
+			currentFiles, fetchErr = s.fetchInventory(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+			if fetchErr != nil {
+				_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{
+					WriteErrorCode: "credential_lookup_failed", WriteErrorMessage: "无法读取当前凭证",
+				})
+				continue
+			}
+			current, found = findCurrentFile(currentFiles, item.Target)
+		}
+		if !found {
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{
+				WriteErrorCode: "credential_not_found", WriteErrorMessage: "未找到当前凭证",
+			})
+			continue
+		}
+		currentProxy := model.NormalizeProxyURL(proxyURLFromFile(current))
+		if currentProxy == model.NormalizeProxyURL(item.NewProxyURL) {
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemUpdated, model.ProxyReplacementItemOutcome{})
+			changed = true
+			continue
+		}
+		if currentProxy != model.NormalizeProxyURL(item.OldProxyURL) {
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemSkippedStale, model.ProxyReplacementItemOutcome{
+				WriteErrorCode: "stale_proxy", WriteErrorMessage: "账号代理已被其他操作修改，未覆盖",
+			})
+			continue
+		}
+		if err := s.patchOne(ctx, setup, item); err != nil {
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{
+				WriteErrorCode: "proxy_write_failed", WriteErrorMessage: safeTaskError(err),
+			})
+			continue
+		}
+		_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemUpdated, model.ProxyReplacementItemOutcome{})
+		changed = true
+		// Keep the per-file snapshot coherent for additional items in an
+		// expanded JSON source. A fresh read is also the verification step for
+		// successful direct field patch writes.
+		if refreshed, fetchErr := s.fetchInventory(ctx, setup.CPAUpstreamURL, setup.ManagementKey); fetchErr == nil {
+			currentFiles = refreshed
+		}
+	}
+	return changed
+}
+
+func (s *Service) patchOne(ctx context.Context, setup store.Setup, item model.ProxyReplacementTaskItem) error {
+	target, err := s.authFiles.ResolveStatusMutationTarget(ctx, setup.CPAUpstreamURL, setup.ManagementKey, item.Target.RuntimeID, item.Target.AuthIndex)
+	if err == nil {
+		err = s.authFiles.PatchProxyURLTarget(ctx, setup.CPAUpstreamURL, setup.ManagementKey, target, item.NewProxyURL)
+	}
+	if err == nil || !cpaauthfiles.IsPluginVirtualMutationConflict(err) {
+		return err
+	}
+	physicalName := strings.TrimSpace(item.Target.FileName)
+	if physicalName == "" {
+		return err
+	}
+	raw, downloadErr := s.authFiles.Download(ctx, setup.CPAUpstreamURL, setup.ManagementKey, physicalName)
+	if downloadErr != nil {
+		return downloadErr
+	}
+	next, rewriteErr := cpaauthfiles.RewriteProxyURL(raw, cpaauthfiles.ProxyRecordLocator{
+		AuthIndex: item.Target.AuthIndex, AccountEmail: item.Target.AccountEmail,
+	}, item.OldProxyURL, item.NewProxyURL)
+	if rewriteErr != nil {
+		return rewriteErr
+	}
+	return s.authFiles.Upload(ctx, setup.CPAUpstreamURL, setup.ManagementKey, physicalName, next)
+}
+
+func (s *Service) failAllTaskItems(ctx context.Context, taskID int64, code, message string) error {
+	page, err := s.tasks.GetTask(ctx, taskID, 1, 1000)
+	if err != nil {
+		return err
+	}
+	for _, item := range page.Items {
+		if err := s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{
+			WriteErrorCode: code, WriteErrorMessage: message,
+		}); err != nil {
+			return err
+		}
+	}
+	_, err = s.tasks.CompleteTask(ctx, taskID)
+	return err
+}
+
+func (s *Service) runRechecks(ctx context.Context, taskID int64) {
+	page, err := s.tasks.GetTask(ctx, taskID, 1, 1000)
+	if err != nil {
+		return
+	}
+	targets := make([]model.ProxyReplacementTarget, 0)
+	itemIDs := make([]int64, 0)
+	for _, item := range page.Items {
+		if item.Status != model.ProxyReplacementItemUpdated {
+			continue
+		}
+		_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckRunning, model.ProxyReplacementItemOutcome{})
+		targets = append(targets, item.Target)
+		itemIDs = append(itemIDs, item.ID)
+	}
+	if len(targets) == 0 {
+		return
+	}
+	results := s.rechecker.RecheckProxyReplacement(ctx, targets, s.concurrency)
+	byKey := make(map[string]model.ProxyReplacementProbeResult, len(results))
+	for _, result := range results {
+		byKey[result.Target.ClientKey] = result
+	}
+	for index, target := range targets {
+		result, found := byKey[target.ClientKey]
+		if !found || !result.Succeeded {
+			message := "复检失败"
+			code := "recheck_failed"
+			if found && strings.TrimSpace(result.ErrorMessage) != "" {
+				message = result.ErrorMessage
+			}
+			if found && strings.TrimSpace(result.ErrorCode) != "" {
+				code = result.ErrorCode
+			}
+			_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
+				RecheckErrorCode: code, RecheckErrorMessage: message,
+			})
+			continue
+		}
+		_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemOutcome{})
+	}
+}
+
+func safeTaskError(err error) string {
+	if err == nil {
+		return ""
+	}
+	// CPA errors may include credential-adjacent response bodies. Preserve a
+	// useful but bounded reason for the authenticated task UI without URLs.
+	message := strings.TrimSpace(err.Error())
+	if len(message) > 240 {
+		message = message[:240]
+	}
+	return message
+}
+
+// proxyCandidate is intentionally internal: it holds raw URLs only while a
+// preview is being composed or a confirmed task is executing. Persistent pool
+// state stores the fingerprint instead.
+type proxyCandidate struct {
+	URL         string
+	Fingerprint string
+	InUse       bool
+}
+
+type proxyAssignment struct {
+	Candidate proxyCandidate
+	Source    string
+}
+
+// allocatePool first grants every currently unoccupied candidate once, then
+// rotates the complete normal candidate set with a stable task offset. This
+// prevents one high-priority broken account from repeatedly receiving itself
+// while preserving predictable, evenly distributed fallback reuse.
+func allocatePool(taskID int64, unused, all []proxyCandidate, targetCount int) []proxyAssignment {
+	if targetCount <= 0 || len(all) == 0 {
+		return []proxyAssignment{}
+	}
+	result := make([]proxyAssignment, 0, targetCount)
+	if len(unused) > 0 {
+		unusedStart := int(taskID % int64(len(unused)))
+		for step := 0; step < len(unused) && len(result) < targetCount; step++ {
+			candidate := unused[(unusedStart+step)%len(unused)]
+			result = append(result, proxyAssignment{Candidate: candidate, Source: "unused"})
+		}
+	}
+	allStart := int(taskID % int64(len(all)))
+	for cycle := 0; len(result) < targetCount; cycle++ {
+		candidate := all[(allStart+cycle)%len(all)]
+		source := "fallback"
+		if !candidate.InUse {
+			source = "unused"
+		}
+		result = append(result, proxyAssignment{Candidate: candidate, Source: source})
+	}
+	return result
+}

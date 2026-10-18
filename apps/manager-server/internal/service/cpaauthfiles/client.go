@@ -127,6 +127,10 @@ const authFilesFieldsPath = "/v0/management/auth-files/fields"
 const authFilesDownloadPath = "/v0/management/auth-files/download"
 
 func authFilesEndpoint(baseURL string, fileName string, authIndex string) string {
+	return authFilesEndpointWithProxyURLs(baseURL, fileName, authIndex, false)
+}
+
+func authFilesEndpointWithProxyURLs(baseURL string, fileName string, authIndex string, includeProxyURLs bool) string {
 	endpoint := baseURL + authFilesPath
 	query := url.Values{}
 	if fileName = strings.TrimSpace(fileName); fileName != "" {
@@ -134,6 +138,9 @@ func authFilesEndpoint(baseURL string, fileName string, authIndex string) string
 	}
 	if authIndex = strings.TrimSpace(authIndex); authIndex != "" {
 		query.Set("auth_index", authIndex)
+	}
+	if includeProxyURLs {
+		query.Set("include_proxy_url", "1")
 	}
 	if encoded := query.Encode(); encoded != "" {
 		endpoint += "?" + encoded
@@ -317,8 +324,26 @@ func (c *Client) Fetch(ctx context.Context, baseURL string, managementKey string
 	return files, nil
 }
 
+// FetchWithProxyURLs requests CPA's projected proxy_url field in the same
+// inventory response. It is intentionally a separate method so existing list
+// callers retain their lightweight default payload.
+func (c *Client) FetchWithProxyURLs(ctx context.Context, baseURL string, managementKey string) ([]File, error) {
+	files := make([]File, 0)
+	if err := c.visitWithProxyURLs(ctx, baseURL, managementKey, func(file File) (bool, error) {
+		files = append(files, file)
+		return false, nil
+	}); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
 func (c *Client) Visit(ctx context.Context, baseURL string, managementKey string, visit func(File) (bool, error)) error {
 	return c.visit(ctx, baseURL, managementKey, "", "", visit)
+}
+
+func (c *Client) visitWithProxyURLs(ctx context.Context, baseURL string, managementKey string, visit func(File) (bool, error)) error {
+	return c.visitRequest(ctx, baseURL, managementKey, "", "", true, visit)
 }
 
 func (c *Client) visit(
@@ -329,10 +354,22 @@ func (c *Client) visit(
 	authIndex string,
 	visit func(File) (bool, error),
 ) error {
+	return c.visitRequest(ctx, baseURL, managementKey, fileName, authIndex, false, visit)
+}
+
+func (c *Client) visitRequest(
+	ctx context.Context,
+	baseURL string,
+	managementKey string,
+	fileName string,
+	authIndex string,
+	includeProxyURLs bool,
+	visit func(File) (bool, error),
+) error {
 	base := cpa.NormalizeBaseURL(baseURL)
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, authFilesEndpoint(base, fileName, authIndex), nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, authFilesEndpointWithProxyURLs(base, fileName, authIndex, includeProxyURLs), nil)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", authFilesPath, err)
 	}
