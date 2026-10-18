@@ -463,6 +463,32 @@ func TestMigrateCreatesTokenRecoveryTaskSchema(t *testing.T) {
 	}
 }
 
+func TestProxyReplacementMigrationAddsTablesToExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy-replacement-upgrade.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open current sqlite: %v", err)
+	}
+	// Exercise the same reopen path that upgrades a persisted Manager database.
+	if err := db.Close(); err != nil {
+		t.Fatalf("close current sqlite: %v", err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, table := range []string{"proxy_pool_state", "proxy_replacement_tasks", "proxy_replacement_task_items"} {
+		var count int
+		if err := db.QueryRow(`select count(*) from sqlite_master where type = 'table' and name = ?`, table).Scan(&count); err != nil {
+			t.Fatalf("inspect table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("table %s count = %d, want 1", table, count)
+		}
+	}
+}
+
 func TestMigrateAddsTokenRecoveryTaskColumnsToLegacySchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token-recovery-task-upgrade.sqlite")
 	db, err := Open(path)

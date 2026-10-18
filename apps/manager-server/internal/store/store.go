@@ -17,6 +17,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/datamigration"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/deadletter"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
+	proxyreplacementrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proxyreplacement"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotacooldown"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
@@ -65,6 +66,13 @@ type TokenRecoveryTarget = model.TokenRecoveryTarget
 type TokenRecoveryTask = model.TokenRecoveryTask
 type AutomationSettings = model.AutomationSettings
 type ProxyFilterSettings = model.ProxyFilterSettings
+type ProxyReplacementTask = model.ProxyReplacementTask
+type ProxyReplacementTaskItem = model.ProxyReplacementTaskItem
+type ProxyReplacementTaskPage = model.ProxyReplacementTaskPage
+type ProxyReplacementTaskStatus = model.ProxyReplacementTaskStatus
+type ProxyReplacementItemStatus = model.ProxyReplacementItemStatus
+type ProxyReplacementItemOutcome = model.ProxyReplacementItemOutcome
+type ProxyPoolState = model.ProxyPoolState
 type DataMigrationState = datamigration.State
 type DataMigrationBatchResult = datamigration.BatchResult
 
@@ -149,22 +157,23 @@ type Store struct {
 	db            *sql.DB
 	modelPricesMu sync.RWMutex
 
-	Settings         setting.Repository
-	UsageEvents      usageevent.Repository
-	DeadLetters      deadletter.Repository
-	ModelPrices      modelprice.Repository
-	APIKeyAliases    apikeyalias.Repository
-	AccountActions   accountaction.Repository
-	TokenRecoveries  tokenrecoveryrepo.Repository
-	CodexInspections codexinspection.Repository
-	DataMigrations   datamigration.Repository
-	QuotaCooldowns   quotacooldown.Repository
-	QuotaSnapshots   quotasnapshot.Repository
-	UsageAggregates  usageaggregate.Repository
-	UsageArchives    *usagearchive.Repository
-	UsagePricing     usagepricing.Repository
-	UsageMonitoring  usagemonitoring.Repository
-	UsageRollups     usagerollup.Repository
+	Settings          setting.Repository
+	UsageEvents       usageevent.Repository
+	DeadLetters       deadletter.Repository
+	ModelPrices       modelprice.Repository
+	APIKeyAliases     apikeyalias.Repository
+	AccountActions    accountaction.Repository
+	TokenRecoveries   tokenrecoveryrepo.Repository
+	ProxyReplacements proxyreplacementrepo.Repository
+	CodexInspections  codexinspection.Repository
+	DataMigrations    datamigration.Repository
+	QuotaCooldowns    quotacooldown.Repository
+	QuotaSnapshots    quotasnapshot.Repository
+	UsageAggregates   usageaggregate.Repository
+	UsageArchives     *usagearchive.Repository
+	UsagePricing      usagepricing.Repository
+	UsageMonitoring   usagemonitoring.Repository
+	UsageRollups      usagerollup.Repository
 }
 
 func Open(path string, protector ...*security.Protector) (*Store, error) {
@@ -177,23 +186,24 @@ func Open(path string, protector ...*security.Protector) (*Store, error) {
 
 func New(db *sql.DB, protector ...*security.Protector) *Store {
 	return &Store{
-		db:               db,
-		Settings:         setting.New(db, protector...),
-		UsageEvents:      usageevent.New(db),
-		DeadLetters:      deadletter.New(db),
-		ModelPrices:      modelprice.New(db),
-		APIKeyAliases:    apikeyalias.New(db),
-		AccountActions:   accountaction.New(db),
-		TokenRecoveries:  tokenrecoveryrepo.New(db),
-		CodexInspections: codexinspection.New(db),
-		DataMigrations:   datamigration.New(db),
-		QuotaCooldowns:   quotacooldown.New(db),
-		QuotaSnapshots:   quotasnapshot.New(db),
-		UsageAggregates:  usageaggregate.New(db),
-		UsageArchives:    usagearchive.New(db),
-		UsagePricing:     usagepricing.New(db),
-		UsageMonitoring:  usagemonitoring.New(db),
-		UsageRollups:     usagerollup.New(db),
+		db:                db,
+		Settings:          setting.New(db, protector...),
+		UsageEvents:       usageevent.New(db),
+		DeadLetters:       deadletter.New(db),
+		ModelPrices:       modelprice.New(db),
+		APIKeyAliases:     apikeyalias.New(db),
+		AccountActions:    accountaction.New(db),
+		TokenRecoveries:   tokenrecoveryrepo.New(db),
+		ProxyReplacements: proxyreplacementrepo.New(db, protector...),
+		CodexInspections:  codexinspection.New(db),
+		DataMigrations:    datamigration.New(db),
+		QuotaCooldowns:    quotacooldown.New(db),
+		QuotaSnapshots:    quotasnapshot.New(db),
+		UsageAggregates:   usageaggregate.New(db),
+		UsageArchives:     usagearchive.New(db),
+		UsagePricing:      usagepricing.New(db),
+		UsageMonitoring:   usagemonitoring.New(db),
+		UsageRollups:      usagerollup.New(db),
 	}
 }
 
@@ -277,6 +287,16 @@ func (s *Store) SaveProxyFilterSettings(ctx context.Context, settings ProxyFilte
 
 func (s *Store) LoadProxyFilterSettings(ctx context.Context) (ProxyFilterSettings, bool, error) {
 	return s.Settings.LoadProxyFilterSettings(ctx)
+}
+
+// GetProxyReplacementTask is the narrow Store entry point used by HTTP and
+// services. It keeps callers independent of the SQLite repository package.
+func (s *Store) GetProxyReplacementTask(ctx context.Context, taskID int64, page, pageSize int) (ProxyReplacementTaskPage, error) {
+	return s.ProxyReplacements.GetTask(ctx, taskID, page, pageSize)
+}
+
+func (s *Store) LoadProxyPoolStates(ctx context.Context) ([]ProxyPoolState, error) {
+	return s.ProxyReplacements.ListProxyPoolStates(ctx)
 }
 
 func (s *Store) SaveAdminCredential(ctx context.Context, credential AdminCredential) error {

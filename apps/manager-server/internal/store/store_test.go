@@ -59,6 +59,18 @@ func TestStorePausesRollupsUntilUsageCacheAccountingMigrationCompletes(t *testin
 	}
 }
 
+func TestStoreExposesProxyReplacementRepository(t *testing.T) {
+	protector := newTestProtector(t)
+	db, err := Open(filepath.Join(t.TempDir(), "proxy-replacements.sqlite"), protector)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if db.ProxyReplacements == nil {
+		t.Fatal("proxy replacement repository is nil")
+	}
+}
+
 func TestStorePersistsAccountSnapshot(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

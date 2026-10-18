@@ -821,6 +821,69 @@ func Migrate(db *sql.DB) error {
 			on token_recovery_tasks(status, created_at_ms, id)`,
 		`create index if not exists idx_token_recovery_tasks_updated
 			on token_recovery_tasks(updated_at_ms desc, id desc)`,
+		`create table if not exists proxy_pool_state (
+			proxy_fingerprint text primary key,
+			status text not null,
+			last_failure_at_ms integer,
+			last_failure_reason text,
+			updated_at_ms integer not null
+		)`,
+		`create table if not exists proxy_replacement_tasks (
+			id integer primary key autoincrement,
+			source text not null,
+			mode text not null,
+			status text not null,
+			recheck_after_write integer not null default 0,
+			task_offset integer not null default 0,
+			total_count integer not null default 0,
+			updated_count integer not null default 0,
+			failed_count integer not null default 0,
+			skipped_count integer not null default 0,
+			recheck_success_count integer not null default 0,
+			recheck_failed_count integer not null default 0,
+			unused_normal_count integer not null default 0,
+			fallback_normal_count integer not null default 0,
+			suspect_excluded_count integer not null default 0,
+			last_error_code text,
+			last_error_message text,
+			expires_at_ms integer,
+			confirmed_at_ms integer,
+			started_at_ms integer,
+			completed_at_ms integer,
+			created_at_ms integer not null,
+			updated_at_ms integer not null
+		)`,
+		`create index if not exists idx_proxy_replacement_tasks_claim
+			on proxy_replacement_tasks(status, created_at_ms, id)`,
+		`create table if not exists proxy_replacement_task_items (
+			id integer primary key autoincrement,
+			task_id integer not null,
+			item_order integer not null,
+			client_key text not null,
+			file_name text not null,
+			auth_index text not null default '',
+			account_email text not null default '',
+			provider text not null,
+			runtime_id text not null default '',
+			account_id text not null default '',
+			account_snapshot text not null default '',
+			old_proxy_fingerprint text not null default '',
+			old_proxy_ciphertext text,
+			new_proxy_fingerprint text not null default '',
+			new_proxy_ciphertext text,
+			allocation_source text not null default '',
+			status text not null,
+			write_error_code text,
+			write_error_message text,
+			recheck_error_code text,
+			recheck_error_message text,
+			created_at_ms integer not null,
+			updated_at_ms integer not null,
+			foreign key(task_id) references proxy_replacement_tasks(id) on delete cascade,
+			unique(task_id, item_order)
+		)`,
+		`create index if not exists idx_proxy_replacement_task_items_task_order
+			on proxy_replacement_task_items(task_id, item_order)`,
 		`create table if not exists codex_inspection_runs (
 			id integer primary key autoincrement,
 			trigger_type text not null,
@@ -1073,6 +1136,9 @@ func Migrate(db *sql.DB) error {
 	if err := ensureTokenRecoveryTaskColumns(db); err != nil {
 		return err
 	}
+	if err := ensureProxyReplacementTaskColumns(db); err != nil {
+		return err
+	}
 	if err := ensureCodexInspectionRunColumns(db); err != nil {
 		return err
 	}
@@ -1188,6 +1254,91 @@ func ensureTokenRecoveryTaskColumns(db *sql.DB) error {
 	if _, ok := existing["auto_attempted_at_ms"]; !ok {
 		if _, err := db.Exec(`alter table token_recovery_tasks add column auto_attempted_at_ms integer`); err != nil {
 			return fmt.Errorf("add token_recovery_tasks.auto_attempted_at_ms: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureProxyReplacementTaskColumns keeps development databases created by
+// earlier builds forward-compatible. It only appends nullable/defaulted
+// columns, never rebuilds or deletes task rows.
+func ensureProxyReplacementTaskColumns(db *sql.DB) error {
+	if err := ensureSQLiteTableColumns(db, "proxy_replacement_tasks", []sqliteColumnDefinition{
+		{name: "recheck_after_write", definition: "integer not null default 0"},
+		{name: "task_offset", definition: "integer not null default 0"},
+		{name: "total_count", definition: "integer not null default 0"},
+		{name: "updated_count", definition: "integer not null default 0"},
+		{name: "failed_count", definition: "integer not null default 0"},
+		{name: "skipped_count", definition: "integer not null default 0"},
+		{name: "recheck_success_count", definition: "integer not null default 0"},
+		{name: "recheck_failed_count", definition: "integer not null default 0"},
+		{name: "unused_normal_count", definition: "integer not null default 0"},
+		{name: "fallback_normal_count", definition: "integer not null default 0"},
+		{name: "suspect_excluded_count", definition: "integer not null default 0"},
+		{name: "last_error_code", definition: "text"},
+		{name: "last_error_message", definition: "text"},
+		{name: "expires_at_ms", definition: "integer"},
+		{name: "confirmed_at_ms", definition: "integer"},
+		{name: "started_at_ms", definition: "integer"},
+		{name: "completed_at_ms", definition: "integer"},
+	}); err != nil {
+		return fmt.Errorf("ensure proxy_replacement_tasks columns: %w", err)
+	}
+	if err := ensureSQLiteTableColumns(db, "proxy_replacement_task_items", []sqliteColumnDefinition{
+		{name: "auth_index", definition: "text not null default ''"},
+		{name: "account_email", definition: "text not null default ''"},
+		{name: "runtime_id", definition: "text not null default ''"},
+		{name: "account_id", definition: "text not null default ''"},
+		{name: "account_snapshot", definition: "text not null default ''"},
+		{name: "old_proxy_fingerprint", definition: "text not null default ''"},
+		{name: "old_proxy_ciphertext", definition: "text"},
+		{name: "new_proxy_fingerprint", definition: "text not null default ''"},
+		{name: "new_proxy_ciphertext", definition: "text"},
+		{name: "allocation_source", definition: "text not null default ''"},
+		{name: "write_error_code", definition: "text"},
+		{name: "write_error_message", definition: "text"},
+		{name: "recheck_error_code", definition: "text"},
+		{name: "recheck_error_message", definition: "text"},
+	}); err != nil {
+		return fmt.Errorf("ensure proxy_replacement_task_items columns: %w", err)
+	}
+	return nil
+}
+
+type sqliteColumnDefinition struct {
+	name       string
+	definition string
+}
+
+func ensureSQLiteTableColumns(db *sql.DB, table string, columns []sqliteColumnDefinition) error {
+	rows, err := db.Query(`pragma table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	existing := map[string]struct{}{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, column := range columns {
+		if _, found := existing[column.name]; found {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf(`alter table %s add column %s %s`, table, column.name, column.definition)); err != nil {
+			return err
 		}
 	}
 	return nil
