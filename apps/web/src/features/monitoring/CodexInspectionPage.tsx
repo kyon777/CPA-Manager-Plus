@@ -85,6 +85,15 @@ import {
   type CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import {
+  buildPendingInspectionPageRecoveryOperation,
+  idleInspectionPageDeleteOperation,
+  summarizeInspectionPageRecoveryOperation,
+  toInspectionPageDeleteOperationResult,
+  type InspectionPageDeleteOperation,
+  type InspectionPageDeletePhase,
+  type InspectionPageRecoveryOperation,
+} from '@/features/monitoring/model/inspectionPageBatchOperation';
+import {
   resolveInspectionAccountFile,
   resolveInspectionAccountNote,
 } from '@/features/monitoring/model/serverInspectionAccountNote';
@@ -266,6 +275,10 @@ export function CodexInspectionPage({
   const [executing, setExecuting] = useState(false);
   const [pageRecoverySubmitting, setPageRecoverySubmitting] = useState(false);
   const [pageBannedDeleteSubmitting, setPageBannedDeleteSubmitting] = useState(false);
+  const [pageRecoveryOperation, setPageRecoveryOperation] =
+    useState<InspectionPageRecoveryOperation | null>(null);
+  const [pageBannedDeleteOperation, setPageBannedDeleteOperation] =
+    useState<InspectionPageDeleteOperation>(() => ({ ...idleInspectionPageDeleteOperation }));
   const [actionFilter, setActionFilter] = useState<ActionFilter>(() =>
     normalizeActionFilter(initialLastRun?.actionFilter ?? 'all')
   );
@@ -286,6 +299,8 @@ export function CodexInspectionPage({
   const authFilesRequestGenerationRef = useRef(0);
   const pageRecoveryGenerationRef = useRef(0);
   const pageBannedDeleteGenerationRef = useRef(0);
+  const pageRecoveryLockedRef = useRef(false);
+  const pageBannedDeletePhaseRef = useRef<InspectionPageDeletePhase>('idle');
   const restoredConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
   const logListRef = useRef<HTMLDivElement | null>(null);
   const executeItemsRef = useRef<
@@ -346,6 +361,10 @@ export function CodexInspectionPage({
     setExecuting(false);
     setPageRecoverySubmitting(false);
     setPageBannedDeleteSubmitting(false);
+    setPageRecoveryOperation(null);
+    setPageBannedDeleteOperation({ ...idleInspectionPageDeleteOperation });
+    pageRecoveryLockedRef.current = false;
+    pageBannedDeletePhaseRef.current = 'idle';
     setCodexReauthTarget(null);
     setProxyReplacementOpen(false);
 
@@ -1202,6 +1221,48 @@ export function CodexInspectionPage({
         : [],
     [actionFilter, resultPagination.pageItems]
   );
+  const pageRecoverySignature = useMemo(
+    () =>
+      [
+        actionFilter,
+        String(resultPagination.currentPage),
+        ...pageRecoveryTargets.map((target) =>
+          [target.clientKey, target.fileName, target.authIndex ?? '', target.accountEmail ?? ''].join(
+            '\u001f'
+          )
+        ),
+      ].join('\u001e'),
+    [actionFilter, pageRecoveryTargets, resultPagination.currentPage]
+  );
+  const resumedPageRecoveryOperation = useMemo(
+    () =>
+      buildPendingInspectionPageRecoveryOperation(
+        pageRecoverySignature,
+        pageRecoveryTargets,
+        pageRuntimeItemsByClientKey
+      ),
+    [pageRecoverySignature, pageRecoveryTargets, pageRuntimeItemsByClientKey]
+  );
+  const activePageRecoveryOperation =
+    pageRecoveryOperation?.pageSignature === pageRecoverySignature
+      ? pageRecoveryOperation
+      : resumedPageRecoveryOperation;
+  const pageRecoveryProgress = useMemo(
+    () =>
+      summarizeInspectionPageRecoveryOperation(
+        activePageRecoveryOperation,
+        pageRuntimeItemsByClientKey
+      ),
+    [activePageRecoveryOperation, pageRuntimeItemsByClientKey]
+  );
+  const pageRecoveryBusy =
+    pageRecoverySubmitting || pageRecoveryProgress?.active === true;
+  const pageBannedDeleteBusy =
+    pageBannedDeleteOperation.phase !== 'idle' &&
+    pageBannedDeleteOperation.phase !== 'completed';
+  useEffect(() => {
+    pageRecoveryLockedRef.current = pageRecoveryBusy;
+  }, [pageRecoveryBusy]);
   const pageBannedDeleteTargets = useMemo(
     () =>
       actionFilter === 'reauth'
@@ -1230,11 +1291,23 @@ export function CodexInspectionPage({
     setResultPage(1);
   }, []);
 
+  const setPageBannedDeleteOperationState = useCallback(
+    (
+      phase: InspectionPageDeletePhase,
+      result: InspectionPageDeleteOperation['result'] = null,
+      error = ''
+    ) => {
+      pageBannedDeletePhaseRef.current = phase;
+      setPageBannedDeleteOperation({ phase, result, error });
+    },
+    []
+  );
+
   const handleRecoverCurrentPage = useCallback(async () => {
     const requestConnectionFingerprint = connectionFingerprint;
     if (
       !managerRequestScope ||
-      pageRecoverySubmitting ||
+      pageRecoveryLockedRef.current ||
       pageRecoveryTargets.length === 0 ||
       activeConnectionFingerprintRef.current !== requestConnectionFingerprint
     ) {
@@ -1242,6 +1315,14 @@ export function CodexInspectionPage({
     }
     const requestGeneration = pageRecoveryGenerationRef.current + 1;
     pageRecoveryGenerationRef.current = requestGeneration;
+    const operation: InspectionPageRecoveryOperation = {
+      pageSignature: pageRecoverySignature,
+      targets: [...pageRecoveryTargets],
+      submissionFailures: [],
+      submissionComplete: false,
+    };
+    pageRecoveryLockedRef.current = true;
+    setPageRecoveryOperation(operation);
     setPageRecoverySubmitting(true);
     try {
       const response = await usageServiceApi.requestTokenRecoveryManualBatch(
@@ -1249,13 +1330,32 @@ export function CodexInspectionPage({
         managerRequestScope.managementKey,
         [...pageRecoveryTargets]
       );
-      if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+      if (
+        activeConnectionFingerprintRef.current !== requestConnectionFingerprint ||
+        pageRecoveryGenerationRef.current !== requestGeneration
+      ) {
+        return;
+      }
       const items = response.items ?? [];
       applyPageRuntimeBatchTasks(items);
+      const batchItemByClientKey = new Map(items.map((item) => [item.clientKey.trim(), item]));
+      const submissionFailures = pageRecoveryTargets.flatMap((target) => {
+        const item = batchItemByClientKey.get(target.clientKey);
+        if (item?.task) return [];
+        return [
+          {
+            clientKey: target.clientKey,
+            reason: item?.errorCode?.trim() || 'recovery_task_unavailable',
+          },
+        ];
+      });
+      setPageRecoveryOperation({
+        ...operation,
+        submissionFailures,
+        submissionComplete: true,
+      });
       const submittedCount = items.filter((item) => item.task).length;
-      const failureReasons = Array.from(
-        new Set(items.map((item) => item.errorCode?.trim() ?? '').filter(Boolean))
-      );
+      const failureReasons = Array.from(new Set(submissionFailures.map((failure) => failure.reason)));
       const summary = t('accounts.batch_recovery_result', {
         count: submittedCount,
         failed: failureReasons.length,
@@ -1265,8 +1365,22 @@ export function CodexInspectionPage({
         failureReasons.length > 0 ? 'warning' : 'success'
       );
     } catch (error) {
-      if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+      if (
+        activeConnectionFingerprintRef.current !== requestConnectionFingerprint ||
+        pageRecoveryGenerationRef.current !== requestGeneration
+      ) {
+        return;
+      }
       const reason = error instanceof Error ? error.message.trim() : '';
+      setPageRecoveryOperation({
+        ...operation,
+        submissionFailures: pageRecoveryTargets.map((target) => ({
+          clientKey: target.clientKey,
+          reason: reason || 'recovery_request_failed',
+        })),
+        submissionComplete: true,
+      });
+      pageRecoveryLockedRef.current = false;
       showNotification(reason || t('accounts.batch_recovery_unavailable'), 'error');
     } finally {
       if (pageRecoveryGenerationRef.current === requestGeneration) {
@@ -1277,7 +1391,7 @@ export function CodexInspectionPage({
     applyPageRuntimeBatchTasks,
     connectionFingerprint,
     managerRequestScope,
-    pageRecoverySubmitting,
+    pageRecoverySignature,
     pageRecoveryTargets,
     showNotification,
     t,
@@ -1290,7 +1404,7 @@ export function CodexInspectionPage({
     ) => {
       if (
         !managerRequestScope ||
-        pageBannedDeleteSubmitting ||
+        pageBannedDeletePhaseRef.current !== 'deleting' ||
         targets.length === 0 ||
         activeConnectionFingerprintRef.current !== requestConnectionFingerprint
       ) {
@@ -1305,7 +1419,12 @@ export function CodexInspectionPage({
           managerRequestScope.managementKey,
           [...targets]
         );
-        if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+        if (
+          activeConnectionFingerprintRef.current !== requestConnectionFingerprint ||
+          pageBannedDeleteGenerationRef.current !== requestGeneration
+        ) {
+          return;
+        }
         const deletedPhysicalNames = Array.from(
           new Set(
             (response.deleted ?? [])
@@ -1323,6 +1442,8 @@ export function CodexInspectionPage({
           );
           onAuthFilesDeleted?.(deletedPhysicalNames);
         }
+        const deleteResult = toInspectionPageDeleteOperationResult(response);
+        setPageBannedDeleteOperationState('completed', deleteResult);
         const skipped = response.skipped ?? [];
         const failed = response.failed ?? [];
         const firstReason = [...failed, ...skipped]
@@ -1338,8 +1459,14 @@ export function CodexInspectionPage({
           failed.length > 0 ? 'error' : skipped.length > 0 ? 'warning' : 'success'
         );
       } catch (error) {
-        if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+        if (
+          activeConnectionFingerprintRef.current !== requestConnectionFingerprint ||
+          pageBannedDeleteGenerationRef.current !== requestGeneration
+        ) {
+          return;
+        }
         const reason = error instanceof Error ? error.message.trim() : '';
+        setPageBannedDeleteOperationState('completed', null, reason || t('notification.delete_failed'));
         showNotification(reason || t('notification.delete_failed'), 'error');
       } finally {
         if (pageBannedDeleteGenerationRef.current === requestGeneration) {
@@ -1350,33 +1477,31 @@ export function CodexInspectionPage({
     [
       managerRequestScope,
       onAuthFilesDeleted,
-      pageBannedDeleteSubmitting,
+      setPageBannedDeleteOperationState,
       showNotification,
       t,
     ]
   );
 
   const handleDeleteCurrentPageBanned = useCallback(() => {
-    if (pageBannedDeleteTargets.length === 0) return;
+    if (
+      pageBannedDeleteTargets.length === 0 ||
+      (pageBannedDeletePhaseRef.current !== 'idle' &&
+        pageBannedDeletePhaseRef.current !== 'completed')
+    ) {
+      return;
+    }
     const targets = [...pageBannedDeleteTargets];
     const confirmationConnectionFingerprint = connectionFingerprint;
-    const openSecondConfirmation = () => {
-      if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
-      showConfirmation({
-        title: t('auth_files.delete_many_second_title'),
-        message: t('auth_files.delete_many_second_confirm', {
-          count: targets.length,
-          scope: t('auth_files.delete_scope_selected'),
-        }),
-        confirmText: t('auth_files.delete_second_action'),
-        cancelText: t('common.cancel'),
-        variant: 'danger',
-        onConfirm: () => {
-          if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
-          void deleteCurrentPageBannedCredentials(targets, confirmationConnectionFingerprint);
-        },
-      });
+    const resetPendingDeleteConfirmation = () => {
+      if (
+        pageBannedDeletePhaseRef.current === 'awaiting_first_confirmation' ||
+        pageBannedDeletePhaseRef.current === 'awaiting_second_confirmation'
+      ) {
+        setPageBannedDeleteOperationState('idle');
+      }
     };
+    setPageBannedDeleteOperationState('awaiting_first_confirmation');
     showConfirmation({
       title: t('accounts.batch_delete_banned_title', { count: targets.length }),
       message: t('accounts.batch_delete_banned_summary', {
@@ -1386,12 +1511,31 @@ export function CodexInspectionPage({
       confirmText: t('common.delete'),
       cancelText: t('common.cancel'),
       variant: 'danger',
-      onConfirm: openSecondConfirmation,
+      secondConfirmation: {
+        title: t('auth_files.delete_many_second_title'),
+        message: t('auth_files.delete_many_second_confirm', {
+          count: targets.length,
+          scope: t('auth_files.delete_scope_selected'),
+        }),
+        confirmText: t('auth_files.delete_second_action'),
+        cancelText: t('common.cancel'),
+        variant: 'danger',
+      },
+      onCancel: resetPendingDeleteConfirmation,
+      onConfirm: () => {
+        if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) {
+          resetPendingDeleteConfirmation();
+          return;
+        }
+        setPageBannedDeleteOperationState('deleting');
+        void deleteCurrentPageBannedCredentials(targets, confirmationConnectionFingerprint);
+      },
     });
   }, [
     connectionFingerprint,
     deleteCurrentPageBannedCredentials,
     pageBannedDeleteTargets,
+    setPageBannedDeleteOperationState,
     showConfirmation,
     t,
   ]);
@@ -1858,8 +2002,11 @@ export function CodexInspectionPage({
         pageRecoveryCount={pageRecoveryTargets.length}
         pageBannedDeleteCount={pageBannedDeleteTargets.length}
         pageProxyReplacementCount={pageProxyReplacementTargets.length}
-        pageRecoverySubmitting={pageRecoverySubmitting}
+        pageRecoverySubmitting={pageRecoveryBusy}
         pageBannedDeleteSubmitting={pageBannedDeleteSubmitting}
+        pageBannedDeleteBusy={pageBannedDeleteBusy}
+        pageRecoveryProgress={pageRecoveryProgress}
+        pageBannedDeleteOperation={pageBannedDeleteOperation}
         handlingFilterCounts={handlingFilterCounts}
         filterCounts={filterCounts}
         handlingFilter={handlingFilter}
