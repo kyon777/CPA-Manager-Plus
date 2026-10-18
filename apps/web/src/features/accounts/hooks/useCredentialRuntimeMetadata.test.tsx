@@ -223,6 +223,46 @@ describe('useCredentialRuntimeMetadata', () => {
     );
   });
 
+  it('does not let an older empty recovery lookup erase a newer pending task', async () => {
+    vi.useFakeTimers();
+    const initialLookup = deferred<TokenRecoveryBatchResponse>();
+    const queuedTask = {
+      id: 9,
+      status: 'manual_queued' as const,
+      fileName: 'a.json',
+      provider: 'codex' as const,
+      mode: 'manual' as const,
+    };
+    mocks.queryTokenRecoveryBatch
+      .mockReturnValueOnce(initialLookup.promise)
+      .mockResolvedValue({
+        items: [{ clientKey: 'row-a', task: queuedTask }],
+      } satisfies TokenRecoveryBatchResponse);
+
+    await act(async () => {
+      renderer = create(<Harness targets={[TARGET_A]} fetchMetadata={false} lookupRecoveryTasks />);
+      await flush();
+    });
+    expect(mocks.queryTokenRecoveryBatch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      latest?.applyBatchTasks([{ clientKey: 'row-a', task: queuedTask }]);
+    });
+    expect(latest?.itemsByClientKey.get('row-a')?.recoveryTask?.status).toBe('manual_queued');
+
+    await act(async () => {
+      initialLookup.resolve({ items: [{ clientKey: 'row-a', task: null }] });
+      await flush();
+    });
+
+    expect(latest?.itemsByClientKey.get('row-a')?.recoveryTask?.status).toBe('manual_queued');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(mocks.queryTokenRecoveryBatch).toHaveBeenCalledTimes(2);
+  });
+
   it('does not poll a terminal recovery task', async () => {
     vi.useFakeTimers();
     mocks.getCredentialRuntimeMetadata.mockResolvedValue({

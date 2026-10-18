@@ -189,6 +189,10 @@ export const useCredentialRuntimeMetadata = ({
   const metadataAbortRef = useRef<AbortController | null>(null);
   const recoveryLookupGenerationRef = useRef(0);
   const recoveryLookupAbortRef = useRef<AbortController | null>(null);
+  // A Manager recovery lookup can still be in flight when a page action
+  // creates a new durable recovery task. Keep that newer local task until a
+  // lookup started after it can report the authoritative next status.
+  const recoveryTaskMutationVersionRef = useRef(0);
 
   itemsRef.current = itemsByClientKey;
   targetsRef.current = normalizedTargets;
@@ -198,14 +202,20 @@ export const useCredentialRuntimeMetadata = ({
     setItemsByClientKey(next);
   }, []);
 
-  const applyBatchTasks = useCallback(
-    (batchItems: TokenRecoveryBatchItem[]) => {
+  const mergeRecoveryLookupTasks = useCallback(
+    (batchItems: TokenRecoveryBatchItem[], lookupMutationVersion: number | null) => {
       if (batchItems.length === 0) return;
       const next = new Map(itemsRef.current);
+      const keepNewerPendingTasks =
+        lookupMutationVersion !== null &&
+        recoveryTaskMutationVersionRef.current !== lookupMutationVersion;
       for (const batchItem of batchItems) {
         const clientKey = batchItem.clientKey.trim();
         if (!clientKey) continue;
         const current = next.get(clientKey);
+        if (keepNewerPendingTasks && isPendingRecoveryStatus(current?.recoveryTask?.status)) {
+          continue;
+        }
         next.set(clientKey, {
           ...(current ?? { clientKey }),
           recoveryTask: batchItem.task,
@@ -215,6 +225,14 @@ export const useCredentialRuntimeMetadata = ({
       replaceItems(next);
     },
     [replaceItems]
+  );
+
+  const applyBatchTasks = useCallback(
+    (batchItems: TokenRecoveryBatchItem[]) => {
+      recoveryTaskMutationVersionRef.current += 1;
+      mergeRecoveryLookupTasks(batchItems, null);
+    },
+    [mergeRecoveryLookupTasks]
   );
 
   const loadMetadata = useCallback(async (): Promise<void> => {
@@ -290,6 +308,7 @@ export const useCredentialRuntimeMetadata = ({
 
     const requestTargets = toRecoveryLookupTargets(targetsRef.current);
     if (requestTargets.length === 0) return;
+    const lookupMutationVersion = recoveryTaskMutationVersionRef.current;
     const controller = new AbortController();
     recoveryLookupAbortRef.current = controller;
     setLoading(true);
@@ -312,7 +331,7 @@ export const useCredentialRuntimeMetadata = ({
         if (recoveryLookupGenerationRef.current !== generation || controller.signal.aborted) {
           return;
         }
-        applyBatchTasks(items);
+        mergeRecoveryLookupTasks(items, lookupMutationVersion);
         setError('');
       } catch (requestError) {
         if (
@@ -337,7 +356,7 @@ export const useCredentialRuntimeMetadata = ({
       }
     };
   }, [
-    applyBatchTasks,
+    mergeRecoveryLookupTasks,
     managerApiBase,
     managerManagementKey,
     recoveryLookupEnabled,
@@ -366,6 +385,7 @@ export const useCredentialRuntimeMetadata = ({
     const poll = async (): Promise<void> => {
       const pendingTargets = toPendingRecoveryTargets(targetsRef.current, itemsRef.current);
       if (disposed || pendingTargets.length === 0) return;
+      const lookupMutationVersion = recoveryTaskMutationVersionRef.current;
       controller?.abort();
       controller = new AbortController();
       try {
@@ -376,7 +396,7 @@ export const useCredentialRuntimeMetadata = ({
           controller.signal
         );
         if (disposed || controller.signal.aborted) return;
-        applyBatchTasks(response.items ?? []);
+        mergeRecoveryLookupTasks(response.items ?? [], lookupMutationVersion);
         setError('');
       } catch (requestError) {
         if (!disposed && controller && !isAbortError(requestError, controller.signal)) {
@@ -393,7 +413,7 @@ export const useCredentialRuntimeMetadata = ({
       controller?.abort();
     };
   }, [
-    applyBatchTasks,
+    mergeRecoveryLookupTasks,
     enabled,
     managerApiBase,
     managerManagementKey,
