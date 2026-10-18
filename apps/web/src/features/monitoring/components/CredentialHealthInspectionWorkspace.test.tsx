@@ -13,6 +13,7 @@ type ModeControlProps = {
 type EmbeddedInspectionPageProps = {
   embedded?: boolean;
   modeControl?: ReactNode;
+  onAuthFilesDeleted?: (physicalNames: string[]) => void;
 };
 
 const { mocks } = vi.hoisted(() => ({
@@ -54,7 +55,8 @@ vi.mock('@/features/monitoring/ServerCodexInspectionPage', () => ({
 
 const renderWorkspace = async (
   mode: 'local' | 'server',
-  onModeChange = vi.fn()
+  onModeChange = vi.fn(),
+  onAuthFilesDeleted = vi.fn()
 ): Promise<ReactTestRenderer> => {
   let renderer: ReactTestRenderer;
   await act(async () => {
@@ -65,6 +67,7 @@ const renderWorkspace = async (
         onSnapshotChange={vi.fn()}
         onCredentialsChanged={vi.fn()}
         onOpenCredential={vi.fn()}
+        onAuthFilesDeleted={onAuthFilesDeleted}
       />
     );
     await Promise.resolve();
@@ -108,5 +111,17 @@ describe('CredentialHealthInspectionWorkspace', () => {
     expect(mocks.localPageProps?.embedded).toBe(true);
     expect(mocks.modeControlProps?.serverAvailable).toBe(false);
     expect(onModeChange).toHaveBeenCalledWith('local');
+  });
+
+  it('passes local credential-cache deletion only to the local inspection page', async () => {
+    const onAuthFilesDeleted = vi.fn();
+    const localRenderer = await renderWorkspace('local', vi.fn(), onAuthFilesDeleted);
+
+    expect(mocks.localPageProps?.onAuthFilesDeleted).toBe(onAuthFilesDeleted);
+    act(() => localRenderer.unmount());
+
+    const serverRenderer = await renderWorkspace('server', vi.fn(), onAuthFilesDeleted);
+    expect(mocks.serverPageProps?.onAuthFilesDeleted).toBeUndefined();
+    act(() => serverRenderer.unmount());
   });
 });

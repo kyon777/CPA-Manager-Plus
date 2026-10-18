@@ -20,6 +20,13 @@ const mocks = vi.hoisted(() => ({
   executeActions: vi.fn(),
   loadLastRun: vi.fn(),
   saveLastRun: vi.fn(),
+  featureAvailability: {
+    managerServiceBase: '',
+  },
+  queryTokenRecoveryBatch: vi.fn(),
+  requestTokenRecoveryManualBatch: vi.fn(),
+  deleteAccountBannedAuthFilesBatch: vi.fn(),
+  signalTokenRecovery: vi.fn(),
   lastCodexReauthProps: null as null | {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
@@ -75,6 +82,24 @@ vi.mock('@/services/api/authFiles', async (importOriginal) => {
     authFilesApi: {
       ...actual.authFilesApi,
       list: mocks.authFilesList,
+    },
+  };
+});
+
+vi.mock('@/hooks/usePanelFeatureAvailability', () => ({
+  usePanelFeatureAvailability: () => mocks.featureAvailability,
+}));
+
+vi.mock('@/services/api/usageService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/api/usageService')>();
+  return {
+    ...actual,
+    usageServiceApi: {
+      ...actual.usageServiceApi,
+      queryTokenRecoveryBatch: mocks.queryTokenRecoveryBatch,
+      requestTokenRecoveryManualBatch: mocks.requestTokenRecoveryManualBatch,
+      deleteAccountBannedAuthFilesBatch: mocks.deleteAccountBannedAuthFilesBatch,
+      signalTokenRecovery: mocks.signalTokenRecovery,
     },
   };
 });
@@ -209,6 +234,16 @@ describe('CodexInspectionPage connection lifecycle', () => {
     mocks.authState.apiBase = 'http://cpa-a.local:8317';
     mocks.authState.managementKey = 'cpa-key-a';
     mocks.authState.connectionStatus = 'connected';
+    mocks.featureAvailability.managerServiceBase = '';
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({ items: [] });
+    mocks.requestTokenRecoveryManualBatch.mockResolvedValue({ items: [] });
+    mocks.deleteAccountBannedAuthFilesBatch.mockResolvedValue({
+      requested: 0,
+      deleted: [],
+      skipped: [],
+      failed: [],
+    });
+    mocks.signalTokenRecovery.mockResolvedValue({ task: null });
     mocks.lastCodexReauthProps = null;
     mocks.authFilesList.mockResolvedValue({ files: [] });
     const firstFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
@@ -221,6 +256,360 @@ describe('CodexInspectionPage connection lifecycle', () => {
     mocks.showConfirmation.mockImplementation((options: { onConfirm: () => void }) => {
       options.onConfirm();
     });
+  });
+
+  const reauthLastRun = (connectionFingerprint: string): CodexInspectionLastRunState => {
+    const state = lastRun(connectionFingerprint);
+    return {
+      ...state,
+      actionFilter: 'reauth',
+      result: {
+        ...state.result,
+        results: [
+          {
+            ...state.result.results[0],
+            disabled: false,
+            action: 'reauth',
+            actionReason: 'expired token',
+            statusCode: 401,
+            status: 'error',
+            state: 'error',
+            error: 'expired token',
+          },
+        ],
+        summary: {
+          ...state.result.summary,
+          disabledCount: 0,
+          enableCount: 0,
+          reauthCount: 1,
+        },
+      },
+    };
+  };
+
+  it('submits only the visible reauth page to Manager manual recovery without a CPA reload', async () => {
+    mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
+    const currentFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
+    mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
+      connectionFingerprint === currentFingerprint ? reauthLastRun(connectionFingerprint) : null
+    );
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [{ clientKey: 'codex.json::auth-1', task: null }],
+    });
+    mocks.requestTokenRecoveryManualBatch.mockResolvedValue({
+      items: [
+        {
+          clientKey: 'codex.json::auth-1',
+          task: {
+            id: 7,
+            fileName: 'codex.json',
+            authIndex: 'auth-1',
+            accountEmail: 'account@example.com',
+            provider: 'codex',
+            status: 'manual_queued',
+            mode: 'manual',
+          },
+        },
+      ],
+    });
+    const onCredentialsChanged = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage onCredentialsChanged={onCredentialsChanged} />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const recoveryButton = renderer.root.findByProps({
+      'data-inspection-page-recovery': true,
+    });
+    expect(recoveryButton.props.disabled).toBe(false);
+    await act(async () => {
+      recoveryButton.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.requestTokenRecoveryManualBatch).toHaveBeenCalledWith(
+      'http://manager.local:18317',
+      'cpa-key-a',
+      [
+        {
+          clientKey: 'codex.json::auth-1',
+          fileName: 'codex.json',
+          authIndex: 'auth-1',
+          accountEmail: 'account@example.com',
+          provider: 'codex',
+        },
+      ]
+    );
+    expect(onCredentialsChanged).not.toHaveBeenCalled();
+    act(() => renderer.unmount());
+  });
+
+  it('does not apply an old page recovery response after switching CPA scope', async () => {
+    mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
+    const firstFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
+    const secondFingerprint = fingerprint('http://cpa-b.local:8317', 'cpa-key-b');
+    mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
+      connectionFingerprint === firstFingerprint || connectionFingerprint === secondFingerprint
+        ? reauthLastRun(connectionFingerprint)
+        : null
+    );
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [{ clientKey: 'codex.json::auth-1', task: null }],
+    });
+    const request = deferred<{
+      items: Array<{
+        clientKey: string;
+        task: {
+          id: number;
+          fileName: string;
+          authIndex: string;
+          accountEmail: string;
+          provider: string;
+          status: string;
+          mode: string;
+        };
+      }>;
+    }>();
+    mocks.requestTokenRecoveryManualBatch.mockReturnValue(request.promise);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const recoveryButton = renderer.root.findByProps({
+      'data-inspection-page-recovery': true,
+    });
+    await act(async () => {
+      recoveryButton.props.onClick();
+      await Promise.resolve();
+    });
+    expect(mocks.requestTokenRecoveryManualBatch).toHaveBeenCalledTimes(1);
+
+    mocks.authState.apiBase = 'http://cpa-b.local:8317';
+    mocks.authState.managementKey = 'cpa-key-b';
+    await act(async () => {
+      renderer.update(
+        <MemoryRouter>
+          <CodexInspectionPage />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+    });
+    mocks.showNotification.mockClear();
+
+    await act(async () => {
+      request.resolve({
+        items: [
+          {
+            clientKey: 'codex.json::auth-1',
+            task: {
+              id: 7,
+              fileName: 'codex.json',
+              authIndex: 'auth-1',
+              accountEmail: 'account@example.com',
+              provider: 'codex',
+              status: 'manual_queued',
+              mode: 'manual',
+            },
+          },
+        ],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.showNotification).not.toHaveBeenCalled();
+    act(() => renderer.unmount());
+  });
+
+  it('deletes only Manager-confirmed account_banned identities and prunes the local inspection', async () => {
+    mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
+    const currentFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
+    mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
+      connectionFingerprint === currentFingerprint ? reauthLastRun(connectionFingerprint) : null
+    );
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [
+        {
+          clientKey: 'codex.json::auth-1',
+          task: {
+            id: 7,
+            fileName: 'codex.json',
+            authIndex: 'auth-1',
+            accountEmail: 'account@example.com',
+            provider: 'codex',
+            status: 'auto_failed_manual_only',
+            mode: 'auto',
+            lastErrorCode: 'account_banned',
+          },
+        },
+      ],
+    });
+    mocks.deleteAccountBannedAuthFilesBatch.mockResolvedValue({
+      requested: 1,
+      deleted: [
+        {
+          clientKey: 'codex.json::auth-1',
+          fileName: 'codex.json',
+          physicalName: 'codex.json',
+        },
+      ],
+      skipped: [],
+      failed: [],
+    });
+    const onCredentialsChanged = vi.fn();
+    const onAuthFilesDeleted = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage
+            onCredentialsChanged={onCredentialsChanged}
+            onAuthFilesDeleted={onAuthFilesDeleted}
+          />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const deleteButton = renderer.root.findByProps({
+      'data-inspection-page-banned-delete': true,
+    });
+    expect(deleteButton.props.disabled).toBe(false);
+    await act(async () => {
+      deleteButton.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.deleteAccountBannedAuthFilesBatch).toHaveBeenCalledWith(
+      'http://manager.local:18317',
+      'cpa-key-a',
+      [
+        {
+          clientKey: 'codex.json::auth-1',
+          fileName: 'codex.json',
+          authIndex: 'auth-1',
+          accountEmail: 'account@example.com',
+          provider: 'codex',
+          runtimeId: 'runtime-1',
+          accountSnapshot: 'account@example.com',
+        },
+      ]
+    );
+    expect(onAuthFilesDeleted).toHaveBeenCalledWith(['codex.json']);
+    expect(onCredentialsChanged).not.toHaveBeenCalled();
+    expect(renderer.root.findAllByType('article')).toHaveLength(0);
+    act(() => renderer.unmount());
+  });
+
+  it('does not apply an old page delete response after switching CPA scope', async () => {
+    mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
+    const firstFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
+    const secondFingerprint = fingerprint('http://cpa-b.local:8317', 'cpa-key-b');
+    mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
+      connectionFingerprint === firstFingerprint || connectionFingerprint === secondFingerprint
+        ? reauthLastRun(connectionFingerprint)
+        : null
+    );
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [
+        {
+          clientKey: 'codex.json::auth-1',
+          task: {
+            id: 7,
+            fileName: 'codex.json',
+            authIndex: 'auth-1',
+            accountEmail: 'account@example.com',
+            provider: 'codex',
+            status: 'auto_failed_manual_only',
+            mode: 'auto',
+            lastErrorCode: 'account_banned',
+          },
+        },
+      ],
+    });
+    const request = deferred<{
+      requested: number;
+      deleted: Array<{ clientKey: string; fileName: string; physicalName: string }>;
+      skipped: [];
+      failed: [];
+    }>();
+    mocks.deleteAccountBannedAuthFilesBatch.mockReturnValue(request.promise);
+    const onAuthFilesDeleted = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage onAuthFilesDeleted={onAuthFilesDeleted} />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const deleteButton = renderer.root.findByProps({
+      'data-inspection-page-banned-delete': true,
+    });
+    await act(async () => {
+      deleteButton.props.onClick();
+      await Promise.resolve();
+    });
+    expect(mocks.deleteAccountBannedAuthFilesBatch).toHaveBeenCalledTimes(1);
+
+    mocks.authState.apiBase = 'http://cpa-b.local:8317';
+    mocks.authState.managementKey = 'cpa-key-b';
+    await act(async () => {
+      renderer.update(
+        <MemoryRouter>
+          <CodexInspectionPage onAuthFilesDeleted={onAuthFilesDeleted} />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+    });
+    mocks.showNotification.mockClear();
+    onAuthFilesDeleted.mockClear();
+
+    await act(async () => {
+      request.resolve({
+        requested: 1,
+        deleted: [
+          {
+            clientKey: 'codex.json::auth-1',
+            fileName: 'codex.json',
+            physicalName: 'codex.json',
+          },
+        ],
+        skipped: [],
+        failed: [],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onAuthFilesDeleted).not.toHaveBeenCalled();
+    expect(mocks.showNotification).not.toHaveBeenCalled();
+    act(() => renderer.unmount());
   });
 
   it('backfills a legacy local inspection note from auth files and saves it for later reloads', async () => {

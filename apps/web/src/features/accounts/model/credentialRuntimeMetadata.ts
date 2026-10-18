@@ -9,6 +9,10 @@ import {
   buildCodexTokenRecoveryTarget,
   createCodexReauthTargetFromAuthFile,
 } from '@/features/oauth/codexReauthModel';
+import {
+  buildAccountBannedDeleteTarget,
+} from '@/features/authFiles/model/accountBannedDelete';
+import { getAuthFilePatchTarget } from '@/features/authFiles/model/credentialStatus';
 import type { AccountRow } from './accountRows';
 
 export type RecoveryPresentation = {
@@ -33,15 +37,6 @@ const failedRecoveryStatuses = new Set<TokenRecoveryStatus>([
   'auto_failed_manual_only',
   'manual_failed_manual_only',
 ]);
-
-// The manager keeps the transport-level category in lastErrorCode (for example
-// "token_acquisition_failed") and puts TokenAcquisition's terminal reason in
-// lastErrorMessage (for example "account_banned: ...").  Match the structured
-// leading reason too, so already-persisted failed tasks remain actionable.
-const isAccountBannedRecoveryTask = (task: TokenRecoveryTask): boolean => {
-  if ((task.lastErrorCode ?? '').trim().toLowerCase() === 'account_banned') return true;
-  return /^account_banned(?:\s*:|\s*$)/i.test((task.lastErrorMessage ?? '').trim());
-};
 
 const normalizeProvider = (value: string | null | undefined): string => {
   const normalized = (value ?? '').trim().toLowerCase().replace(/_/g, '-');
@@ -162,11 +157,43 @@ export const buildPageAccountBannedRows = (
   rows: readonly AccountRow[],
   metadataByClientKey: ReadonlyMap<string, CredentialRuntimeMetadataItem>
 ): AccountRow[] =>
-  rows.filter((row) => {
-    if (row.runtimeOnly || normalizeProvider(row.provider) !== 'codex') return false;
-    const task = metadataByClientKey.get(row.selectionKey)?.recoveryTask;
-    if (!task || !failedRecoveryStatuses.has(task.status)) return false;
-    return isAccountBannedRecoveryTask(task);
+  rows.filter((row) =>
+    Boolean(
+      buildPageAccountBannedDeleteTarget(row, metadataByClientKey.get(row.selectionKey)?.recoveryTask)
+    )
+  );
+
+export const buildPageAccountBannedDeleteTarget = (
+  row: AccountRow,
+  task: TokenRecoveryTask | null | undefined
+) => {
+  if (row.runtimeOnly || normalizeProvider(row.provider) !== 'codex') return null;
+  const patchTarget = getAuthFilePatchTarget(row.raw);
+  return buildAccountBannedDeleteTarget(
+    {
+      clientKey: row.selectionKey,
+      fileName: row.fileName || patchTarget.name,
+      authIndex: patchTarget.authIndex ?? row.authIndex,
+      accountEmail: readRowAccountEmail(row),
+      provider: row.provider,
+      runtimeId: patchTarget.runtimeId,
+      accountId: patchTarget.accountId,
+      accountSnapshot: patchTarget.accountSnapshot,
+    },
+    task
+  );
+};
+
+export const buildPageAccountBannedDeleteTargets = (
+  rows: readonly AccountRow[],
+  metadataByClientKey: ReadonlyMap<string, CredentialRuntimeMetadataItem>
+) =>
+  rows.flatMap((row) => {
+    const target = buildPageAccountBannedDeleteTarget(
+      row,
+      metadataByClientKey.get(row.selectionKey)?.recoveryTask
+    );
+    return target ? [target] : [];
   });
 
 export const buildPageRecoveryCandidates = (

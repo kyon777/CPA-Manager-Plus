@@ -1582,3 +1582,59 @@ func TestClientFetchAndFindAcceptSingleAuthFileObject(t *testing.T) {
 		t.Fatalf("file=%#v ok=%t", file, ok)
 	}
 }
+
+func TestResolveVerifiedPhysicalFileDeleteTargetFromInventoryUsesVerifiedMembership(t *testing.T) {
+	files := []File{
+		{ID: "source.json", Name: "source.json", AuthIndex: "auth-1", Provider: "codex", AccountID: "account-1"},
+		{ID: "runtime-child", Name: "source.json", AuthIndex: "auth-2", Provider: "codex", AccountID: "account-2"},
+	}
+
+	target, err := ResolveVerifiedPhysicalFileDeleteTargetFromInventory(files, []Identity{
+		{AuthFileName: "source.json", AuthIndex: "auth-1", Provider: "codex", AccountIDSnapshot: "account-1"},
+		{AuthFileName: "source.json", AuthIndex: "auth-2", Provider: "codex", AccountIDSnapshot: "account-2"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveVerifiedPhysicalFileDeleteTargetFromInventory() error = %v", err)
+	}
+	if target.Selector != "source.json" {
+		t.Fatalf("selector = %q, want physical source.json", target.Selector)
+	}
+	if len(target.AffectedFiles) != 2 {
+		t.Fatalf("affected files = %d, want 2", len(target.AffectedFiles))
+	}
+}
+
+func TestResolveVerifiedPhysicalFileDeleteTargetFromInventoryRejectsIncompleteOrCollidingMembership(t *testing.T) {
+	baseFiles := []File{
+		{ID: "source.json", Name: "source.json", AuthIndex: "auth-1", Provider: "codex", AccountID: "account-1"},
+		{ID: "runtime-child", Name: "source.json", AuthIndex: "auth-2", Provider: "codex", AccountID: "account-2"},
+	}
+	oneIdentity := []Identity{{AuthFileName: "source.json", AuthIndex: "auth-1", Provider: "codex", AccountIDSnapshot: "account-1"}}
+
+	if _, err := ResolveVerifiedPhysicalFileDeleteTargetFromInventory(baseFiles, oneIdentity); !errors.Is(err, ErrDeleteMutationScopeAmbiguous) {
+		t.Fatalf("incomplete membership error = %v, want ErrDeleteMutationScopeAmbiguous", err)
+	}
+
+	collidingFiles := append(append([]File(nil), baseFiles...), File{
+		ID: "source.json", Name: "other.json", AuthIndex: "auth-3", Provider: "codex", AccountID: "account-3",
+	})
+	if _, err := ResolveVerifiedPhysicalFileDeleteTargetFromInventory(collidingFiles, []Identity{
+		{AuthFileName: "source.json", AuthIndex: "auth-1", Provider: "codex", AccountIDSnapshot: "account-1"},
+		{AuthFileName: "source.json", AuthIndex: "auth-2", Provider: "codex", AccountIDSnapshot: "account-2"},
+	}); !errors.Is(err, ErrDeleteMutationScopeAmbiguous) {
+		t.Fatalf("collision error = %v, want ErrDeleteMutationScopeAmbiguous", err)
+	}
+}
+
+func TestResolveVerifiedPhysicalFileDeleteTargetFromInventoryUsesSingleRuntimeID(t *testing.T) {
+	files := []File{{ID: "runtime-1", Name: "source.json", AuthIndex: "auth-1", Provider: "codex", AccountID: "account-1"}}
+	target, err := ResolveVerifiedPhysicalFileDeleteTargetFromInventory(files, []Identity{{
+		AuthFileName: "source.json", RuntimeID: "runtime-1", AuthIndex: "auth-1", Provider: "codex", AccountIDSnapshot: "account-1",
+	}})
+	if err != nil {
+		t.Fatalf("ResolveVerifiedPhysicalFileDeleteTargetFromInventory() error = %v", err)
+	}
+	if target.Selector != "runtime-1" {
+		t.Fatalf("selector = %q, want runtime-1", target.Selector)
+	}
+}

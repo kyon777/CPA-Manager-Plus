@@ -36,6 +36,10 @@ type CodexInspectionResultsPanelProps = {
   pendingActionCount: number;
   manualActionCount?: number;
   reauthActionCount?: number;
+  pageRecoveryCount?: number;
+  pageBannedDeleteCount?: number;
+  pageRecoverySubmitting?: boolean;
+  pageBannedDeleteSubmitting?: boolean;
   handlingFilterCounts: Record<HandlingFilter, number>;
   filterCounts: Record<ActionFilter, number>;
   handlingFilter: HandlingFilter;
@@ -57,6 +61,8 @@ type CodexInspectionResultsPanelProps = {
   onReauthAccount?: (item: CodexInspectionResultItem) => void;
   onDeleteReauthPlanned?: () => void;
   onDeleteReauthSingle?: (item: CodexInspectionResultItem) => void;
+  onRecoverCurrentPage?: () => void;
+  onDeleteCurrentPageBanned?: () => void;
   onOpenCredential?: (item: CodexInspectionResultItem) => void;
   filterLabel: (filter: ActionFilter) => string;
   handlingFilterLabel: (filter: HandlingFilter) => string;
@@ -77,6 +83,10 @@ export function CodexInspectionResultsPanel({
   pendingActionCount,
   manualActionCount = 0,
   reauthActionCount = 0,
+  pageRecoveryCount = 0,
+  pageBannedDeleteCount = 0,
+  pageRecoverySubmitting = false,
+  pageBannedDeleteSubmitting = false,
   filterCounts,
   actionFilter,
   pagination,
@@ -95,6 +105,8 @@ export function CodexInspectionResultsPanel({
   onReauthAccount,
   onDeleteReauthPlanned,
   onDeleteReauthSingle,
+  onRecoverCurrentPage,
+  onDeleteCurrentPageBanned,
   onOpenCredential,
   filterLabel,
   renderOperation,
@@ -217,6 +229,44 @@ export function CodexInspectionResultsPanel({
             </div>
 
             <div className={styles.resultsToolbarActions}>
+              {actionFilter === 'reauth' && onRecoverCurrentPage ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-inspection-page-recovery={true}
+                  onClick={onRecoverCurrentPage}
+                  loading={pageRecoverySubmitting}
+                  disabled={
+                    !result ||
+                    isInspectionInFlight ||
+                    executing ||
+                    pageRecoverySubmitting ||
+                    pageRecoveryCount === 0
+                  }
+                >
+                  {!pageRecoverySubmitting ? <IconRefreshCw size={14} /> : null}
+                  {t('accounts.batch_recovery_page', { count: pageRecoveryCount })}
+                </Button>
+              ) : null}
+              {actionFilter === 'reauth' && onDeleteCurrentPageBanned ? (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  data-inspection-page-banned-delete={true}
+                  onClick={onDeleteCurrentPageBanned}
+                  loading={pageBannedDeleteSubmitting}
+                  disabled={
+                    !result ||
+                    isInspectionInFlight ||
+                    executing ||
+                    pageBannedDeleteSubmitting ||
+                    pageBannedDeleteCount === 0
+                  }
+                >
+                  {!pageBannedDeleteSubmitting ? <IconTrash2 size={14} /> : null}
+                  {t('accounts.batch_delete_banned_page', { count: pageBannedDeleteCount })}
+                </Button>
+              ) : null}
               <Button
                 variant="secondary"
                 size="sm"

@@ -24,6 +24,7 @@ import {
   loadCodexInspectionLastRun,
   resolveCodexInspectionAutoActionPlan,
   resolveCodexInspectionAutoActionItems,
+  removeCodexInspectionFiles,
   saveCodexInspectionLastRun,
   toReauthDeleteExecutionItem,
   type CodexInspectionAction,
@@ -6885,5 +6886,24 @@ describe('Codex inspection last-run cache', () => {
     expect(loaded?.actionFilter).toBe('reauth');
     expect(loaded?.result.results[0].action).toBe('reauth');
     expect(loaded?.result.summary.reauthCount).toBe(1);
+  });
+
+  it('prunes Manager-confirmed physical files and recomputes inspection summary', () => {
+    const base = createRunResult();
+    const kept = createResultItem('reauth', { fileName: 'keep.json', key: 'keep.json::2' });
+    const next = removeCodexInspectionFiles(
+      {
+        ...base,
+        files: [...base.files, { name: 'keep.json', type: 'codex' } as AuthFileItem],
+        results: [...base.results, kept],
+        summary: { ...base.summary, totalFiles: 2, probeSetCount: 2, sampledCount: 2, reauthCount: 1 },
+      },
+      ['delete.json']
+    );
+
+    expect(next.files.map((file) => file.name)).toEqual(['keep.json']);
+    expect(next.results.map((item) => item.fileName)).toEqual(['keep.json']);
+    expect(next.summary).toMatchObject({ totalFiles: 1, enabledCount: 1, deleteCount: 0, reauthCount: 1 });
+    expect(next.finishedAt).toBe(base.finishedAt);
   });
 });

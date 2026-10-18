@@ -1087,3 +1087,35 @@ export const getProbeFailureMessage = (result: CodexInspectionResultItem) =>
     bodyText: '',
     body: null,
   });
+
+export const removeCodexInspectionFiles = (
+  previousResult: CodexInspectionRunResult,
+  physicalNames: readonly string[]
+): CodexInspectionRunResult => {
+  const removed = new Set(
+    physicalNames.map((name) => name.trim()).filter(Boolean)
+  );
+  if (removed.size === 0) return previousResult;
+  const files = previousResult.files.filter((file) => !removed.has(String(file.name ?? '').trim()));
+  const results = previousResult.results.filter((item) => !removed.has(item.fileName.trim()));
+  const sampledAccounts = results.map((item) => ({
+    key: item.key,
+    fileName: item.fileName,
+    displayAccount: item.displayAccount,
+    accountSnapshot: item.accountSnapshot,
+    authIndex: item.authIndex,
+    accountId: item.accountId,
+    provider: item.provider,
+    disabled: item.disabled,
+    autoRecoverOwned: item.autoRecoverOwned,
+    status: item.status,
+    state: item.state,
+    raw: item.raw,
+  }));
+  return {
+    ...previousResult,
+    files,
+    results,
+    summary: buildSummary(files, sampledAccounts, results, previousResult.settings),
+  };
+};

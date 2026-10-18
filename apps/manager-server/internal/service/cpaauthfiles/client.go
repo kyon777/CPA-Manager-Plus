@@ -512,6 +512,39 @@ func (c *Client) resolveVerifiedPhysicalFileDeleteTarget(
 	if err != nil {
 		return DeleteMutationTarget{}, err
 	}
+	return resolveVerifiedPhysicalFileDeleteTargetFromInventory(files, identities, allowShared)
+}
+
+// ResolveVerifiedPhysicalFileDeleteTargetFromInventory verifies that the
+// caller supplied every current member of one physical CPA auth file, then
+// returns the safe selector for deleting that physical file. It is deliberately
+// pure so a batch mutator can take one fresh inventory snapshot and avoid an
+// expensive re-fetch for every logical credential.
+func ResolveVerifiedPhysicalFileDeleteTargetFromInventory(
+	files []File,
+	identities []Identity,
+) (DeleteMutationTarget, error) {
+	return resolveVerifiedPhysicalFileDeleteTargetFromInventory(files, identities, true)
+}
+
+func resolveVerifiedPhysicalFileDeleteTargetFromInventory(
+	files []File,
+	identities []Identity,
+	allowShared bool,
+) (DeleteMutationTarget, error) {
+	if len(identities) == 0 {
+		return DeleteMutationTarget{}, fmt.Errorf("%w: delete identity is required", ErrAuthFileNotFound)
+	}
+	physicalName := strings.TrimSpace(identities[0].AuthFileName)
+	if physicalName == "" {
+		return DeleteMutationTarget{}, fmt.Errorf("%w: delete selector is empty", ErrAuthFileNotFound)
+	}
+	for _, identity := range identities[1:] {
+		if strings.TrimSpace(identity.AuthFileName) != physicalName {
+			return DeleteMutationTarget{}, fmt.Errorf("%w: delete identities span multiple physical files", ErrDeleteMutationScopeAmbiguous)
+		}
+	}
+
 	members := statusMutationFilesByPhysicalName(files, physicalName)
 	if len(members) == 0 {
 		return DeleteMutationTarget{}, fmt.Errorf("%w: physical file %q", ErrAuthFileNotFound, physicalName)

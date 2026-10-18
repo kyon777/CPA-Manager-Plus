@@ -1511,6 +1511,7 @@
     "batch_delete_banned_title": "刪除 {{count}} 個已封鎖帳號",
     "batch_delete_banned_summary": "目前頁包含 {{rows}} 個已封鎖帳號，涉及 {{files}} 個憑證檔案。",
     "batch_delete_banned_warning": "這裡只包含錯誤碼為 account_banned 的帳號。刪除按檔案執行且無法復原。",
+    "batch_delete_banned_result": "已刪除 {{deleted}} 個帳號，略過 {{skipped}} 個，失敗 {{failed}} 個",
     "batch_recovery_page": "更新目前頁憑證 ({{count}})",
     "recovery_auto_attempted": "已自動更新一次",
     "recovery_auto_processing": "自動更新中",

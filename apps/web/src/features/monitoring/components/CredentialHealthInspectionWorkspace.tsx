@@ -20,6 +20,7 @@ interface CredentialHealthInspectionWorkspaceProps {
   ) => void | Promise<void>;
   onCodexReauthStart?: (target: CodexReauthTarget) => boolean | void;
   onOpenCredential: (target: CredentialInspectionTarget) => void;
+  onAuthFilesDeleted?: (physicalNames: string[]) => void;
 }
 
 export function CredentialHealthInspectionWorkspace({
@@ -29,6 +30,7 @@ export function CredentialHealthInspectionWorkspace({
   onCredentialsChanged,
   onCodexReauthStart,
   onOpenCredential,
+  onAuthFilesDeleted,
 }: CredentialHealthInspectionWorkspaceProps) {
   const availability = usePanelFeatureAvailability();
 
@@ -72,6 +74,7 @@ export function CredentialHealthInspectionWorkspace({
       onCredentialsChanged={onCredentialsChanged}
       onCodexReauthStart={onCodexReauthStart}
       onOpenCredential={onOpenCredential}
+      onAuthFilesDeleted={onAuthFilesDeleted}
     />
   );
 }

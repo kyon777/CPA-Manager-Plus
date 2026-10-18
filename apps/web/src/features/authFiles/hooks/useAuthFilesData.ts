@@ -127,6 +127,8 @@ export type UseAuthFilesDataResult = {
     fields: AuthFileFieldsPatch
   ) => Promise<AuthFilesBatchPatchResult | null>;
   batchDelete: (targets: AuthFileItem[], options?: AuthFilesBatchDeleteOptions) => void;
+  /** Apply a Manager-confirmed physical-file delete without refetching CPA. */
+  applyDeletedFiles: (names: string[]) => void;
   reconcileAuthFileSource: (physicalName: string) => Promise<void>;
 };
 
@@ -2319,6 +2321,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     batchSetStatus,
     batchPatchFields,
     batchDelete,
+    applyDeletedFiles,
     reconcileAuthFileSource,
   };
 }

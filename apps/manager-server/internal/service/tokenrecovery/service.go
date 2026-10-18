@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	tokenrecoveryrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/tokenrecovery"
@@ -20,6 +21,31 @@ var (
 	ErrRecoveryNotConfigured = errors.New("token recovery is not configured")
 	ErrRecoveryUnavailable   = errors.New("token recovery dependencies are unavailable")
 )
+
+// IsTerminalAccountBanned reports whether the latest redacted recovery task
+// proves that the account is permanently banned. It intentionally accepts only
+// terminal failure states and the bounded account_banned category emitted by
+// Token Acquisition; ordinary re-login failures must remain recoverable.
+func IsTerminalAccountBanned(task model.TokenRecoveryTask) bool {
+	switch task.Status {
+	case model.TokenRecoveryStatusAutoFailedManualOnly, model.TokenRecoveryStatusManualFailedManualOnly:
+	default:
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(task.LastErrorCode), "account_banned") {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(task.LastErrorMessage))
+	const prefix = "account_banned"
+	if !strings.HasPrefix(message, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(message, prefix)
+	if rest == "" || strings.HasPrefix(rest, ":") {
+		return true
+	}
+	return unicode.IsSpace(rune(rest[0]))
+}
 
 // TaskStore is the narrow durable state surface used by recovery. It keeps the
 // scheduler independent from browser/API wiring and deliberately exposes only

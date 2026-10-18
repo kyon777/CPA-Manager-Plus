@@ -486,6 +486,35 @@ export interface TokenRecoveryBatchResponse {
   items: TokenRecoveryBatchItem[];
 }
 
+// Identity-only request/response types for deleting credentials that have
+// already been conclusively classified as account_banned by Manager Server.
+// They deliberately exclude tokens, raw auth JSON, and proxy credentials.
+export interface AccountBannedAuthFileDeleteTargetRequest {
+  clientKey: string;
+  fileName: string;
+  authIndex?: string;
+  accountEmail?: string;
+  provider: 'codex';
+  runtimeId?: string;
+  accountId?: string;
+  accountSnapshot?: string;
+}
+
+export interface AccountBannedAuthFileDeleteItem {
+  clientKey: string;
+  fileName: string;
+  physicalName?: string;
+  code?: string;
+  message?: string;
+}
+
+export interface AccountBannedAuthFileDeleteResponse {
+  requested: number;
+  deleted: AccountBannedAuthFileDeleteItem[];
+  skipped: AccountBannedAuthFileDeleteItem[];
+  failed: AccountBannedAuthFileDeleteItem[];
+}
+
 export interface CredentialRuntimeMetadataTarget {
   clientKey: string;
   fileName: string;
@@ -2346,6 +2375,17 @@ const tokenRecoveryBatchTargetPayload = (target: TokenRecoveryBatchTargetRequest
   ...tokenRecoveryTargetPayload(target),
 });
 
+const accountBannedDeleteTargetPayload = (target: AccountBannedAuthFileDeleteTargetRequest) => ({
+  clientKey: target.clientKey,
+  fileName: target.fileName,
+  ...(target.authIndex ? { authIndex: target.authIndex } : {}),
+  ...(target.accountEmail ? { accountEmail: target.accountEmail } : {}),
+  provider: 'codex' as const,
+  ...(target.runtimeId ? { runtimeId: target.runtimeId } : {}),
+  ...(target.accountId ? { accountId: target.accountId } : {}),
+  ...(target.accountSnapshot ? { accountSnapshot: target.accountSnapshot } : {}),
+});
+
 const credentialRuntimeMetadataTargetPayload = (target: CredentialRuntimeMetadataTarget) => ({
   clientKey: target.clientKey,
   fileName: target.fileName,
@@ -3320,6 +3360,40 @@ export const usageServiceApi = {
       const response = await axios.post<TokenRecoveryBatchResponse>(
         buildUrl(base, '/v0/management/token-recovery/manual/batch'),
         { targets: targets.map(tokenRecoveryBatchTargetPayload) },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          ...optionalAbortSignal(signal),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  deleteAccountBannedAuthFilesBatch: async (
+    base: string,
+    managementKey: string | undefined,
+    targets: AccountBannedAuthFileDeleteTargetRequest[],
+    signal?: AbortSignal
+  ): Promise<AccountBannedAuthFileDeleteResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        requested: targets.length,
+        deleted: [],
+        skipped: targets.map((target) => ({
+          clientKey: target.clientKey,
+          fileName: target.fileName,
+          code: 'demo_mode',
+          message: 'Demo mode does not delete credentials',
+        })),
+        failed: [],
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<AccountBannedAuthFileDeleteResponse>(
+        buildUrl(base, '/v0/management/auth-files/delete-account-banned-batch'),
+        { targets: targets.map(accountBannedDeleteTargetPayload) },
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),

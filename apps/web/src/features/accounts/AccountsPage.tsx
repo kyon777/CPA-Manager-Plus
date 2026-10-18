@@ -106,7 +106,7 @@ import {
 } from '@/features/oauth/codexReauthModel';
 import { runCredentialVisibilityRetry } from '@/features/accounts/model/accountCredentialVisibilityRetry';
 import {
-  buildPageAccountBannedRows,
+  buildPageAccountBannedDeleteTargets,
   buildCredentialRuntimeMetadataTargets,
   buildPageRecoveryCandidates,
   formatRecoveryState,
@@ -1368,6 +1368,7 @@ export function AccountsPage() {
     batchSetStatus,
     batchPatchFields,
     batchDelete,
+    applyDeletedFiles,
     reconcileAuthFileSource,
   } = useAuthFilesData({
     connectionFingerprint,
@@ -1456,6 +1457,7 @@ export function AccountsPage() {
   inspectionSnapshotRef.current = inspectionSnapshot;
   const [quotaRefreshing, setQuotaRefreshing] = useState(false);
   const [batchRecoverySubmitting, setBatchRecoverySubmitting] = useState(false);
+  const [batchBannedDeleteSubmitting, setBatchBannedDeleteSubmitting] = useState(false);
   const [manualQuotaRefreshingKeys, setManualQuotaRefreshingKeys] = useState<ReadonlySet<string>>(
     () => new Set()
   );
@@ -8676,41 +8678,23 @@ export function AccountsPage() {
             <Button
               variant="danger"
               size="sm"
-              onClick={() =>
-                batchDelete(pageAccountBannedFiles, {
-                  title: t('accounts.batch_delete_banned_title', {
-                    count: pageAccountBannedRows.length,
-                  }),
-                  message: (
-                    <AccountsBatchDeletePreview
-                      summary={t('accounts.batch_delete_banned_summary', {
-                        rows: pageAccountBannedRows.length,
-                        files: pageAccountBannedFileNames.length,
-                      })}
-                      warning={t('accounts.batch_delete_banned_warning')}
-                      fileNames={pageAccountBannedFileNames.slice(0, 6).map(getDisplayFileName)}
-                      moreLabel={
-                        pageAccountBannedFileNames.length > 6
-                          ? t('accounts.batch_delete_preview_more', {
-                              count: pageAccountBannedFileNames.length - 6,
-                            })
-                          : undefined
-                      }
-                    />
-                  ),
-                  confirmText: t('common.delete'),
-                })
+              onClick={confirmDeletePageAccountBannedCredentials}
+              disabled={
+                disableControls ||
+                batchBannedDeleteSubmitting ||
+                !managerRequestScope ||
+                pageAccountBannedDeleteTargets.length === 0
               }
-              disabled={disableControls || pageAccountBannedRows.length === 0}
+              loading={batchBannedDeleteSubmitting}
               title={t('accounts.batch_delete_banned_page', {
-                count: pageAccountBannedRows.length,
+                count: pageAccountBannedDeleteTargets.length,
               })}
               aria-label={t('accounts.batch_delete_banned_page', {
-                count: pageAccountBannedRows.length,
+                count: pageAccountBannedDeleteTargets.length,
               })}
             >
-              <IconTrash2 size={15} />
-              {t('accounts.batch_delete_banned_page', { count: pageAccountBannedRows.length })}
+              {!batchBannedDeleteSubmitting ? <IconTrash2 size={15} /> : null}
+              {t('accounts.batch_delete_banned_page', { count: pageAccountBannedDeleteTargets.length })}
             </Button>
           ) : null}
           {!hasSelection && !isSelectionMode ? (
@@ -9390,13 +9374,9 @@ export function AccountsPage() {
     pageRows,
     pageRecoveryHealthBySelectionKey
   );
-  const pageAccountBannedRows = buildPageAccountBannedRows(
+  const pageAccountBannedDeleteTargets = buildPageAccountBannedDeleteTargets(
     pageRows,
     credentialRuntimeItemsByClientKey
-  );
-  const pageAccountBannedFiles = pageAccountBannedRows.map((row) => row.raw);
-  const pageAccountBannedFileNames = Array.from(
-    new Set(pageAccountBannedFiles.map((file) => file.name).filter(Boolean))
   );
 
   const queuePageTokenRecovery = useCallback(
@@ -9449,6 +9429,97 @@ export function AccountsPage() {
       t,
     ]
   );
+
+  const deletePageAccountBannedCredentials = useCallback(
+    async (targets: readonly ReturnType<typeof buildPageAccountBannedDeleteTargets>[number][]) => {
+      if (!managerRequestScope || batchBannedDeleteSubmitting || targets.length === 0) return;
+      setBatchBannedDeleteSubmitting(true);
+      try {
+        const response = await usageServiceApi.deleteAccountBannedAuthFilesBatch(
+          managerRequestScope.apiBase,
+          managerRequestScope.managementKey,
+          [...targets]
+        );
+        const deletedPhysicalNames = Array.from(
+          new Set(
+            (response.deleted ?? [])
+              .map((item) => item.physicalName?.trim() || item.fileName.trim())
+              .filter(Boolean)
+          )
+        );
+        if (deletedPhysicalNames.length > 0) applyDeletedFiles(deletedPhysicalNames);
+        const skipped = response.skipped ?? [];
+        const failed = response.failed ?? [];
+        const firstReason = [...failed, ...skipped]
+          .map((item) => item.message?.trim() || item.code?.trim() || '')
+          .find(Boolean);
+        const summary = t('accounts.batch_delete_banned_result', {
+          deleted: response.deleted?.length ?? 0,
+          skipped: skipped.length,
+          failed: failed.length,
+        });
+        showNotification(
+          firstReason ? `${summary}: ${firstReason}` : summary,
+          failed.length > 0 ? 'error' : skipped.length > 0 ? 'warning' : 'success'
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.trim() : '';
+        showNotification(reason || t('notification.delete_failed'), 'error');
+      } finally {
+        setBatchBannedDeleteSubmitting(false);
+      }
+    },
+    [applyDeletedFiles, batchBannedDeleteSubmitting, managerRequestScope, showNotification, t]
+  );
+
+  const confirmDeletePageAccountBannedCredentials = useCallback(() => {
+    if (pageAccountBannedDeleteTargets.length === 0) return;
+    const targets = [...pageAccountBannedDeleteTargets];
+    const openSecondConfirmation = () => {
+      showConfirmation({
+        title: t('auth_files.delete_many_second_title'),
+        message: t('auth_files.delete_many_second_confirm', {
+          count: targets.length,
+          scope: t('auth_files.delete_scope_selected'),
+        }),
+        confirmText: t('auth_files.delete_second_action'),
+        cancelText: t('common.cancel'),
+        variant: 'danger',
+        onConfirm: () => {
+          void deletePageAccountBannedCredentials(targets);
+        },
+      });
+    };
+    showConfirmation({
+      title: t('accounts.batch_delete_banned_title', { count: targets.length }),
+      message: (
+        <AccountsBatchDeletePreview
+          summary={t('accounts.batch_delete_banned_summary', {
+            rows: targets.length,
+            files: new Set(targets.map((target) => target.fileName)).size,
+          })}
+          warning={t('accounts.batch_delete_banned_warning')}
+          fileNames={Array.from(new Set(targets.map((target) => target.fileName)))
+            .slice(0, 6)
+            .map(getDisplayFileName)}
+          moreLabel={
+            targets.length > 6
+              ? t('accounts.batch_delete_preview_more', { count: targets.length - 6 })
+              : undefined
+          }
+        />
+      ),
+      confirmText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      variant: 'danger',
+      onConfirm: openSecondConfirmation,
+    });
+  }, [
+    deletePageAccountBannedCredentials,
+    pageAccountBannedDeleteTargets,
+    showConfirmation,
+    t,
+  ]);
 
   useEffect(() => {
     handledRuntimeRecoveryCompletionsRef.current.clear();
@@ -10890,6 +10961,7 @@ export function AccountsPage() {
       onCredentialsChanged={handleInspectionCredentialsChanged}
       onCodexReauthStart={handleInspectionCodexReauthStart}
       onOpenCredential={handleOpenInspectionCredential}
+      onAuthFilesDeleted={applyDeletedFiles}
     />
   );
 

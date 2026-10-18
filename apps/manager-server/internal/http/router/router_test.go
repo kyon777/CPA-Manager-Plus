@@ -10,8 +10,10 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
+	authfilesbanneddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbanneddelete"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	credentialruntimesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialruntime"
 	tokenrecoverysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenrecovery"
@@ -130,3 +132,50 @@ func (routerTokenRecoveryAuthFiles) Verify(
 		AccountSnapshot: identity.AccountSnapshot,
 	}, nil
 }
+
+func TestRouterRoutesAccountBannedDeleteBeforeCoreManagementProxy(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "router-banned-delete.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const adminKey = "cpamp_router_banned_delete"
+	credential, err := security.NewAdminCredential(adminKey, "test")
+	if err != nil {
+		t.Fatalf("new admin credential: %v", err)
+	}
+	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
+		t.Fatalf("save admin credential: %v", err)
+	}
+	appContext := &app.Context{
+		Config:           config.Config{CORSOrigins: []string{"*"}},
+		AdminAuthService: adminauthsvc.New(config.Config{}, st),
+		AccountBannedAuthFileDeleteService: authfilesbanneddeletesvc.NewWithOptions(authfilesbanneddeletesvc.Options{
+			SetupResolver: routerCredentialRuntimeSetupResolver{baseURL: "http://cpa.example.test"},
+			Recovery:      routerBannedRecoveryLookup{},
+			AuthFiles:     routerBannedAuthFiles{},
+		}),
+	}
+	handler := New(appContext)
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/delete-account-banned-batch", bytes.NewBufferString(`{"targets":[{"clientKey":"row-a","fileName":"a.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex","runtimeId":"runtime-a"}]}`))
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"deleted"`)) {
+		t.Fatalf("route status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type routerBannedRecoveryLookup struct{}
+
+func (routerBannedRecoveryLookup) Get(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, bool, error) {
+	return model.TokenRecoveryTask{Status: model.TokenRecoveryStatusManualFailedManualOnly, LastErrorCode: "account_banned"}, true, nil
+}
+
+type routerBannedAuthFiles struct{}
+
+func (routerBannedAuthFiles) Fetch(context.Context, string, string) ([]cpaauthfiles.File, error) {
+	return []cpaauthfiles.File{{ID: "runtime-a", Name: "a.json", AuthIndex: "7", Provider: "codex", AccountSnapshot: "person@example.com"}}, nil
+}
+
+func (routerBannedAuthFiles) Delete(context.Context, string, string, string) error { return nil }

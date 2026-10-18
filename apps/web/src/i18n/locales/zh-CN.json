@@ -1511,6 +1511,7 @@
     "batch_delete_banned_title": "删除 {{count}} 个已封禁账号",
     "batch_delete_banned_summary": "当前页包含 {{rows}} 个已封禁账号，涉及 {{files}} 个凭证文件。",
     "batch_delete_banned_warning": "这里只包含错误码为 account_banned 的账号。删除按文件执行且不可撤销。",
+    "batch_delete_banned_result": "已删除 {{deleted}} 个账号，跳过 {{skipped}} 个，失败 {{failed}} 个",
     "batch_recovery_page": "更新当前页凭证 ({{count}})",
     "recovery_auto_attempted": "已自动更新一次",
     "recovery_auto_processing": "自动更新中",

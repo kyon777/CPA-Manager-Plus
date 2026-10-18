@@ -14,6 +14,7 @@ import (
 	accountactionsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/accountaction"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	apikeyaliassvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/apikeyalias"
+	authfilesbanneddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbanneddelete"
 	authfilesbatchsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbatch"
 	automationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/automation"
 	bootstrapsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
@@ -59,30 +60,31 @@ type Context struct {
 	ServiceID string
 	Bootstrap bootstrapsvc.Result
 
-	SetupService                   *setupsvc.Service
-	AdminAuthService               *adminauthsvc.Service
-	ManagerConfigService           *managerconfigsvc.Service
-	CollectorService               *collectorsvc.Service
-	UsageService                   *usagesvc.Service
-	DashboardService               *dashboardsvc.Service
-	CodexInspectionService         *codexinspectionsvc.Service
-	TokenRecoveryService           *tokenrecoverysvc.Service
-	TokenRecoveryAutomaticSignal   *tokenrecoverysvc.AutomaticSignalGate
-	CredentialRuntimeService       *credentialruntimesvc.Service
-	CredentialListService          *credentiallistsvc.Service
-	MonitoringService              *monitoringsvc.Service
-	QuotaSnapshotService           *quotasnapshotsvc.Service
-	ModelPriceService              *modelpricesvc.Service
-	APIKeyAliasService             *apikeyaliassvc.Service
-	AccountActionService           *accountactionsvc.Service
-	AccountProcessingPolicyService *automationsvc.Service
-	AuthFileMutationCoordinator    *cpaauthfiles.MutationCoordinator
-	QuotaCooldownRecoveryService   QuotaCooldownRecoveryService
-	ProxyService                   *proxysvc.Service
-	AuthFileBatchUploadService     *authfilesbatchsvc.Service
-	PanelService                   *panelsvc.Service
-	AutomationRuntimeService       AutomationRuntimeService
-	DatabaseMaintenance            DatabaseMaintenanceStatusProvider
+	SetupService                       *setupsvc.Service
+	AdminAuthService                   *adminauthsvc.Service
+	ManagerConfigService               *managerconfigsvc.Service
+	CollectorService                   *collectorsvc.Service
+	UsageService                       *usagesvc.Service
+	DashboardService                   *dashboardsvc.Service
+	CodexInspectionService             *codexinspectionsvc.Service
+	TokenRecoveryService               *tokenrecoverysvc.Service
+	TokenRecoveryAutomaticSignal       *tokenrecoverysvc.AutomaticSignalGate
+	CredentialRuntimeService           *credentialruntimesvc.Service
+	CredentialListService              *credentiallistsvc.Service
+	MonitoringService                  *monitoringsvc.Service
+	QuotaSnapshotService               *quotasnapshotsvc.Service
+	ModelPriceService                  *modelpricesvc.Service
+	APIKeyAliasService                 *apikeyaliassvc.Service
+	AccountActionService               *accountactionsvc.Service
+	AccountProcessingPolicyService     *automationsvc.Service
+	AuthFileMutationCoordinator        *cpaauthfiles.MutationCoordinator
+	QuotaCooldownRecoveryService       QuotaCooldownRecoveryService
+	ProxyService                       *proxysvc.Service
+	AuthFileBatchUploadService         *authfilesbatchsvc.Service
+	AccountBannedAuthFileDeleteService *authfilesbanneddeletesvc.Service
+	PanelService                       *panelsvc.Service
+	AutomationRuntimeService           AutomationRuntimeService
+	DatabaseMaintenance                DatabaseMaintenanceStatusProvider
 }
 
 func FromExisting(
@@ -255,6 +257,13 @@ func fromExisting(
 			managerConfigService,
 			proxyService,
 		),
+		AccountBannedAuthFileDeleteService: authfilesbanneddeletesvc.NewWithOptions(authfilesbanneddeletesvc.Options{
+			SetupResolver:       managerConfigService,
+			Recovery:            tokenRecoveryService,
+			AuthFiles:           authFiles,
+			MutationCoordinator: authFileMutationCoordinator,
+			Invalidator:         proxyService,
+		}),
 		PanelService:             panelsvc.New(cfg.PanelPath, embeddedPanel),
 		AutomationRuntimeService: runtimeService,
 	}

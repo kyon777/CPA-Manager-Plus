@@ -96,4 +96,34 @@ describe('credential runtime manager API', () => {
       })
     );
   });
+
+  it('posts only identity locators when deleting terminal account_banned credentials', async () => {
+    await usageServiceApi.deleteAccountBannedAuthFilesBatch(BASE, KEY, [
+      {
+        ...TARGET,
+        runtimeId: 'runtime-a',
+        accountId: 'account-a',
+        accountSnapshot: 'person@example.com',
+      },
+    ]);
+
+    expect(postSpy).toHaveBeenCalledWith(
+      'http://manager.local:18317/v0/management/auth-files/delete-account-banned-batch',
+      {
+        targets: [
+          {
+            ...TARGET,
+            runtimeId: 'runtime-a',
+            accountId: 'account-a',
+            accountSnapshot: 'person@example.com',
+          },
+        ],
+      },
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer manager-key' },
+        timeout: 240_000,
+      })
+    );
+    expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('access_token');
+  });
 });

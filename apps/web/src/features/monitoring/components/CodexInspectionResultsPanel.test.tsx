@@ -166,6 +166,45 @@ describe('CodexInspectionResultsPanel', () => {
     expect(copyToClipboard).toHaveBeenLastCalledWith('first@example.com\nsecond@example.com');
   });
 
+  it('shows the current-page recovery and banned-delete actions only in the reauth filter', () => {
+    const onRecoverCurrentPage = vi.fn();
+    const onDeleteCurrentPageBanned = vi.fn();
+    const renderer = renderPanel(createItem({ action: 'reauth' }), {
+      actionFilter: 'reauth',
+      pageRecoveryCount: 2,
+      pageBannedDeleteCount: 1,
+      onRecoverCurrentPage,
+      onDeleteCurrentPageBanned,
+    });
+
+    const recoveryButton = renderer.root.findByProps({
+      'data-inspection-page-recovery': true,
+    });
+    const deleteButton = renderer.root.findByProps({
+      'data-inspection-page-banned-delete': true,
+    });
+    act(() => {
+      recoveryButton.props.onClick();
+      deleteButton.props.onClick();
+    });
+    expect(onRecoverCurrentPage).toHaveBeenCalledTimes(1);
+    expect(onDeleteCurrentPageBanned).toHaveBeenCalledTimes(1);
+
+    const nonReauthRenderer = renderPanel(createItem(), {
+      actionFilter: 'all',
+      pageRecoveryCount: 2,
+      pageBannedDeleteCount: 1,
+      onRecoverCurrentPage,
+      onDeleteCurrentPageBanned,
+    });
+    expect(
+      nonReauthRenderer.root.findAllByProps({ 'data-inspection-page-recovery': true })
+    ).toHaveLength(0);
+    expect(
+      nonReauthRenderer.root.findAllByProps({ 'data-inspection-page-banned-delete': true })
+    ).toHaveLength(0);
+  });
+
   it('places a custom server operation inside the same result card', () => {
     const renderer = renderPanel(
       createItem({ action: 'delete', actionReason: 'invalid account' }),

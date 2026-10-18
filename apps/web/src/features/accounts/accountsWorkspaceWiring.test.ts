@@ -274,6 +274,7 @@ describe('accounts workspace wiring', () => {
       'batch_delete_banned_title',
       'batch_delete_banned_summary',
       'batch_delete_banned_warning',
+      'batch_delete_banned_result',
     ]) {
       expect(accounts[key], key).toBeTypeOf('string');
       expect(String(accounts[key]), key).not.toContain('?');
@@ -282,5 +283,8 @@ describe('accounts workspace wiring', () => {
     expect(String(accounts.batch_delete_banned_title)).toContain('{{count}}');
     expect(String(accounts.batch_delete_banned_summary)).toContain('{{rows}}');
     expect(String(accounts.batch_delete_banned_summary)).toContain('{{files}}');
+    expect(String(accounts.batch_delete_banned_result)).toContain('{{deleted}}');
+    expect(String(accounts.batch_delete_banned_result)).toContain('{{skipped}}');
+    expect(String(accounts.batch_delete_banned_result)).toContain('{{failed}}');
   });
 });

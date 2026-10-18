@@ -455,3 +455,40 @@ func waitForTaskStatus(t *testing.T, ctx context.Context, service *Service, id i
 		}
 	}
 }
+
+func TestIsTerminalAccountBanned(t *testing.T) {
+	tests := []struct {
+		name string
+		task model.TokenRecoveryTask
+		want bool
+	}{
+		{
+			name: "automatic terminal code",
+			task: model.TokenRecoveryTask{Status: model.TokenRecoveryStatusAutoFailedManualOnly, LastErrorCode: " account_banned "},
+			want: true,
+		},
+		{
+			name: "manual terminal message",
+			task: model.TokenRecoveryTask{Status: model.TokenRecoveryStatusManualFailedManualOnly, LastErrorMessage: "ACCOUNT_BANNED: account is disabled"},
+			want: true,
+		},
+		{
+			name: "normal reauth error",
+			task: model.TokenRecoveryTask{Status: model.TokenRecoveryStatusAutoFailedManualOnly, LastErrorCode: "http_401"},
+			want: false,
+		},
+		{
+			name: "queued ban is not terminal",
+			task: model.TokenRecoveryTask{Status: model.TokenRecoveryStatusManualQueued, LastErrorCode: "account_banned"},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsTerminalAccountBanned(tc.task); got != tc.want {
+				t.Fatalf("IsTerminalAccountBanned(%#v) = %v, want %v", tc.task, got, tc.want)
+			}
+		})
+	}
+}

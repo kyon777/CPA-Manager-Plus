@@ -16,6 +16,7 @@ import {
   loadCodexInspectionLastRun,
   resolveCodexInspectionAutoActionPlan,
   loadCodexInspectionConfigurableSettings,
+  removeCodexInspectionFiles,
   saveCodexInspectionLastRun,
   saveCodexInspectionConfigurableSettings,
   toReauthDeleteExecutionItem,
@@ -36,7 +37,12 @@ import { CodexInspectionStatusPanel } from '@/features/monitoring/components/Cod
 import { InspectionConfigDrawer } from '@/features/monitoring/components/InspectionConfigDrawer';
 import { InspectionConfigFields } from '@/features/monitoring/components/InspectionConfigFields';
 import { CodexReauthDialog } from '@/features/oauth/CodexReauthDialog';
-import type { CodexReauthTarget } from '@/features/oauth/codexReauthModel';
+import {
+  buildCodexTokenRecoveryTarget,
+  type CodexReauthTarget,
+} from '@/features/oauth/codexReauthModel';
+import { buildAccountBannedDeleteTarget } from '@/features/authFiles/model/accountBannedDelete';
+import { useCredentialRuntimeMetadata } from '@/features/accounts/hooks/useCredentialRuntimeMetadata';
 import {
   CODEX_INSPECTION_RESULT_PAGE_SIZE_OPTIONS,
   buildCodexInspectionPaginationState,
@@ -76,6 +82,12 @@ import {
 import { resolveInspectionAccountNote } from '@/features/monitoring/model/serverInspectionAccountNote';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api/authFiles';
+import type {
+  AccountBannedAuthFileDeleteTargetRequest,
+  CredentialRuntimeMetadataTarget,
+  TokenRecoveryBatchTargetRequest,
+  TokenRecoveryTask,
+} from '@/services/api';
 import { usageServiceApi } from '@/services/api/usageService';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
@@ -91,7 +103,69 @@ interface CodexInspectionPageProps {
   ) => void | Promise<void>;
   onCodexReauthStart?: (target: CodexReauthTarget) => boolean | void;
   onOpenCredential?: (target: CredentialInspectionTarget) => void;
+  onAuthFilesDeleted?: (physicalNames: string[]) => void;
 }
+
+const normalizeInspectionProvider = (value: string): string =>
+  value.trim().toLowerCase().replace(/_/g, '-');
+
+const inspectionAccountEmail = (item: CodexInspectionResultItem): string => {
+  const snapshot = item.accountSnapshot?.trim() ?? '';
+  if (snapshot.includes('@')) return snapshot;
+  const displayAccount = item.displayAccount.trim();
+  return displayAccount.includes('@') ? displayAccount : '';
+};
+
+const buildInspectionRuntimeMetadataTarget = (
+  item: CodexInspectionResultItem
+): CredentialRuntimeMetadataTarget | null => {
+  const clientKey = item.key.trim();
+  const fileName = item.fileName.trim();
+  if (!clientKey || !fileName || normalizeInspectionProvider(item.provider) !== 'codex') {
+    return null;
+  }
+  const authIndex = item.authIndex?.trim() ?? '';
+  const accountEmail = inspectionAccountEmail(item);
+  return {
+    clientKey,
+    fileName,
+    ...(authIndex ? { authIndex } : {}),
+    ...(accountEmail ? { accountEmail } : {}),
+    provider: 'codex',
+  };
+};
+
+const buildInspectionRecoveryTarget = (
+  item: CodexInspectionResultItem
+): TokenRecoveryBatchTargetRequest | null => {
+  if (!isReauthAction(item) || normalizeInspectionProvider(item.provider) !== 'codex') return null;
+  const clientKey = item.key.trim();
+  const target = buildCodexTokenRecoveryTarget({
+    account: item.displayAccount,
+    accountSnapshot: item.accountSnapshot,
+    authIndex: item.authIndex,
+    fileName: item.fileName,
+  });
+  return target && clientKey ? { clientKey, ...target } : null;
+};
+
+const buildInspectionBannedDeleteTarget = (
+  item: CodexInspectionResultItem,
+  recoveryTask: TokenRecoveryTask | null | undefined
+) =>
+  buildAccountBannedDeleteTarget(
+    {
+      clientKey: item.key,
+      fileName: item.fileName,
+      authIndex: item.authIndex,
+      accountEmail: inspectionAccountEmail(item),
+      provider: item.provider,
+      runtimeId: item.runtimeId,
+      accountId: item.accountId,
+      accountSnapshot: item.accountSnapshot,
+    },
+    recoveryTask
+  );
 
 export function CodexInspectionPage({
   embedded = false,
@@ -100,6 +174,7 @@ export function CodexInspectionPage({
   onCredentialsChanged,
   onCodexReauthStart,
   onOpenCredential,
+  onAuthFilesDeleted,
 }: CodexInspectionPageProps = {}) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -165,6 +240,8 @@ export function CodexInspectionPage({
     () => initialLastRun?.connectionFingerprint ?? null
   );
   const [executing, setExecuting] = useState(false);
+  const [pageRecoverySubmitting, setPageRecoverySubmitting] = useState(false);
+  const [pageBannedDeleteSubmitting, setPageBannedDeleteSubmitting] = useState(false);
   const [actionFilter, setActionFilter] = useState<ActionFilter>(() =>
     normalizeActionFilter(initialLastRun?.actionFilter ?? 'all')
   );
@@ -181,6 +258,8 @@ export function CodexInspectionPage({
   const activeConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
   const executionGenerationRef = useRef(0);
   const authFilesRequestGenerationRef = useRef(0);
+  const pageRecoveryGenerationRef = useRef(0);
+  const pageBannedDeleteGenerationRef = useRef(0);
   const restoredConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
   const logListRef = useRef<HTMLDivElement | null>(null);
   const executeItemsRef = useRef<
@@ -233,10 +312,14 @@ export function CodexInspectionPage({
     restoredConnectionFingerprintRef.current = connectionFingerprint;
 
     executionGenerationRef.current += 1;
+    pageRecoveryGenerationRef.current += 1;
+    pageBannedDeleteGenerationRef.current += 1;
     activeSessionIdRef.current = null;
     sessionRef.current?.stop();
     sessionRef.current = null;
     setExecuting(false);
+    setPageRecoverySubmitting(false);
+    setPageBannedDeleteSubmitting(false);
     setCodexReauthTarget(null);
 
     const restored = connectionFingerprint
@@ -983,10 +1066,222 @@ export function CodexInspectionPage({
     setResultPage(resultPagination.currentPage);
   }, [resultPage, resultPagination.currentPage]);
 
+  const pageRuntimeMetadataTargets = useMemo(
+    () =>
+      actionFilter === 'reauth'
+        ? resultPagination.pageItems.flatMap((item) => {
+            const target = buildInspectionRuntimeMetadataTarget(item);
+            return target ? [target] : [];
+          })
+        : [],
+    [actionFilter, resultPagination.pageItems]
+  );
+  const {
+    itemsByClientKey: pageRuntimeItemsByClientKey,
+    applyBatchTasks: applyPageRuntimeBatchTasks,
+  } = useCredentialRuntimeMetadata({
+    // Only inspect the Manager's redacted recovery-task rows for the visible
+    // reauth page. This deliberately never asks CPA for raw credential JSON.
+    active: actionFilter === 'reauth' && resultPagination.pageItems.length > 0,
+    managerRequestScope,
+    targets: pageRuntimeMetadataTargets,
+    fetchMetadata: false,
+    lookupRecoveryTasks: true,
+  });
+  const pageRecoveryTargets = useMemo(
+    () =>
+      actionFilter === 'reauth'
+        ? resultPagination.pageItems.flatMap((item) => {
+            const target = buildInspectionRecoveryTarget(item);
+            return target ? [target] : [];
+          })
+        : [],
+    [actionFilter, resultPagination.pageItems]
+  );
+  const pageBannedDeleteTargets = useMemo(
+    () =>
+      actionFilter === 'reauth'
+        ? resultPagination.pageItems.flatMap((item) => {
+            const target = buildInspectionBannedDeleteTarget(
+              item,
+              pageRuntimeItemsByClientKey.get(item.key.trim())?.recoveryTask
+            );
+            return target ? [target] : [];
+          })
+        : [],
+    [actionFilter, pageRuntimeItemsByClientKey, resultPagination.pageItems]
+  );
+
   const handleResultPageSizeChange = useCallback((pageSize: number) => {
     setResultPageSize(pageSize);
     setResultPage(1);
   }, []);
+
+  const handleRecoverCurrentPage = useCallback(async () => {
+    const requestConnectionFingerprint = connectionFingerprint;
+    if (
+      !managerRequestScope ||
+      pageRecoverySubmitting ||
+      pageRecoveryTargets.length === 0 ||
+      activeConnectionFingerprintRef.current !== requestConnectionFingerprint
+    ) {
+      return;
+    }
+    const requestGeneration = pageRecoveryGenerationRef.current + 1;
+    pageRecoveryGenerationRef.current = requestGeneration;
+    setPageRecoverySubmitting(true);
+    try {
+      const response = await usageServiceApi.requestTokenRecoveryManualBatch(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey,
+        [...pageRecoveryTargets]
+      );
+      if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+      const items = response.items ?? [];
+      applyPageRuntimeBatchTasks(items);
+      const submittedCount = items.filter((item) => item.task).length;
+      const failureReasons = Array.from(
+        new Set(items.map((item) => item.errorCode?.trim() ?? '').filter(Boolean))
+      );
+      const summary = t('accounts.batch_recovery_result', {
+        count: submittedCount,
+        failed: failureReasons.length,
+      });
+      showNotification(
+        failureReasons.length > 0 ? `${summary}: ${failureReasons.join(', ')}` : summary,
+        failureReasons.length > 0 ? 'warning' : 'success'
+      );
+    } catch (error) {
+      if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+      const reason = error instanceof Error ? error.message.trim() : '';
+      showNotification(reason || t('accounts.batch_recovery_unavailable'), 'error');
+    } finally {
+      if (pageRecoveryGenerationRef.current === requestGeneration) {
+        setPageRecoverySubmitting(false);
+      }
+    }
+  }, [
+    applyPageRuntimeBatchTasks,
+    connectionFingerprint,
+    managerRequestScope,
+    pageRecoverySubmitting,
+    pageRecoveryTargets,
+    showNotification,
+    t,
+  ]);
+
+  const deleteCurrentPageBannedCredentials = useCallback(
+    async (
+      targets: readonly AccountBannedAuthFileDeleteTargetRequest[],
+      requestConnectionFingerprint: string | null
+    ) => {
+      if (
+        !managerRequestScope ||
+        pageBannedDeleteSubmitting ||
+        targets.length === 0 ||
+        activeConnectionFingerprintRef.current !== requestConnectionFingerprint
+      ) {
+        return;
+      }
+      const requestGeneration = pageBannedDeleteGenerationRef.current + 1;
+      pageBannedDeleteGenerationRef.current = requestGeneration;
+      setPageBannedDeleteSubmitting(true);
+      try {
+        const response = await usageServiceApi.deleteAccountBannedAuthFilesBatch(
+          managerRequestScope.apiBase,
+          managerRequestScope.managementKey,
+          [...targets]
+        );
+        if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+        const deletedPhysicalNames = Array.from(
+          new Set(
+            (response.deleted ?? [])
+              .map((item) => item.physicalName?.trim() || item.fileName.trim())
+              .filter(Boolean)
+          )
+        );
+        if (deletedPhysicalNames.length > 0) {
+          const deletedSet = new Set(deletedPhysicalNames);
+          setCurrentAuthFiles((previous) =>
+            previous.filter((file) => !deletedSet.has(file.name.trim()))
+          );
+          setResult((previous) =>
+            previous ? removeCodexInspectionFiles(previous, deletedPhysicalNames) : previous
+          );
+          onAuthFilesDeleted?.(deletedPhysicalNames);
+        }
+        const skipped = response.skipped ?? [];
+        const failed = response.failed ?? [];
+        const firstReason = [...failed, ...skipped]
+          .map((item) => item.message?.trim() || item.code?.trim() || '')
+          .find(Boolean);
+        const summary = t('accounts.batch_delete_banned_result', {
+          deleted: response.deleted?.length ?? 0,
+          skipped: skipped.length,
+          failed: failed.length,
+        });
+        showNotification(
+          firstReason ? `${summary}: ${firstReason}` : summary,
+          failed.length > 0 ? 'error' : skipped.length > 0 ? 'warning' : 'success'
+        );
+      } catch (error) {
+        if (activeConnectionFingerprintRef.current !== requestConnectionFingerprint) return;
+        const reason = error instanceof Error ? error.message.trim() : '';
+        showNotification(reason || t('notification.delete_failed'), 'error');
+      } finally {
+        if (pageBannedDeleteGenerationRef.current === requestGeneration) {
+          setPageBannedDeleteSubmitting(false);
+        }
+      }
+    },
+    [
+      managerRequestScope,
+      onAuthFilesDeleted,
+      pageBannedDeleteSubmitting,
+      showNotification,
+      t,
+    ]
+  );
+
+  const handleDeleteCurrentPageBanned = useCallback(() => {
+    if (pageBannedDeleteTargets.length === 0) return;
+    const targets = [...pageBannedDeleteTargets];
+    const confirmationConnectionFingerprint = connectionFingerprint;
+    const openSecondConfirmation = () => {
+      if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
+      showConfirmation({
+        title: t('auth_files.delete_many_second_title'),
+        message: t('auth_files.delete_many_second_confirm', {
+          count: targets.length,
+          scope: t('auth_files.delete_scope_selected'),
+        }),
+        confirmText: t('auth_files.delete_second_action'),
+        cancelText: t('common.cancel'),
+        variant: 'danger',
+        onConfirm: () => {
+          if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
+          void deleteCurrentPageBannedCredentials(targets, confirmationConnectionFingerprint);
+        },
+      });
+    };
+    showConfirmation({
+      title: t('accounts.batch_delete_banned_title', { count: targets.length }),
+      message: t('accounts.batch_delete_banned_summary', {
+        rows: targets.length,
+        files: new Set(targets.map((target) => target.fileName)).size,
+      }),
+      confirmText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      variant: 'danger',
+      onConfirm: openSecondConfirmation,
+    });
+  }, [
+    connectionFingerprint,
+    deleteCurrentPageBannedCredentials,
+    pageBannedDeleteTargets,
+    showConfirmation,
+    t,
+  ]);
 
   const handleExecutePlanned = useCallback(() => {
     if (!result) return;
@@ -1445,6 +1740,10 @@ export function CodexInspectionPage({
         pendingActionCount={pendingActionCount}
         manualActionCount={filterCounts.reauth}
         reauthActionCount={reauthResults.length}
+        pageRecoveryCount={pageRecoveryTargets.length}
+        pageBannedDeleteCount={pageBannedDeleteTargets.length}
+        pageRecoverySubmitting={pageRecoverySubmitting}
+        pageBannedDeleteSubmitting={pageBannedDeleteSubmitting}
         handlingFilterCounts={handlingFilterCounts}
         filterCounts={filterCounts}
         handlingFilter={handlingFilter}
@@ -1463,6 +1762,12 @@ export function CodexInspectionPage({
         onExecutePlanned={handleExecutePlanned}
         onExecuteSingle={handleExecuteSingle}
         onReauthAccount={handleOpenCodexReauth}
+        onRecoverCurrentPage={
+          actionFilter === 'reauth' ? handleRecoverCurrentPage : undefined
+        }
+        onDeleteCurrentPageBanned={
+          actionFilter === 'reauth' ? handleDeleteCurrentPageBanned : undefined
+        }
         onDeleteReauthPlanned={reauthResults.length > 0 ? handleDeleteReauthPlanned : undefined}
         onDeleteReauthSingle={reauthResults.length > 0 ? handleDeleteSingleReauth : undefined}
         onOpenCredential={
