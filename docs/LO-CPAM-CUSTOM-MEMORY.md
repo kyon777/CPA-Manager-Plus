@@ -220,3 +220,37 @@ must not call it. During every future "update CPAM" merge, preserve:
 
 The 2026-10-15 paging/global-summary sections above are historic design
 records. This section is the current production behavior if they conflict.
+
+## 2026-10-18: Inspection Current-Page Operation Feedback and Exact EOF 500
+
+This customization is CPAM-only. It does not change CPA Core, `cli-proxy-api`,
+the usage collector, scheduling, quota calculation, or billing data.
+
+- In the local Codex inspection `reauth` result tab, **Update current-page
+  credentials** must lock immediately at submission and remain locked while
+  the Manager's existing redacted token-recovery task is `queued` or `running`.
+  It must use the existing lightweight
+  `POST /v0/management/token-recovery/query` polling path only; it must not
+  reload raw auth JSON, invoke a quota refresh, or force CPA to probe the
+  credential.
+- After a manual recovery request returns, the inspection toolbar keeps a
+  persistent visible summary of queued/running/succeeded/failed targets and
+  the sanitized Manager error reason. A page refresh may reconstruct a lock
+  from an already-pending durable task, so a duplicated recovery request is
+  not submitted.
+- In the same `reauth` result tab, **Delete current-page banned credentials**
+  locks from the first confirmation through the final Manager response. Its
+  persistent result must separately show `deleted`, `skipped`, and `failed`
+  counts plus bounded safe per-file reason codes. Only Manager-confirmed
+  physical filenames are removed from local inspection cards; skipped/failed
+  cards intentionally remain visible for manual follow-up.
+- Keep the Manager delete endpoint's existing safety behavior and bounded
+  concurrency. Do not turn skipped identities into deletes merely to make the
+  UI count look complete.
+- Priority demotion remains narrow: HTTP `502`, HTTP `503`, and HTTP `429`
+  only with exact JSON detail `Rate limit exceeded` are eligible. Add exactly
+  one further event: HTTP `500` whose raw failure body contains both
+  `Post "https://chatgpt.com/backend-api/codex/responses":` and
+  `unexpected EOF` (case-insensitive). Generic HTTP 500, other endpoints, and
+  other EOF messages must never be demoted. The existing peer-priority
+  rebalance and zero floor remain unchanged.

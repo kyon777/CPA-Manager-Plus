@@ -376,6 +376,40 @@
   min-width: 0;
 }
 
+.inspectionPageOperationFeedback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--inspect-accent) 22%, var(--inspect-line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--inspect-accent) 5%, var(--inspect-surface));
+  color: var(--inspect-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.inspectionPageOperationFeedbackItem {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.inspectionPageOperationFeedbackLabel {
+  color: var(--inspect-ink);
+  font-weight: 700;
+}
+
+.inspectionPageOperationFeedbackFailure {
+  max-width: min(560px, 100%);
+  overflow: hidden;
+  color: var(--data-badge-danger-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .filterRow {
   display: flex;
   align-items: center;

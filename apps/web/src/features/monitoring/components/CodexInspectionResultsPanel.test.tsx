@@ -213,6 +213,51 @@ describe('CodexInspectionResultsPanel', () => {
     ).toHaveLength(0);
   });
 
+  it('renders durable recovery and banned-delete feedback below the page actions', () => {
+    const renderer = renderPanel(createItem({ action: 'reauth' }), {
+      actionFilter: 'reauth',
+      pageRecoveryCount: 2,
+      pageBannedDeleteCount: 1,
+      pageRecoverySubmitting: true,
+      pageRecoveryProgress: {
+        active: true,
+        submitting: false,
+        queued: 1,
+        running: 1,
+        succeeded: 0,
+        failed: 0,
+        failureReasons: [],
+      },
+      pageBannedDeleteOperation: {
+        phase: 'completed',
+        error: '',
+        result: {
+          requested: 2,
+          deleted: 1,
+          skipped: 0,
+          failed: 1,
+          details: [{ fileName: 'failed.json', code: 'cpa_timeout' }],
+        },
+      },
+      onRecoverCurrentPage: vi.fn(),
+      onDeleteCurrentPageBanned: vi.fn(),
+    });
+
+    expect(
+      renderer.root.findByProps({ 'data-inspection-page-recovery-status': true })
+    ).toBeDefined();
+    expect(
+      renderer.root.findByProps({ 'data-inspection-page-banned-delete-status': true })
+    ).toBeDefined();
+    expect(collectText(renderer)).toEqual(
+      expect.arrayContaining([
+        'accounts.inspection_page_recovery_progress',
+        'accounts.inspection_page_delete_result',
+        'accounts.inspection_page_delete_detail',
+      ])
+    );
+  });
+
   it('shows proxy replacement only for the proxy-abnormal filter', () => {
     const onReplaceCurrentPageProxy = vi.fn();
     const renderer = renderPanel(createItem({ proxySuspect: true }), {

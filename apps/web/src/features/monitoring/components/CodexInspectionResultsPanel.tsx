@@ -23,6 +23,11 @@ import {
   type InspectionProbeSource,
   type InspectionProbeState,
 } from '@/features/monitoring/model/codexInspectionPresentation';
+import {
+  idleInspectionPageDeleteOperation,
+  type InspectionPageDeleteOperation,
+  type InspectionPageRecoveryProgress,
+} from '@/features/monitoring/model/inspectionPageBatchOperation';
 import { CodexInspectionQuotaWindows } from '@/features/monitoring/components/CodexInspectionQuotaWindows';
 import { Panel } from '@/features/monitoring/components/CodexInspectionPanels';
 import { useNotificationStore } from '@/stores';
@@ -41,6 +46,9 @@ type CodexInspectionResultsPanelProps = {
   pageProxyReplacementCount?: number;
   pageRecoverySubmitting?: boolean;
   pageBannedDeleteSubmitting?: boolean;
+  pageBannedDeleteBusy?: boolean;
+  pageRecoveryProgress?: InspectionPageRecoveryProgress | null;
+  pageBannedDeleteOperation?: InspectionPageDeleteOperation;
   handlingFilterCounts: Record<HandlingFilter, number>;
   filterCounts: Record<ActionFilter, number>;
   handlingFilter: HandlingFilter;
@@ -90,6 +98,9 @@ export function CodexInspectionResultsPanel({
   pageProxyReplacementCount = 0,
   pageRecoverySubmitting = false,
   pageBannedDeleteSubmitting = false,
+  pageBannedDeleteBusy = false,
+  pageRecoveryProgress = null,
+  pageBannedDeleteOperation = idleInspectionPageDeleteOperation,
   filterCounts,
   actionFilter,
   pagination,
@@ -191,6 +202,56 @@ export function CodexInspectionResultsPanel({
     );
   };
 
+  const recoveryFeedback = pageRecoveryProgress ? (
+    <div
+      className={styles.inspectionPageOperationFeedbackItem}
+      data-inspection-page-recovery-status={true}
+    >
+      <span className={styles.inspectionPageOperationFeedbackLabel}>
+        {pageRecoveryProgress.submitting
+          ? t('accounts.inspection_page_recovery_submitting')
+          : t('accounts.inspection_page_recovery_progress', {
+              queued: pageRecoveryProgress.queued,
+              running: pageRecoveryProgress.running,
+              succeeded: pageRecoveryProgress.succeeded,
+              failed: pageRecoveryProgress.failed,
+            })}
+      </span>
+      {!pageRecoveryProgress.submitting
+        ? pageRecoveryProgress.failureReasons.map((reason) => (
+            <span key={reason} className={styles.inspectionPageOperationFeedbackFailure}>
+              {t('accounts.inspection_page_recovery_failure_reason', { reason })}
+            </span>
+          ))
+        : null}
+    </div>
+  ) : null;
+
+  const deleteFeedback = (() => {
+    if (pageBannedDeleteOperation.phase === 'idle') return null;
+    if (pageBannedDeleteOperation.phase === 'awaiting_first_confirmation') {
+      return t('accounts.inspection_page_delete_waiting_confirmation');
+    }
+    if (pageBannedDeleteOperation.phase === 'awaiting_second_confirmation') {
+      return t('accounts.inspection_page_delete_waiting_second_confirmation');
+    }
+    if (pageBannedDeleteOperation.phase === 'deleting') {
+      return t('accounts.inspection_page_delete_in_progress');
+    }
+    if (pageBannedDeleteOperation.error) {
+      return t('accounts.inspection_page_delete_failed', {
+        reason: pageBannedDeleteOperation.error,
+      });
+    }
+    if (!pageBannedDeleteOperation.result) return null;
+    return t('accounts.inspection_page_delete_result', {
+      deleted: pageBannedDeleteOperation.result.deleted,
+      skipped: pageBannedDeleteOperation.result.skipped,
+      failed: pageBannedDeleteOperation.result.failed,
+    });
+  })();
+  const deleteFeedbackDetails = pageBannedDeleteOperation.result?.details ?? [];
+
   const probeSourceLabel = (source: InspectionProbeSource) =>
     t(`monitoring.codex_inspection_probe_source_${source}`);
   const probeStateLabel = (state: InspectionProbeState) =>
@@ -282,7 +343,7 @@ export function CodexInspectionResultsPanel({
                     !result ||
                     isInspectionInFlight ||
                     executing ||
-                    pageBannedDeleteSubmitting ||
+                    pageBannedDeleteBusy ||
                     pageBannedDeleteCount === 0
                   }
                 >
@@ -324,6 +385,31 @@ export function CodexInspectionResultsPanel({
               </Button>
             </div>
           </div>
+
+          {actionFilter === 'reauth' && (recoveryFeedback || deleteFeedback) ? (
+            <div className={styles.inspectionPageOperationFeedback} aria-live="polite">
+              {recoveryFeedback}
+              {deleteFeedback ? (
+                <div
+                  className={styles.inspectionPageOperationFeedbackItem}
+                  data-inspection-page-banned-delete-status={true}
+                >
+                  <span className={styles.inspectionPageOperationFeedbackLabel}>{deleteFeedback}</span>
+                  {deleteFeedbackDetails.map((detail) => (
+                    <span
+                      key={`${detail.fileName}\u0000${detail.code}`}
+                      className={styles.inspectionPageOperationFeedbackFailure}
+                    >
+                      {t('accounts.inspection_page_delete_detail', {
+                        file: detail.fileName,
+                        reason: detail.code,
+                      })}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className={styles.resultCardList}>
             {filteredResults.length > 0 ? (
