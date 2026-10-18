@@ -31,9 +31,9 @@ const (
 // ServerErrorPriorityDemotionWorker rebalances a credential's priority for
 // each newly persisted HTTP 502 or 503 request-monitoring event, plus HTTP 429
 // only when its raw response body explicitly reports
-// {"detail":"Rate limit exceeded"}, and the narrowly-qualified HTTP 500
-// Codex responses "unexpected EOF" transport failure. The target is moved
-// below the highest
+// {"detail":"Rate limit exceeded"}, and narrowly-qualified HTTP 500 Codex
+// responses transport failures (unexpected EOF or the exact proxy CONNECT 407
+// authentication response). The target is moved below the highest
 // eligible peer when it is currently above that peer; otherwise it moves down
 // one step. The collector only forwards inserted event hashes, so a historical
 // event is never replayed by a page refresh or process restart.
@@ -448,7 +448,7 @@ func isServerErrorPriorityDemotionEvent(event usage.Event) bool {
 	case http.StatusTooManyRequests:
 		return isQualifiedRateLimit429(event.FailBody)
 	case http.StatusInternalServerError:
-		return isQualifiedCodexResponsesEOF500(event.FailBody)
+		return isQualifiedCodexResponsesTransportFailure500(event.FailBody)
 	default:
 		return false
 	}
@@ -467,14 +467,20 @@ func isQualifiedRateLimit429(failBody string) bool {
 	return response.Detail == "Rate limit exceeded"
 }
 
-// isQualifiedCodexResponsesEOF500 intentionally admits only the exact upstream
-// transport failure emitted while CPA calls the Codex responses endpoint. Generic
-// HTTP 500 errors must not change scheduling priority because they could be caused
-// by an account-local failure rather than a transient route/proxy failure.
-func isQualifiedCodexResponsesEOF500(failBody string) bool {
+// isQualifiedCodexResponsesTransportFailure500 intentionally admits only two
+// exact upstream transport failures emitted while CPA calls the Codex responses
+// endpoint. Generic HTTP 500 errors, generic proxy 407 errors, and failures for
+// other endpoints must not change scheduling priority.
+func isQualifiedCodexResponsesTransportFailure500(failBody string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(failBody))
-	return strings.Contains(normalized, `post "https://chatgpt.com/backend-api/codex/responses":`) &&
-		strings.Contains(normalized, "unexpected eof")
+	if !strings.Contains(normalized, `post "https://chatgpt.com/backend-api/codex/responses":`) {
+		return false
+	}
+	return strings.Contains(normalized, "unexpected eof") ||
+		strings.Contains(
+			normalized,
+			"utls: dial upstream: proxy connect returned status 407 proxy authentication required",
+		)
 }
 
 func (candidate serverErrorPriorityDemotionCandidate) identity() (cpaauthfiles.Identity, error) {

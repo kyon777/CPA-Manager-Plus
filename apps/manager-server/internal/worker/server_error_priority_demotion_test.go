@@ -328,7 +328,7 @@ func TestServerErrorPriorityDemotionWorkerDoesNotMakePriorityNegative(t *testing
 	}
 }
 
-func TestServerErrorPriorityDemotionCandidateAccepts502503Qualified429AndExactEOF500(t *testing.T) {
+func TestServerErrorPriorityDemotionCandidateAccepts502503Qualified429AndExactCodexTransport500(t *testing.T) {
 	base := usage.Event{
 		Failed:           true,
 		AuthFileSnapshot: "codex-auth.json",
@@ -358,6 +358,13 @@ func TestServerErrorPriorityDemotionCandidateAccepts502503Qualified429AndExactEO
 		t.Fatal("HTTP 500 with the exact Codex responses unexpected EOF must produce a priority-demotion candidate")
 	}
 
+	qualifiedProxyAuthentication := base
+	qualifiedProxyAuthentication.FailStatusCode = http.StatusInternalServerError
+	qualifiedProxyAuthentication.FailBody = `Post "https://chatgpt.com/backend-api/codex/responses": utls: dial upstream: proxy CONNECT returned status 407 Proxy Authentication Required`
+	if _, ok := serverErrorPriorityDemotionCandidateFromEvent(qualifiedProxyAuthentication, "http://cpa", "management-key"); !ok {
+		t.Fatal("HTTP 500 with the exact Codex responses proxy CONNECT 407 failure must produce a priority-demotion candidate")
+	}
+
 	for _, testCase := range []struct {
 		name       string
 		statusCode int
@@ -370,6 +377,8 @@ func TestServerErrorPriorityDemotionCandidateAccepts502503Qualified429AndExactEO
 		{name: "500 with unexpected EOF for a different endpoint", statusCode: http.StatusInternalServerError, failBody: `Post "https://chatgpt.com/backend-api/conversations": unexpected EOF`},
 		{name: "500 with Codex endpoint but a different error", statusCode: http.StatusInternalServerError, failBody: `Post "https://chatgpt.com/backend-api/codex/responses": connection reset by peer`},
 		{name: "500 with bare unexpected EOF", statusCode: http.StatusInternalServerError, failBody: "unexpected EOF"},
+		{name: "500 with proxy CONNECT 407 for a different endpoint", statusCode: http.StatusInternalServerError, failBody: `Post "https://chatgpt.com/backend-api/conversations": utls: dial upstream: proxy CONNECT returned status 407 Proxy Authentication Required`},
+		{name: "500 with Codex endpoint and generic proxy 407", statusCode: http.StatusInternalServerError, failBody: `Post "https://chatgpt.com/backend-api/codex/responses": proxy CONNECT returned status 407 Proxy Authentication Required`},
 		{name: "gateway timeout", statusCode: http.StatusGatewayTimeout},
 		{name: "network authentication required", statusCode: http.StatusNetworkAuthenticationRequired},
 		{name: "out of range", statusCode: 600},

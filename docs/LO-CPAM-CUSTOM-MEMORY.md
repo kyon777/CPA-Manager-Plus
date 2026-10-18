@@ -68,7 +68,7 @@ USAGE_QUERY_LIMIT=50000
 
 ### 错误处理与优先级
 
-- 只对 HTTP `502`、`503` 自动降低优先级；不是所有 50x。
+- 自动降低优先级的基础状态是 HTTP `502`、`503`；不是所有 50x。另有两类精确限定的 HTTP `500` Codex responses 传输失败，见下方规则。
 - HTTP `429` 只有同时满足响应体 `{"detail":"Rate limit exceeded"}` 才进入限流降优先级路径，普通 429 不触发。
 - 降优先级下限为 0。
 - 降级时排除当前账号，读取其他账号最高优先级：若最高值低于当前值，目标设为“其他最高值 - 1”；否则当前值减 1；最终 clamp 到 0，避免高优先级账号降一级后仍持续被选中。
@@ -101,7 +101,7 @@ USAGE_QUERY_LIMIT=50000
 ### 简体中文策略文案
 
 - `accountPolicy.serverErrorPriorityDemotion_*` 的简体中文资源必须保持 UTF-8 正常中文，禁止 `????` 乱码回归。
-- 文案必须与实际策略一致：只处理新入库的 HTTP `502`、`503`，或响应体精确为 `{"detail":"Rate limit exceeded"}` 的 HTTP `429`；比较同 Provider 的已启用账号优先级，按 peer-rebalance 规则降级，最低为 0。
+- 文案必须与实际策略一致：只处理新入库的 HTTP `502`、`503`，响应体精确为 `{"detail":"Rate limit exceeded"}` 的 HTTP `429`，以及下方明确列出的两类 HTTP `500` Codex responses 传输失败；比较同 Provider 的已启用账号优先级，按 peer-rebalance 规则降级，最低为 0。
 
 ### API Key / 插件桥接
 
@@ -248,9 +248,11 @@ the usage collector, scheduling, quota calculation, or billing data.
   concurrency. Do not turn skipped identities into deletes merely to make the
   UI count look complete.
 - Priority demotion remains narrow: HTTP `502`, HTTP `503`, and HTTP `429`
-  only with exact JSON detail `Rate limit exceeded` are eligible. Add exactly
-  one further event: HTTP `500` whose raw failure body contains both
-  `Post "https://chatgpt.com/backend-api/codex/responses":` and
-  `unexpected EOF` (case-insensitive). Generic HTTP 500, other endpoints, and
-  other EOF messages must never be demoted. The existing peer-priority
-  rebalance and zero floor remain unchanged.
+  only with exact JSON detail `Rate limit exceeded` are eligible. HTTP `500`
+  is eligible only when its raw failure body contains the Codex responses
+  request marker `Post "https://chatgpt.com/backend-api/codex/responses":`
+  (case-insensitive) plus either `unexpected EOF` or the exact proxy transport
+  marker `utls: dial upstream: proxy CONNECT returned status 407 Proxy
+  Authentication Required` (case-insensitive). Generic HTTP 500, generic
+  proxy 407, other endpoints, and other EOF messages must never be demoted.
+  The existing peer-priority rebalance and zero floor remain unchanged.
