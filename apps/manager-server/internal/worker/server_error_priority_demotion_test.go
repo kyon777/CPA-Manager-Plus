@@ -328,7 +328,7 @@ func TestServerErrorPriorityDemotionWorkerDoesNotMakePriorityNegative(t *testing
 	}
 }
 
-func TestServerErrorPriorityDemotionCandidateAccepts502503AndQualified429(t *testing.T) {
+func TestServerErrorPriorityDemotionCandidateAccepts502503Qualified429AndExactEOF500(t *testing.T) {
 	base := usage.Event{
 		Failed:           true,
 		AuthFileSnapshot: "codex-auth.json",
@@ -351,6 +351,13 @@ func TestServerErrorPriorityDemotionCandidateAccepts502503AndQualified429(t *tes
 		t.Fatal("HTTP 429 with the TokenAcquisition rate-limit response must produce a priority-demotion candidate")
 	}
 
+	qualifiedEOF := base
+	qualifiedEOF.FailStatusCode = http.StatusInternalServerError
+	qualifiedEOF.FailBody = `Post "https://chatgpt.com/backend-api/codex/responses": unexpected EOF`
+	if _, ok := serverErrorPriorityDemotionCandidateFromEvent(qualifiedEOF, "http://cpa", "management-key"); !ok {
+		t.Fatal("HTTP 500 with the exact Codex responses unexpected EOF must produce a priority-demotion candidate")
+	}
+
 	for _, testCase := range []struct {
 		name       string
 		statusCode int
@@ -360,6 +367,9 @@ func TestServerErrorPriorityDemotionCandidateAccepts502503AndQualified429(t *tes
 		{name: "429 with a different detail", statusCode: http.StatusTooManyRequests, failBody: `{"detail":"Too many requests"}`},
 		{name: "429 with non-json body", statusCode: http.StatusTooManyRequests, failBody: "Rate limit exceeded"},
 		{name: "500 even with matching body", statusCode: http.StatusInternalServerError, failBody: `{"detail":"Rate limit exceeded"}`},
+		{name: "500 with unexpected EOF for a different endpoint", statusCode: http.StatusInternalServerError, failBody: `Post "https://chatgpt.com/backend-api/conversations": unexpected EOF`},
+		{name: "500 with Codex endpoint but a different error", statusCode: http.StatusInternalServerError, failBody: `Post "https://chatgpt.com/backend-api/codex/responses": connection reset by peer`},
+		{name: "500 with bare unexpected EOF", statusCode: http.StatusInternalServerError, failBody: "unexpected EOF"},
 		{name: "gateway timeout", statusCode: http.StatusGatewayTimeout},
 		{name: "network authentication required", statusCode: http.StatusNetworkAuthenticationRequired},
 		{name: "out of range", statusCode: 600},
