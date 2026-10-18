@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
@@ -8,6 +8,8 @@ import {
   findMissingEnabledProxyURLs,
   normalizeProxyFilterURLs,
 } from '@/features/accounts/model/proxyFilter';
+import { proxyReplacementFingerprint } from '@/features/accounts/model/proxyReplacement';
+import { usageServiceApi, type ProxyPoolState } from '@/services/api/usageService';
 import styles from './ProxyFilterModal.module.scss';
 
 type ProxyFilterModalProps = {
@@ -22,6 +24,10 @@ type ProxyFilterModalProps = {
   saving: boolean;
   savedURLs: readonly string[];
   error: string;
+  managerRequestScope?: {
+    apiBase: string;
+    managementKey?: string;
+  };
   onClose: () => void;
   onSave: (urls: string[]) => Promise<string[]>;
   onCopy: (text: string) => Promise<void>;
@@ -41,6 +47,7 @@ export function ProxyFilterModal({
   saving,
   savedURLs,
   error,
+  managerRequestScope,
   onClose,
   onSave,
   onCopy,
@@ -48,6 +55,9 @@ export function ProxyFilterModal({
   const { t } = useTranslation();
   const [inputOverride, setInputOverride] = useState<{ key: string; value: string } | null>(null);
   const [missingURLs, setMissingURLs] = useState<string[] | null>(null);
+  const [poolStates, setPoolStates] = useState<ProxyPoolState[]>([]);
+  const [poolError, setPoolError] = useState('');
+  const [restoringFingerprint, setRestoringFingerprint] = useState('');
 
   const savedInput = savedURLs.join('\n');
   const savedInputKey = `${sessionID}\u0000${savedInput}`;
@@ -55,6 +65,42 @@ export function ProxyFilterModal({
 
   const inputURLs = useMemo(() => parseInput(input), [input]);
   const enabledCount = Math.max(0, enabledCredentialCount);
+  const poolStateByFingerprint = useMemo(
+    () => new Map(poolStates.map((state) => [state.fingerprint, state] as const)),
+    [poolStates]
+  );
+  const suspectedSavedURLs = useMemo(
+    () =>
+      normalizeProxyFilterURLs(savedURLs).flatMap((url) => {
+        const fingerprint = proxyReplacementFingerprint(url);
+        const state = poolStateByFingerprint.get(fingerprint);
+        return state?.status === 'suspect' ? [{ url, fingerprint, state }] : [];
+      }),
+    [poolStateByFingerprint, savedURLs]
+  );
+
+  useEffect(() => {
+    let active = true;
+    setPoolStates([]);
+    setPoolError('');
+    setRestoringFingerprint('');
+    if (!open || !managerRequestScope) return () => {
+      active = false;
+    };
+    void usageServiceApi
+      .listProxyPoolStates(managerRequestScope.apiBase, managerRequestScope.managementKey)
+      .then((response) => {
+        if (!active) return;
+        setPoolStates(Array.isArray(response.items) ? response.items : []);
+      })
+      .catch((loadError) => {
+        if (!active) return;
+        setPoolError(loadError instanceof Error ? loadError.message : String(loadError));
+      });
+    return () => {
+      active = false;
+    };
+  }, [managerRequestScope, open, sessionID]);
 
   const handleSave = async () => {
     try {
@@ -72,8 +118,29 @@ export function ProxyFilterModal({
     setMissingURLs(findMissingEnabledProxyURLs(inputURLs, files, enabledProxyURLs));
   };
 
+  const handleRestore = async (fingerprint: string) => {
+    if (!managerRequestScope || !fingerprint) return;
+    setRestoringFingerprint(fingerprint);
+    setPoolError('');
+    try {
+      const restored = await usageServiceApi.restoreProxyPoolState(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey,
+        fingerprint
+      );
+      setPoolStates((current) => {
+        const next = current.filter((entry) => entry.fingerprint !== restored.fingerprint);
+        return [...next, restored];
+      });
+    } catch (restoreError) {
+      setPoolError(restoreError instanceof Error ? restoreError.message : String(restoreError));
+    } finally {
+      setRestoringFingerprint('');
+    }
+  };
+
   const resultText = missingURLs?.join('\n') ?? '';
-  const busy = loading || saving;
+  const busy = loading || saving || Boolean(restoringFingerprint);
 
   return (
     <Modal
@@ -132,6 +199,34 @@ export function ProxyFilterModal({
           <p className={styles.loading}>{t('accounts.proxy_filter_credentials_loading')}</p>
         ) : null}
         {credentialsError ? <div className={styles.error}>{credentialsError}</div> : null}
+        {poolError ? <div className={styles.error}>{poolError}</div> : null}
+        {suspectedSavedURLs.length > 0 ? (
+          <section className={styles.poolState} aria-live="polite">
+            <strong>{t('accounts.proxy_pool_suspect_count', { count: suspectedSavedURLs.length })}</strong>
+            <p>{t('accounts.proxy_pool_suspect_hint')}</p>
+            <div className={styles.poolStateList}>
+              {suspectedSavedURLs.map(({ url, fingerprint, state }) => (
+                <div
+                  key={fingerprint}
+                  className={styles.poolStateRow}
+                  data-proxy-pool-suspect={fingerprint}
+                >
+                  <code title={url}>{url}</code>
+                  <span>{t(`accounts.proxy_pool_reason_${state.lastFailureReason || 'unknown'}`)}</span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleRestore(fingerprint)}
+                    loading={restoringFingerprint === fingerprint}
+                    disabled={busy}
+                  >
+                    {t('accounts.proxy_pool_restore')}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
         {missingURLs !== null ? (
           <section className={styles.result} aria-live="polite">
             <div className={styles.resultHeader}>

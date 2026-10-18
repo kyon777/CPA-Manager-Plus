@@ -291,6 +291,7 @@ func runServer() {
 		))
 		serverApp.AppContext().TokenRecoveryService.Start(ctx)
 		codexInspectionWorker.Start(ctx)
+		serverApp.AppContext().ProxyReplacementService.Start(ctx)
 		accountHistoryRollupWorker.Start(ctx)
 		usageDerivedRollupWorker.Start(ctx)
 		if usageHourlyAggregateWorker != nil {
@@ -343,6 +344,9 @@ func runServer() {
 	stopCodexInspectionWorker(codexInspectionWorker, 20*time.Second)
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
+	if err := serverApp.AppContext().ProxyReplacementService.StopAndWait(shutdownCtx); err != nil {
+		log.Printf("shutdown proxy replacement worker: %v", err)
+	}
 	collectorWorker.Stop(context.Background())
 	if pprofServer != nil {
 		if err := pprofServer.Shutdown(shutdownCtx); err != nil {

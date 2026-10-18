@@ -16,6 +16,7 @@ import (
 	authfilesbanneddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbanneddelete"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	credentialruntimesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialruntime"
+	proxyreplacementsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyreplacement"
 	tokenrecoverysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenrecovery"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
@@ -165,6 +166,44 @@ func TestRouterRoutesAccountBannedDeleteBeforeCoreManagementProxy(t *testing.T) 
 		t.Fatalf("route status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestRouterRoutesProxyReplacementBeforeCoreManagementProxy(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "router-proxy-replacement.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const adminKey = "cpamp_router_proxy_replacement"
+	credential, err := security.NewAdminCredential(adminKey, "test")
+	if err != nil {
+		t.Fatalf("new admin credential: %v", err)
+	}
+	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
+		t.Fatalf("save admin credential: %v", err)
+	}
+	appContext := &app.Context{
+		Config:           config.Config{CORSOrigins: []string{"*"}},
+		AdminAuthService: adminauthsvc.New(config.Config{}, st),
+		ProxyReplacementService: proxyreplacementsvc.NewWithOptions(proxyreplacementsvc.Options{
+			PoolState: routerProxyReplacementPool{},
+		}),
+	}
+	handler := New(appContext)
+	request := httptest.NewRequest(http.MethodGet, "/v0/management/proxy-replacements/proxy-pool", nil)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"items"`)) {
+		t.Fatalf("route status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type routerProxyReplacementPool struct{}
+
+func (routerProxyReplacementPool) List(context.Context) ([]model.ProxyPoolState, error) {
+	return []model.ProxyPoolState{}, nil
+}
+func (routerProxyReplacementPool) MarkSuspect(context.Context, string, string) error { return nil }
 
 type routerBannedRecoveryLookup struct{}
 

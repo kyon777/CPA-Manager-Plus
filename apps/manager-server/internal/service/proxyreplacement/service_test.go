@@ -33,6 +33,16 @@ func TestPlanPoolPrefersUnusedThenRotatesAllNormalCandidates(t *testing.T) {
 	}
 }
 
+func TestSafeTaskErrorRedactsProxyURLInsideStructuredError(t *testing.T) {
+	message := safeTaskError(errors.New(`CPA rejected {"proxy_url":"http://user:password@proxy.example:8080/path"}`))
+	if strings.Contains(message, "user:password@proxy.example") || strings.Contains(message, "http://") {
+		t.Fatalf("proxy URL leaked in task error: %q", message)
+	}
+	if !strings.Contains(message, "[redacted-url]") {
+		t.Fatalf("task error lost redaction marker: %q", message)
+	}
+}
+
 func TestWorkerResumesWithoutOverwritingChangedProxy(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
@@ -69,6 +79,48 @@ func TestWorkerResumesWithoutOverwritingChangedProxy(t *testing.T) {
 	}
 }
 
+func TestWorkerUsesTargetedProxyLookupWithoutRefetchingFullInventory(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "alice.json", "42", "alice@example.com", "http://old", false),
+	}}
+	service := newWorkerService(tasks, authFiles, nil)
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source:          model.ProxyReplacementSourceBatchUniform,
+		Mode:            model.ProxyReplacementModeUniform,
+		UniformProxyURL: "http://new",
+		Targets: []model.ProxyReplacementTarget{{
+			ClientKey: "alice", FileName: "alice.json", AuthIndex: "42", AccountEmail: "alice@example.com", Provider: "codex", RuntimeID: "runtime-1",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create preview: %v", err)
+	}
+	if authFiles.fetchCalls != 1 {
+		t.Fatalf("preview full inventory reads = %d, want 1", authFiles.fetchCalls)
+	}
+	authFiles.failFullFetchAfter = authFiles.fetchCalls
+	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := service.RunPending(context.Background()); err != nil {
+		t.Fatalf("run pending: %v", err)
+	}
+	page, err := tasks.GetTask(context.Background(), preview.Task.ID, 1, 50)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got := page.Items[0].Status; got != model.ProxyReplacementItemUpdated {
+		t.Fatalf("item status = %q, want targeted update", got)
+	}
+	if got := authFiles.fetchCalls; got != 1 {
+		t.Fatalf("worker unexpectedly refetched full inventory %d time(s)", got-1)
+	}
+	if got := authFiles.proxyResolveCalls; got != 1 {
+		t.Fatalf("targeted proxy resolver calls = %d, want 1", got)
+	}
+}
+
 func TestManualBatchDoesNotProbeAndWritesOnlyProxyURL(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
@@ -101,6 +153,60 @@ func TestManualBatchDoesNotProbeAndWritesOnlyProxyURL(t *testing.T) {
 	}
 }
 
+func TestInspectionRecheckMarksNewTransportFailedProxySuspectWithoutRollback(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
+	}}
+	pool := &recordingPoolState{}
+	probes := &recordingRechecker{results: []model.ProxyReplacementProbeResult{{
+		Target:       model.ProxyReplacementTarget{ClientKey: "one"},
+		Succeeded:    false,
+		ProxySuspect: true,
+		ErrorCode:    "request_error",
+		ErrorMessage: "context deadline exceeded",
+	}}}
+	service := NewWithOptions(Options{
+		Tasks: tasks,
+		SetupResolver: staticSetupResolver{setup: store.Setup{
+			CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key",
+		}},
+		Settings:  staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
+		PoolState: pool,
+		AuthFiles: authFiles,
+		Rechecker: probes,
+	})
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source: model.ProxyReplacementSourceInspection,
+		Mode:   model.ProxyReplacementModePool,
+		Targets: []model.ProxyReplacementTarget{{
+			ClientKey: "one", FileName: "one.json", AuthIndex: "1", AccountEmail: "a@example.com", Provider: "codex", RuntimeID: "runtime-1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	page, err := tasks.GetTask(context.Background(), preview.Task.ID, 1, 10)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("task page=%#v err=%v", page, err)
+	}
+	if got := page.Items[0].Status; got != model.ProxyReplacementItemRecheckFailed {
+		t.Fatalf("status=%q, want %q", got, model.ProxyReplacementItemRecheckFailed)
+	}
+	if got := authFiles.proxyFor("runtime-1"); got != "http://new" {
+		t.Fatalf("proxy rollback or overwrite: %q", got)
+	}
+	if len(pool.calls) != 1 || pool.calls[0].proxyURL != "http://new" || pool.calls[0].reason != "transport_timeout" {
+		t.Fatalf("pool suspect calls=%#v", pool.calls)
+	}
+}
+
 func TestExpiredDraftCannotBeConfirmed(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
@@ -124,6 +230,44 @@ func TestExpiredDraftCannotBeConfirmed(t *testing.T) {
 	if _, err := service.Confirm(context.Background(), preview.Task.ID); !errors.Is(err, ErrTaskExpired) {
 		t.Fatalf("confirm expired draft error = %v, want ErrTaskExpired", err)
 	}
+}
+
+func TestStartExecutesQueuedDurableReplacementTask(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
+	}}
+	service := newWorkerService(tasks, authFiles, nil)
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source:          model.ProxyReplacementSourceBatchUniform,
+		Mode:            model.ProxyReplacementModeUniform,
+		UniformProxyURL: "http://new",
+		Targets: []model.ProxyReplacementTarget{{
+			ClientKey: "one", FileName: "one.json", AuthIndex: "1", AccountEmail: "a@example.com", Provider: "codex", RuntimeID: "runtime-1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	workerCtx, cancel := context.WithCancel(context.Background())
+	service.Start(workerCtx)
+	t.Cleanup(func() {
+		cancel()
+		if err := service.StopAndWait(context.Background()); err != nil {
+			t.Fatalf("stop worker: %v", err)
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if tasks.task.Status == model.ProxyReplacementTaskCompleted && authFiles.proxyFor("runtime-1") == "http://new" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("queued task was not executed: task=%#v proxy=%q", tasks.task, authFiles.proxyFor("runtime-1"))
 }
 
 func TestCreatePreviewExcludesSuspectAndInspectionOldProxy(t *testing.T) {
@@ -317,6 +461,21 @@ type staticPoolState struct {
 func (s staticPoolState) List(context.Context) ([]model.ProxyPoolState, error) { return s.states, nil }
 func (s staticPoolState) MarkSuspect(context.Context, string, string) error    { return nil }
 
+type recordedPoolStateCall struct {
+	proxyURL string
+	reason   string
+}
+
+type recordingPoolState struct {
+	calls []recordedPoolStateCall
+}
+
+func (s *recordingPoolState) List(context.Context) ([]model.ProxyPoolState, error) { return nil, nil }
+func (s *recordingPoolState) MarkSuspect(_ context.Context, proxyURL, reason string) error {
+	s.calls = append(s.calls, recordedPoolStateCall{proxyURL: proxyURL, reason: reason})
+	return nil
+}
+
 type staticSetupResolver struct {
 	setup store.Setup
 }
@@ -329,13 +488,20 @@ type previewAuthFiles struct {
 	files                 []cpaauthfiles.File
 	expectedBaseURL       string
 	expectedManagementKey string
+	fetchCalls            int
+	failFullFetchAfter    int
+	proxyResolveCalls     int
 	patchCalls            int
 	lastPatch             map[string]string
 }
 
 func (s *previewAuthFiles) Fetch(_ context.Context, baseURL, managementKey string) ([]cpaauthfiles.File, error) {
+	s.fetchCalls++
 	if s.expectedBaseURL != "" && (baseURL != s.expectedBaseURL || managementKey != s.expectedManagementKey) {
 		return nil, errors.New("preview did not use the stored CPA connection")
+	}
+	if s.failFullFetchAfter > 0 && s.fetchCalls > s.failFullFetchAfter {
+		return nil, errors.New("full inventory fetch must not run during task execution")
 	}
 	return s.files, nil
 }
@@ -346,6 +512,15 @@ func (s *previewAuthFiles) ResolveStatusMutationTarget(_ context.Context, _ stri
 		}
 	}
 	return cpaauthfiles.StatusMutationTarget{}, errors.New("missing patch target")
+}
+func (s *previewAuthFiles) ResolveProxyURLMutationTarget(_ context.Context, _ string, _ string, selector, authIndex string) (cpaauthfiles.StatusMutationTarget, error) {
+	s.proxyResolveCalls++
+	for _, file := range s.files {
+		if file.ID == selector && (authIndex == "" || file.AuthIndex == authIndex) {
+			return cpaauthfiles.StatusMutationTarget{Selector: selector, Scope: cpaauthfiles.StatusMutationScopeCredential, File: file}, nil
+		}
+	}
+	return cpaauthfiles.StatusMutationTarget{}, errors.New("missing proxy lookup target")
 }
 func (s *previewAuthFiles) PatchProxyURLTarget(_ context.Context, _ string, _ string, target cpaauthfiles.StatusMutationTarget, proxyURL string) error {
 	for index := range s.files {
@@ -384,11 +559,15 @@ func (s *previewAuthFiles) proxyFor(runtimeID string) string {
 }
 
 type recordingRechecker struct {
-	calls int
+	calls   int
+	results []model.ProxyReplacementProbeResult
 }
 
 func (r *recordingRechecker) RecheckProxyReplacement(_ context.Context, targets []model.ProxyReplacementTarget, _ int) []model.ProxyReplacementProbeResult {
 	r.calls++
+	if r.results != nil {
+		return append([]model.ProxyReplacementProbeResult(nil), r.results...)
+	}
 	results := make([]model.ProxyReplacementProbeResult, 0, len(targets))
 	for _, target := range targets {
 		results = append(results, model.ProxyReplacementProbeResult{Target: target, Succeeded: true})

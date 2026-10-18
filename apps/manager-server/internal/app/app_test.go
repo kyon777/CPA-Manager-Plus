@@ -123,4 +123,7 @@ func TestFromExistingWiresCredentialRuntimeService(t *testing.T) {
 	if appContext.CredentialRuntimeService == nil {
 		t.Fatal("CredentialRuntimeService is nil")
 	}
+	if appContext.ProxyReplacementService == nil {
+		t.Fatal("ProxyReplacementService is nil")
+	}
 }

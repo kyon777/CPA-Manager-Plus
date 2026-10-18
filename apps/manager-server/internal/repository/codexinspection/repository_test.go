@@ -179,6 +179,35 @@ func TestResultRoundTripPreservesObservedCredits(t *testing.T) {
 	}
 }
 
+func TestResultRoundTripPreservesProxySuspect(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repository := New(db)
+	ctx := context.Background()
+	run, err := repository.CreateRun(ctx, model.CodexInspectionRun{
+		TriggerType: "manual",
+		Status:      model.CodexInspectionStatusCompleted,
+		StartedAtMS: 1,
+		Settings:    model.DefaultCodexInspectionConfig(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.InsertResult(ctx, model.CodexInspectionResult{
+		RunID: run.ID, AccountKey: "codex.json::7", FileName: "codex.json", DisplayAccount: "alice@example.com",
+		Provider: "codex", Action: "keep", ProxySuspect: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.ListResults(ctx, run.ID)
+	if err != nil || len(items) != 1 || !items[0].ProxySuspect {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+}
+
 func TestResultRoundTripRejectsMalformedQuotaInventoryAndPreservesValidUpsertEvidence(t *testing.T) {
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

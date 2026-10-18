@@ -3,7 +3,13 @@ import { create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { Button } from '@/components/ui/Button';
 import type { AuthFileItem } from '@/types';
+import { proxyReplacementFingerprint } from '@/features/accounts/model/proxyReplacement';
 import { ProxyFilterModal } from './ProxyFilterModal';
+
+const mocks = vi.hoisted(() => ({
+  listProxyPoolStates: vi.fn(),
+  restoreProxyPoolState: vi.fn(),
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -16,6 +22,13 @@ vi.mock('@/components/ui/Modal', () => ({
       {props.footer}
     </div>
   ),
+}));
+
+vi.mock('@/services/api/usageService', () => ({
+  usageServiceApi: {
+    listProxyPoolStates: mocks.listProxyPoolStates,
+    restoreProxyPoolState: mocks.restoreProxyPoolState,
+  },
 }));
 
 const makeFile = (overrides: Partial<AuthFileItem>): AuthFileItem => ({
@@ -37,6 +50,60 @@ const findButton = (renderer: ReactTestRenderer, key: string) => {
 };
 
 describe('ProxyFilterModal', () => {
+  it('shows a suspected saved proxy and restores it only after an explicit click', async () => {
+    const proxyURL = 'http://suspect.example:8080/';
+    mocks.listProxyPoolStates.mockResolvedValue({
+      items: [
+        {
+          fingerprint: proxyReplacementFingerprint(proxyURL),
+          status: 'suspect',
+          lastFailureReason: 'transport_timeout',
+          updatedAtMs: 1,
+        },
+      ],
+    });
+    mocks.restoreProxyPoolState.mockResolvedValue({
+      fingerprint: proxyReplacementFingerprint(proxyURL),
+      status: 'normal',
+      updatedAtMs: 2,
+    });
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ProxyFilterModal
+          open
+          sessionID={91}
+          files={[]}
+          enabledProxyURLs={[]}
+          enabledCredentialCount={0}
+          credentialsError=""
+          credentialsLoading={false}
+          loading={false}
+          saving={false}
+          savedURLs={[proxyURL]}
+          error=""
+          managerRequestScope={{ apiBase: 'https://manager.example', managementKey: 'key' }}
+          onClose={() => {}}
+          onSave={vi.fn().mockResolvedValue([])}
+          onCopy={vi.fn().mockResolvedValue(undefined)}
+        />
+      );
+    });
+
+    expect(
+      renderer!.root.findByProps({ 'data-proxy-pool-suspect': proxyReplacementFingerprint(proxyURL) })
+    ).toBeTruthy();
+    await act(async () => {
+      findButton(renderer!, 'accounts.proxy_pool_restore').props.onClick();
+    });
+    expect(mocks.restoreProxyPoolState).toHaveBeenCalledWith(
+      'https://manager.example',
+      'key',
+      proxyReplacementFingerprint(proxyURL)
+    );
+    renderer!.unmount();
+  });
+
   it('returns only requested URLs not used by any enabled credential', () => {
     let renderer: ReactTestRenderer;
     act(() => {

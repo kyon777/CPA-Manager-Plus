@@ -189,6 +189,7 @@ type CodexInspectionResult struct {
 	QuotaWindows           []CodexInspectionQuotaWindow `json:"quotaWindows,omitempty"`
 	QuotaWindowsJSON       string                       `json:"-"`
 	QuotaInventoryObserved bool                         `json:"quotaInventoryObserved"`
+	ProxySuspect           bool                         `json:"proxySuspect"`
 	ErrorKind              string                       `json:"errorKind,omitempty"`
 	ErrorDetail            string                       `json:"errorDetail,omitempty"`
 	CreatedAtMS            int64                        `json:"createdAtMs"`

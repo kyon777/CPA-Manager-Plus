@@ -317,6 +317,119 @@ export interface ProxyFilterSettingsResponse {
   updatedAtMs?: number;
 }
 
+// Proxy replacement is intentionally isolated from the generic auth-file
+// mutation API.  The Manager Server only accepts a frozen, identity-scoped
+// proxy_url plan and never accepts an arbitrary field patch from this UI.
+export type ProxyPoolStatus = 'normal' | 'suspect';
+export type ProxyReplacementSource = 'inspection' | 'batch_uniform' | 'batch_pool';
+export type ProxyReplacementMode = 'uniform' | 'pool';
+export type ProxyReplacementTaskStatus =
+  | 'draft'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'expired'
+  | 'unavailable';
+export type ProxyReplacementItemStatus =
+  | 'planned'
+  | 'writing'
+  | 'updated'
+  | 'skipped_stale'
+  | 'write_failed'
+  | 'recheck_running'
+  | 'recheck_succeeded'
+  | 'recheck_failed';
+
+export interface ProxyReplacementTargetRequest {
+  clientKey: string;
+  fileName: string;
+  authIndex?: string;
+  accountEmail?: string;
+  provider: string;
+  runtimeId?: string;
+  accountId?: string;
+  accountSnapshot?: string;
+}
+
+export interface ProxyReplacementPreviewRequest {
+  source: ProxyReplacementSource;
+  mode: ProxyReplacementMode;
+  uniformProxyUrl?: string;
+  targets: ProxyReplacementTargetRequest[];
+}
+
+export interface ProxyReplacementTask {
+  id: number;
+  source: ProxyReplacementSource;
+  mode: ProxyReplacementMode;
+  status: ProxyReplacementTaskStatus;
+  recheckAfterWrite: boolean;
+  canConfirm: boolean;
+  taskOffset: number;
+  totalCount: number;
+  updatedCount: number;
+  failedCount: number;
+  skippedCount: number;
+  recheckSuccessCount: number;
+  recheckFailedCount: number;
+  unusedNormalCount: number;
+  fallbackNormalCount: number;
+  suspectExcludedCount: number;
+  expiresAtMs?: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ProxyReplacementTaskItem {
+  id: number;
+  taskId: number;
+  itemOrder: number;
+  target: ProxyReplacementTargetRequest;
+  oldProxyUrl?: string;
+  oldProxyFingerprint?: string;
+  newProxyUrl?: string;
+  newProxyFingerprint?: string;
+  allocationSource?: string;
+  status: ProxyReplacementItemStatus;
+  writeErrorCode?: string;
+  writeErrorMessage?: string;
+  recheckErrorCode?: string;
+  recheckErrorMessage?: string;
+}
+
+export interface ProxyReplacementTaskPage {
+  task: ProxyReplacementTask;
+  items: ProxyReplacementTaskItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface ProxyPoolState {
+  fingerprint: string;
+  status: ProxyPoolStatus;
+  lastFailureAtMs?: number;
+  lastFailureReason?: string;
+  updatedAtMs: number;
+}
+
+export interface ProxyPoolStatesResponse {
+  items: ProxyPoolState[];
+}
+
+export interface ProxyInspectionSignalRequest {
+  proxyUrl: string;
+  statusCode?: number;
+  errorKind?: string;
+  errorDetail?: string;
+}
+
+export interface ProxyInspectionSignalResponse {
+  marked: boolean;
+}
+
 export interface CodexInspectionRun {
   id: number;
   triggerType: string;
@@ -386,6 +499,7 @@ export interface CodexInspectionResult {
   creditsUnlimited?: boolean | null;
   quotaWindows?: CodexInspectionQuotaWindow[];
   quotaInventoryObserved?: boolean;
+  proxySuspect?: boolean;
   errorKind?: string;
   errorDetail?: string;
   createdAtMs: number;
@@ -3213,6 +3327,145 @@ export const usageServiceApi = {
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  listProxyPoolStates: async (
+    base: string,
+    managementKey?: string
+  ): Promise<ProxyPoolStatesResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { items: [] };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<ProxyPoolStatesResponse>(
+        buildUrl(base, '/v0/management/proxy-replacements/proxy-pool'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  restoreProxyPoolState: async (
+    base: string,
+    managementKey: string | undefined,
+    fingerprint: string
+  ): Promise<ProxyPoolState> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        fingerprint,
+        status: 'normal',
+        updatedAtMs: Date.now(),
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<ProxyPoolState>(
+        buildUrl(
+          base,
+          `/v0/management/proxy-replacements/proxy-pool/${encodeURIComponent(fingerprint)}/restore`
+        ),
+        {},
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  signalProxyInspectionFailure: async (
+    base: string,
+    managementKey: string | undefined,
+    signal: ProxyInspectionSignalRequest
+  ): Promise<ProxyInspectionSignalResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { marked: false };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<ProxyInspectionSignalResponse>(
+        buildUrl(base, '/v0/management/proxy-replacements/inspection-signals'),
+        signal,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  createProxyReplacementPreview: async (
+    base: string,
+    managementKey: string | undefined,
+    request: ProxyReplacementPreviewRequest
+  ): Promise<ProxyReplacementTaskPage> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      throw new Error('Proxy replacement is unavailable in demo mode');
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<ProxyReplacementTaskPage>(
+        buildUrl(base, '/v0/management/proxy-replacements/previews'),
+        request,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  confirmProxyReplacementTask: async (
+    base: string,
+    managementKey: string | undefined,
+    taskId: number
+  ): Promise<ProxyReplacementTask> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      throw new Error('Proxy replacement is unavailable in demo mode');
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<ProxyReplacementTask>(
+        buildUrl(base, `/v0/management/proxy-replacements/tasks/${taskId}/confirm`),
+        {},
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  getProxyReplacementTask: async (
+    base: string,
+    managementKey: string | undefined,
+    taskId: number,
+    page = 1,
+    pageSize = 50
+  ): Promise<ProxyReplacementTaskPage> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      throw new Error('Proxy replacement is unavailable in demo mode');
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<ProxyReplacementTaskPage>(
+        buildUrl(base, `/v0/management/proxy-replacements/tasks/${taskId}`),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          params: { page, page_size: pageSize },
         }
       );
       return response.data;

@@ -299,6 +299,18 @@ func (s *Store) LoadProxyPoolStates(ctx context.Context) ([]ProxyPoolState, erro
 	return s.ProxyReplacements.ListProxyPoolStates(ctx)
 }
 
+func (s *Store) UpsertProxyPoolState(ctx context.Context, state ProxyPoolState) (ProxyPoolState, error) {
+	return s.ProxyReplacements.UpsertProxyPoolState(ctx, state)
+}
+
+func (s *Store) ListProxyPoolStates(ctx context.Context) ([]ProxyPoolState, error) {
+	return s.ProxyReplacements.ListProxyPoolStates(ctx)
+}
+
+func (s *Store) RestoreProxyPoolState(ctx context.Context, fingerprint string) (ProxyPoolState, error) {
+	return s.ProxyReplacements.RestoreProxyPoolState(ctx, fingerprint)
+}
+
 func (s *Store) SaveAdminCredential(ctx context.Context, credential AdminCredential) error {
 	return s.Settings.SaveAdminCredential(ctx, credential)
 }

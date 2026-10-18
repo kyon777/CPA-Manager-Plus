@@ -29,6 +29,8 @@ import (
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	panelsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/panel"
 	proxysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxy"
+	proxypoolstatesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxypoolstate"
+	proxyreplacementsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyreplacement"
 	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	setupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/setup"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tokenacquisition"
@@ -80,6 +82,7 @@ type Context struct {
 	AuthFileMutationCoordinator        *cpaauthfiles.MutationCoordinator
 	QuotaCooldownRecoveryService       QuotaCooldownRecoveryService
 	ProxyService                       *proxysvc.Service
+	ProxyReplacementService            *proxyreplacementsvc.Service
 	AuthFileBatchUploadService         *authfilesbatchsvc.Service
 	AccountBannedAuthFileDeleteService *authfilesbanneddeletesvc.Service
 	PanelService                       *panelsvc.Service
@@ -208,6 +211,26 @@ func fromExisting(
 		authFileMutationCoordinator,
 		st,
 	)
+	proxyPoolStateRegistry := proxypoolstatesvc.New(st)
+	codexInspectionService := codexinspectionsvc.NewWithOptions(
+		st,
+		managerConfigService,
+		codexinspectionsvc.ServiceOptions{
+			AuthFileMutationCoordinator: authFileMutationCoordinator,
+			ReauthRecoveryNotifier:      automaticTokenRecoverySignal,
+			ProxyFailureReporter:        proxyPoolStateRegistry,
+		},
+	)
+	proxyReplacementService := proxyreplacementsvc.NewWithOptions(proxyreplacementsvc.Options{
+		Tasks:               st.ProxyReplacements,
+		Settings:            st,
+		PoolState:           proxyPoolStateRegistry,
+		SetupResolver:       managerConfigService,
+		AuthFiles:           authFiles,
+		MutationCoordinator: authFileMutationCoordinator,
+		Invalidator:         proxyService,
+		Rechecker:           codexInspectionService,
+	})
 	credentialListService := credentiallistsvc.NewWithRecentRecoveryAndGlobalMetricsReader(
 		proxyService,
 		st,
@@ -217,26 +240,19 @@ func fromExisting(
 	proxyService.SetCredentialListInvalidator(credentialListService.Invalidate)
 	monitoringService := monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled)
 	return &Context{
-		UpdateCheckService:   updatechecksvc.New(st, buildinfo.Version, buildinfo.SourceCommit, os.Getenv("CPAMP_UPDATE_CHECK_ENABLED") != "false"),
-		Config:               cfg,
-		Store:                st,
-		Collector:            collectorManager,
-		StartedAt:            startedAt,
-		ServiceID:            serviceID,
-		AdminAuthService:     adminauthsvc.New(cfg, st),
-		SetupService:         setupsvc.New(cfg, st, collectorService, managerConfigService, startedAt, serviceID),
-		ManagerConfigService: managerConfigService,
-		CollectorService:     collectorService,
-		UsageService:         usageService,
-		DashboardService:     dashboardsvc.New(st, cfg.DashboardHourlyRollupEnabled),
-		CodexInspectionService: codexinspectionsvc.NewWithOptions(
-			st,
-			managerConfigService,
-			codexinspectionsvc.ServiceOptions{
-				AuthFileMutationCoordinator: authFileMutationCoordinator,
-				ReauthRecoveryNotifier:      automaticTokenRecoverySignal,
-			},
-		),
+		UpdateCheckService:           updatechecksvc.New(st, buildinfo.Version, buildinfo.SourceCommit, os.Getenv("CPAMP_UPDATE_CHECK_ENABLED") != "false"),
+		Config:                       cfg,
+		Store:                        st,
+		Collector:                    collectorManager,
+		StartedAt:                    startedAt,
+		ServiceID:                    serviceID,
+		AdminAuthService:             adminauthsvc.New(cfg, st),
+		SetupService:                 setupsvc.New(cfg, st, collectorService, managerConfigService, startedAt, serviceID),
+		ManagerConfigService:         managerConfigService,
+		CollectorService:             collectorService,
+		UsageService:                 usageService,
+		DashboardService:             dashboardsvc.New(st, cfg.DashboardHourlyRollupEnabled),
+		CodexInspectionService:       codexInspectionService,
 		TokenRecoveryService:         tokenRecoveryService,
 		TokenRecoveryAutomaticSignal: automaticTokenRecoverySignal,
 		CredentialRuntimeService:     credentialRuntimeService,
@@ -253,6 +269,7 @@ func fromExisting(
 		AccountProcessingPolicyService: accountProcessingPolicyService,
 		AuthFileMutationCoordinator:    authFileMutationCoordinator,
 		ProxyService:                   proxyService,
+		ProxyReplacementService:        proxyReplacementService,
 		AuthFileBatchUploadService: authfilesbatchsvc.NewWithInventoryInvalidator(
 			managerConfigService,
 			proxyService,

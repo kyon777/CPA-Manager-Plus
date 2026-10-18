@@ -233,6 +233,10 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 	if result.AutoRecoverEligible {
 		autoRecoverEligible = 1
 	}
+	proxySuspect := 0
+	if result.ProxySuspect {
+		proxySuspect = 1
+	}
 	var id int64
 	err := withSQLiteBusyRetry(ctx, func() error {
 		return r.db.QueryRowContext(
@@ -242,8 +246,8 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			provider, disabled, status, state, action, action_reason, status_code,
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
 			plan_type, quota_windows_json, credits_observed, credits_balance, credits_has_credits, credits_unlimited,
-			error_kind, error_detail, created_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			proxy_suspect, error_kind, error_detail, created_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		on conflict(run_id, account_key) do update set
 			file_name = excluded.file_name,
 			display_account = excluded.display_account,
@@ -273,9 +277,10 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			credits_balance = excluded.credits_balance,
 			credits_has_credits = excluded.credits_has_credits,
 			credits_unlimited = excluded.credits_unlimited,
-				error_kind = excluded.error_kind,
-				error_detail = excluded.error_detail,
-				created_at_ms = excluded.created_at_ms
+			proxy_suspect = excluded.proxy_suspect,
+			error_kind = excluded.error_kind,
+			error_detail = excluded.error_detail,
+			created_at_ms = excluded.created_at_ms
 			returning id`,
 			result.RunID,
 			result.AccountKey,
@@ -304,6 +309,7 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			nullFloat(result.CreditsBalance),
 			nullBool(result.CreditsHasCredits),
 			nullBool(result.CreditsUnlimited),
+			proxySuspect,
 			nullString(result.ErrorKind),
 			nullString(result.ErrorDetail),
 			result.CreatedAtMS,
@@ -457,7 +463,7 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 			provider, disabled, status, state, action, action_reason, status_code,
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
 			plan_type, quota_windows_json, credits_observed, credits_balance, credits_has_credits, credits_unlimited,
-			error_kind, error_detail, created_at_ms
+			proxy_suspect, error_kind, error_detail, created_at_ms
 		from codex_inspection_results
 		where run_id = ?
 		order by file_name asc, display_account asc, id asc`,
@@ -901,7 +907,7 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	var planType, quotaWindowsJSON, errorKind, errorDetail sql.NullString
 	var statusCode sql.NullInt64
 	var usedPercent, creditsBalance sql.NullFloat64
-	var disabled, isQuota, autoRecoverEligible, creditsObserved int
+	var disabled, isQuota, autoRecoverEligible, creditsObserved, proxySuspect int
 	var creditsHasCredits, creditsUnlimited sql.NullInt64
 	if err := row.Scan(
 		&result.ID,
@@ -932,6 +938,7 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 		&creditsBalance,
 		&creditsHasCredits,
 		&creditsUnlimited,
+		&proxySuspect,
 		&errorKind,
 		&errorDetail,
 		&result.CreatedAtMS,
@@ -954,6 +961,7 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	result.ActionError = actionError.String
 	result.PlanType = planType.String
 	result.CreditsObserved = creditsObserved != 0
+	result.ProxySuspect = proxySuspect != 0
 	result.QuotaWindowsJSON = quotaWindowsJSON.String
 	result.QuotaWindows, result.QuotaInventoryObserved = model.ParseCodexInspectionQuotaWindows(result.QuotaWindowsJSON)
 	if !result.QuotaInventoryObserved {

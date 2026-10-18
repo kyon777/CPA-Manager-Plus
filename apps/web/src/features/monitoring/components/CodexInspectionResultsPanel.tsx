@@ -38,6 +38,7 @@ type CodexInspectionResultsPanelProps = {
   reauthActionCount?: number;
   pageRecoveryCount?: number;
   pageBannedDeleteCount?: number;
+  pageProxyReplacementCount?: number;
   pageRecoverySubmitting?: boolean;
   pageBannedDeleteSubmitting?: boolean;
   handlingFilterCounts: Record<HandlingFilter, number>;
@@ -63,6 +64,7 @@ type CodexInspectionResultsPanelProps = {
   onDeleteReauthSingle?: (item: CodexInspectionResultItem) => void;
   onRecoverCurrentPage?: () => void;
   onDeleteCurrentPageBanned?: () => void;
+  onReplaceCurrentPageProxy?: () => void;
   onOpenCredential?: (item: CodexInspectionResultItem) => void;
   filterLabel: (filter: ActionFilter) => string;
   handlingFilterLabel: (filter: HandlingFilter) => string;
@@ -85,6 +87,7 @@ export function CodexInspectionResultsPanel({
   reauthActionCount = 0,
   pageRecoveryCount = 0,
   pageBannedDeleteCount = 0,
+  pageProxyReplacementCount = 0,
   pageRecoverySubmitting = false,
   pageBannedDeleteSubmitting = false,
   filterCounts,
@@ -107,6 +110,7 @@ export function CodexInspectionResultsPanel({
   onDeleteReauthSingle,
   onRecoverCurrentPage,
   onDeleteCurrentPageBanned,
+  onReplaceCurrentPageProxy,
   onOpenCredential,
   filterLabel,
   renderOperation,
@@ -229,6 +233,25 @@ export function CodexInspectionResultsPanel({
             </div>
 
             <div className={styles.resultsToolbarActions}>
+              {actionFilter === 'proxy_abnormal' && onReplaceCurrentPageProxy ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-inspection-page-proxy-replacement={true}
+                  onClick={onReplaceCurrentPageProxy}
+                  disabled={
+                    !result ||
+                    isInspectionInFlight ||
+                    executing ||
+                    pageProxyReplacementCount === 0
+                  }
+                >
+                  <IconRefreshCw size={14} />
+                  {t('proxy_replacement.inspection_button', {
+                    count: pageProxyReplacementCount,
+                  })}
+                </Button>
+              ) : null}
               {actionFilter === 'reauth' && onRecoverCurrentPage ? (
                 <Button
                   variant="secondary"

@@ -1,3 +1,5 @@
+import { sha256RawTextHex } from '@/utils/apiKeyHash';
+
 export type ProxyReplacementSource = 'inspection' | 'batch_uniform' | 'batch_pool';
 export type ProxyReplacementMode = 'uniform' | 'pool';
 export type ProxyReplacementTaskStatus =
@@ -123,4 +125,3 @@ export const isProxyReplacementTaskTerminal = (status: ProxyReplacementTaskStatu
   status === 'failed' ||
   status === 'expired' ||
   status === 'unavailable';
-import { sha256RawTextHex } from '@/utils/apiKeyHash';

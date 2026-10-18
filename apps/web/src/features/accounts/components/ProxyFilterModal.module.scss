@@ -73,6 +73,53 @@
   border-top: 1px solid var(--border-color);
 }
 
+.poolState {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+  border: 1px solid color-mix(in srgb, var(--warning-color) 55%, var(--border-color));
+  border-radius: $radius-md;
+  background: color-mix(in srgb, var(--warning-color) 7%, transparent);
+  padding: $spacing-sm $spacing-md;
+  color: var(--text-primary);
+  font-size: 13px;
+
+  > p {
+    margin: 0;
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+}
+
+.poolStateList {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+}
+
+.poolStateRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: $spacing-sm;
+  padding-top: $spacing-xs;
+
+  code {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  > span {
+    color: var(--warning-color);
+    font-size: 12px;
+  }
+}
+
 .resultHeader {
   display: flex;
   align-items: center;
@@ -89,5 +136,13 @@
 @include mobile {
   .textarea {
     min-height: 150px;
+  }
+
+  .poolStateRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+
+    > span {
+      grid-column: 1 / -1;
+    }
   }
 }

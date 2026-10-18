@@ -86,10 +86,12 @@ const resolveReadOnlyHistoricalTarget = (
 
 // Inspection results are historical records. Resolve their stable credential identity
 // against the current auth-files response rather than matching only by display account.
-export const resolveInspectionAccountNote = (
+// The caller can then project non-mutating fields (for example note or proxy_url)
+// without accepting a loose display-name match.
+export const resolveInspectionAccountFile = (
   result: InspectionAccountNoteTarget,
   files: AuthFileItem[]
-): string => {
+): AuthFileItem | null => {
   const resolution = resolveAuthFileStatusMutationTarget(files, {
     name: result.fileName,
     runtimeId: result.runtimeId,
@@ -99,10 +101,17 @@ export const resolveInspectionAccountNote = (
     accountSnapshot: result.accountSnapshot,
   });
   if (resolution.failure === null && resolution.target) {
-    return readTrimmedAccountNote(resolution.target);
+    return resolution.target;
   }
-  const historicalTarget = resolveReadOnlyHistoricalTarget(result, files);
-  return historicalTarget ? readTrimmedAccountNote(historicalTarget) : '';
+  return resolveReadOnlyHistoricalTarget(result, files);
+};
+
+export const resolveInspectionAccountNote = (
+  result: InspectionAccountNoteTarget,
+  files: AuthFileItem[]
+): string => {
+  const resolved = resolveInspectionAccountFile(result, files);
+  return resolved ? readTrimmedAccountNote(resolved) : '';
 };
 
 export const resolveServerInspectionAccountNote = (

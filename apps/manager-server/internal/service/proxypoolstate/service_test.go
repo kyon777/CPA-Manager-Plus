@@ -57,6 +57,25 @@ func TestPoolStateCanBeRestoredWithoutPersistingURL(t *testing.T) {
 	}
 }
 
+func TestPoolStatePreservesFiniteTransportReasonCode(t *testing.T) {
+	db := openTestDB(t)
+	protector, err := security.NewProtector([]byte("proxy-pool-state-reason-test-key-material"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := proxypoolstate.New(proxyreplacement.New(db, protector))
+	if err := service.MarkSuspect(context.Background(), "http://proxy:8080", "transport_502_request_failed"); err != nil {
+		t.Fatalf("mark suspect: %v", err)
+	}
+	states, err := service.List(context.Background())
+	if err != nil || len(states) != 1 {
+		t.Fatalf("states=%#v err=%v", states, err)
+	}
+	if got := states[0].LastFailureReason; got != "transport_502_request_failed" {
+		t.Fatalf("reason=%q, want transport_502_request_failed", got)
+	}
+}
+
 func containsSecret(value, secret string) bool {
 	return len(secret) > 0 && len(value) >= len(secret) && (value == secret || contains(value, secret))
 }

@@ -4,6 +4,10 @@ import {
   normalizeProxyReplacementURL,
   proxyReplacementFingerprint,
 } from './proxyReplacement';
+import {
+  buildInspectionProxyReplacementTargets,
+  buildProxyReplacementTargets,
+} from './proxyReplacementTargets';
 
 describe('proxy replacement model', () => {
   it('normalizes whitespace and trailing slashes before fingerprinting', () => {
@@ -42,5 +46,59 @@ describe('proxy replacement model', () => {
         errorDetail: 'context deadline exceeded',
       })
     ).toBe(false);
+  });
+
+  it('builds stable, manager-valid replacement targets from selected credentials', () => {
+    expect(
+      buildProxyReplacementTargets([
+        {
+          id: 'runtime-8',
+          name: 'alice.json',
+          authIndex: '8',
+          provider: 'codex',
+          email: 'Alice@Example.com',
+          account_id: 'acct-1',
+        },
+      ])
+    ).toEqual([
+      {
+        clientKey: expect.stringContaining('alice.json'),
+        fileName: 'alice.json',
+        authIndex: '8',
+        accountEmail: 'alice@example.com',
+        provider: 'codex',
+        runtimeId: 'runtime-8',
+        accountId: 'acct-1',
+        accountSnapshot: 'alice@example.com',
+      },
+    ]);
+  });
+
+  it('builds identity-only replacement targets from inspection rows', () => {
+    expect(
+      buildInspectionProxyReplacementTargets([
+        {
+          key: 'server-91',
+          fileName: 'alice.json',
+          provider: 'codex',
+          authIndex: '8',
+          runtimeId: 'runtime-8',
+          accountId: 'acct-1',
+          accountSnapshot: 'Alice@Example.com',
+          displayAccount: 'Alice@Example.com',
+        },
+      ])
+    ).toEqual([
+      {
+        clientKey: 'server-91',
+        fileName: 'alice.json',
+        authIndex: '8',
+        accountEmail: 'alice@example.com',
+        provider: 'codex',
+        runtimeId: 'runtime-8',
+        accountId: 'acct-1',
+        accountSnapshot: 'Alice@Example.com',
+      },
+    ]);
   });
 });

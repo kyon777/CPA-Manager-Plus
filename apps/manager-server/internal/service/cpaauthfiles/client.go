@@ -461,6 +461,7 @@ func (c *Client) ResolveVerifiedStatusMutationTarget(
 		selector,
 		identity.AuthIndex,
 		strings.TrimSpace(identity.RuntimeID) != "",
+		false,
 	)
 	if err != nil {
 		return StatusMutationTarget{}, err
@@ -488,6 +489,7 @@ func (c *Client) ResolveVerifiedDeleteMutationTarget(
 		selector,
 		identity.AuthIndex,
 		strings.TrimSpace(identity.RuntimeID) != "",
+		false,
 	)
 	if err != nil {
 		return DeleteMutationTarget{}, err
@@ -665,7 +667,21 @@ func (c *Client) ResolveStatusMutationTarget(
 	selector string,
 	authIndex string,
 ) (StatusMutationTarget, error) {
-	return c.resolveStatusMutationTarget(ctx, baseURL, managementKey, selector, authIndex, false)
+	return c.resolveStatusMutationTarget(ctx, baseURL, managementKey, selector, authIndex, false, false)
+}
+
+// ResolveProxyURLMutationTarget resolves one current credential target while
+// requesting CPA's proxy projection. Callers can then compare the current
+// proxy_url immediately before a guarded replacement without fetching the
+// whole credential inventory.
+func (c *Client) ResolveProxyURLMutationTarget(
+	ctx context.Context,
+	baseURL string,
+	managementKey string,
+	selector string,
+	authIndex string,
+) (StatusMutationTarget, error) {
+	return c.resolveStatusMutationTarget(ctx, baseURL, managementKey, selector, authIndex, false, true)
 }
 
 func (c *Client) resolveStatusMutationTarget(
@@ -675,6 +691,7 @@ func (c *Client) resolveStatusMutationTarget(
 	selector string,
 	authIndex string,
 	runtimeOnly bool,
+	includeProxyURLs bool,
 ) (StatusMutationTarget, error) {
 	selector = strings.TrimSpace(selector)
 	authIndex = strings.TrimSpace(authIndex)
@@ -682,7 +699,13 @@ func (c *Client) resolveStatusMutationTarget(
 		return StatusMutationTarget{}, fmt.Errorf("%w: status selector is empty", ErrAuthFileNotFound)
 	}
 
-	files, err := c.fetchStatusMutationCandidates(ctx, baseURL, managementKey, selector)
+	var files []File
+	var err error
+	if includeProxyURLs {
+		files, err = c.fetchProxyURLMutationCandidates(ctx, baseURL, managementKey, selector, authIndex)
+	} else {
+		files, err = c.fetchStatusMutationCandidates(ctx, baseURL, managementKey, selector)
+	}
 	if err != nil {
 		return StatusMutationTarget{}, err
 	}
@@ -701,7 +724,13 @@ func (c *Client) resolveStatusMutationTarget(
 		return StatusMutationTarget{}, fmt.Errorf("%w: %q has no runtime id", ErrStatusMutationScopeAmbiguous, physicalName)
 	}
 	if physicalName != selector && !statusMutationResponseLooksUnfiltered(files, selector) {
-		siblings, fetchErr := c.fetchStatusMutationCandidates(ctx, baseURL, managementKey, physicalName)
+		var siblings []File
+		var fetchErr error
+		if includeProxyURLs {
+			siblings, fetchErr = c.fetchProxyURLMutationCandidates(ctx, baseURL, managementKey, physicalName, "")
+		} else {
+			siblings, fetchErr = c.fetchStatusMutationCandidates(ctx, baseURL, managementKey, physicalName)
+		}
 		if fetchErr != nil {
 			return StatusMutationTarget{}, fetchErr
 		}
@@ -902,6 +931,27 @@ func (c *Client) fetchStatusMutationCandidates(
 ) ([]File, error) {
 	files := make([]File, 0, 1)
 	if err := c.visit(ctx, baseURL, managementKey, selector, "", func(file File) (bool, error) {
+		files = append(files, file)
+		return false, nil
+	}); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// fetchProxyURLMutationCandidates is intentionally separate from ordinary
+// status-target resolution: the proxy replacement path requests the explicit
+// proxy projection and preserves the caller's auth-index filter, while legacy
+// status mutations retain their exact pre-existing lookup semantics.
+func (c *Client) fetchProxyURLMutationCandidates(
+	ctx context.Context,
+	baseURL string,
+	managementKey string,
+	selector string,
+	authIndex string,
+) ([]File, error) {
+	files := make([]File, 0, 1)
+	if err := c.visitRequest(ctx, baseURL, managementKey, selector, authIndex, true, func(file File) (bool, error) {
 		files = append(files, file)
 		return false, nil
 	}); err != nil {

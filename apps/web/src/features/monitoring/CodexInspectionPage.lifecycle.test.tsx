@@ -82,6 +82,7 @@ vi.mock('@/services/api/authFiles', async (importOriginal) => {
     authFilesApi: {
       ...actual.authFilesApi,
       list: mocks.authFilesList,
+      listWithProxyProjection: mocks.authFilesList,
     },
   };
 });
@@ -100,6 +101,7 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
       requestTokenRecoveryManualBatch: mocks.requestTokenRecoveryManualBatch,
       deleteAccountBannedAuthFilesBatch: mocks.deleteAccountBannedAuthFilesBatch,
       signalTokenRecovery: mocks.signalTokenRecovery,
+      signalProxyInspectionFailure: vi.fn(),
     },
   };
 });

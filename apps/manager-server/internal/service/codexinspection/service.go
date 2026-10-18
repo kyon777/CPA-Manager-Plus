@@ -77,6 +77,7 @@ type Service struct {
 	authFileMutations    *cpaauthfiles.MutationCoordinator
 	quotaSnapshots       quotaSnapshotWriter
 	reauthRecovery       ReauthRecoveryNotifier
+	proxyFailureReporter ProxyFailureReporter
 
 	mu                             sync.Mutex
 	cancelMu                       sync.Mutex
@@ -108,12 +109,20 @@ type ReauthRecoveryNotifier interface {
 	SignalAutomatic(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, error)
 }
 
+// ProxyFailureReporter receives only a live proxy URL while an inspection is
+// running. Implementations must persist a one-way fingerprint and a finite
+// reason code instead of retaining the credential-bearing URL.
+type ProxyFailureReporter interface {
+	MarkSuspect(context.Context, string, string) error
+}
+
 type ServiceOptions struct {
 	OwnerID                     string
 	LeaseDuration               time.Duration
 	HeartbeatInterval           time.Duration
 	AuthFileMutationCoordinator *cpaauthfiles.MutationCoordinator
 	ReauthRecoveryNotifier      ReauthRecoveryNotifier
+	ProxyFailureReporter        ProxyFailureReporter
 }
 
 var inspectionOwnerSequence atomic.Uint64
@@ -363,6 +372,7 @@ func NewWithOptions(st *store.Store, managerConfigService *managerconfig.Service
 		authFileMutations:              authFileMutations,
 		quotaSnapshots:                 quotasnapshotsvc.New(st),
 		reauthRecovery:                 options.ReauthRecoveryNotifier,
+		proxyFailureReporter:           options.ProxyFailureReporter,
 		ownerID:                        ownerID,
 		leaseDuration:                  leaseDuration,
 		heartbeatInterval:              heartbeatInterval,
@@ -1737,7 +1747,10 @@ func (s *Service) failRun(ctx context.Context, run model.CodexInspectionRun, cau
 }
 
 func (s *Service) fetchAuthFiles(ctx context.Context, setup store.Setup) ([]authFile, error) {
-	files, err := cpaauthfiles.New(s.client).Fetch(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+	// Health inspection needs the same projected proxy URL as the credential
+	// list. Without it, a transport failure can never be attributed safely to a
+	// configured proxy and must remain an ordinary probe failure.
+	files, err := cpaauthfiles.New(s.client).FetchWithProxyURLs(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1824,7 +1837,7 @@ func (s *Service) inspectSingleAccount(
 			"fileName":       item.FileName,
 			"displayAccount": item.DisplayAccount,
 		})
-		return base
+		return s.markProxySuspect(ctx, item, base)
 	}
 
 	var response apiCallResponse
@@ -1846,7 +1859,7 @@ func (s *Service) inspectSingleAccount(
 			"displayAccount": item.DisplayAccount,
 			"error":          err.Error(),
 		})
-		return base
+		return s.markProxySuspect(ctx, item, base)
 	}
 	if !response.HasStatusCode {
 		base.Action = "keep"
@@ -1928,7 +1941,7 @@ func (s *Service) inspectSingleAccount(
 		"usedPercent":    nullableFloat(decision.UsedPercent),
 		"isQuota":        decision.IsQuota,
 	})
-	return base
+	return s.markProxySuspect(ctx, item, base)
 }
 
 func (s *Service) requestCodexUsage(

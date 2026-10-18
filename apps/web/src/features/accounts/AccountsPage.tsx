@@ -91,6 +91,7 @@ import { PaginationControls } from '@/features/monitoring/components/MonitoringS
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
 import { AuthJsonPasteModal } from '@/features/authFiles/components/AuthJsonPasteModal';
 import { ProxyFilterModal } from '@/features/accounts/components/ProxyFilterModal';
+import { ProxyReplacementModal } from '@/features/accounts/components/ProxyReplacementModal';
 import { OAuthExcludedCard } from '@/features/authFiles/components/OAuthExcludedCard';
 import {
   OAuthExcludedEditorModal,
@@ -137,6 +138,7 @@ import {
   type AccountStatusFilter,
 } from '@/features/accounts/model/accountRows';
 import { isEnabledProxyFilterCredential } from '@/features/accounts/model/proxyFilter';
+import { buildProxyReplacementTargets } from '@/features/accounts/model/proxyReplacementTargets';
 import {
   buildInspectionCodexQuotaState,
   getEffectiveAccountInspectionAction,
@@ -1504,6 +1506,7 @@ export function AccountsPage() {
   const [highlightedAccountSortIndex, setHighlightedAccountSortIndex] = useState(-1);
   const [batchPriorityOpen, setBatchPriorityOpen] = useState(false);
   const [batchPriorityValue, setBatchPriorityValue] = useState('');
+  const [proxyReplacementOpen, setProxyReplacementOpen] = useState(false);
   const [editingPriorityState, setEditingPriorityState] = useState<{
     rowKey: string;
     value: string;
@@ -4676,6 +4679,10 @@ export function AccountsPage() {
   );
   const selectedFileNames = useMemo(
     () => Array.from(new Set(selectedTargetFiles.map((file) => file.name))),
+    [selectedTargetFiles]
+  );
+  const selectedProxyReplacementTargets = useMemo(
+    () => buildProxyReplacementTargets(selectedTargetFiles),
     [selectedTargetFiles]
   );
   const selectedHasPartialSharedAuthFile = useMemo(
@@ -8862,6 +8869,24 @@ export function AccountsPage() {
             >
               {t('accounts.set_priority')}
             </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={
+                disableControls ||
+                !managerRequestScope ||
+                selectedProxyReplacementTargets.length === 0
+              }
+              title={
+                managerRequestScope
+                  ? t('proxy_replacement.batch_button')
+                  : t('accounts.proxy_filter_unavailable')
+              }
+              onClick={() => setProxyReplacementOpen(true)}
+            >
+              <IconSettings size={15} />
+              {t('proxy_replacement.batch_button')}
+            </Button>
             <DropdownMenu
               items={moreItems}
               ariaLabel={t('accounts.batch_more')}
@@ -11212,6 +11237,7 @@ export function AccountsPage() {
         saving={proxyFilterSaving}
         savedURLs={proxyFilterURLs}
         error={proxyFilterError}
+        managerRequestScope={managerRequestScope}
         onClose={() => {
           if (!proxyFilterLoading && !proxyFilterSaving) setProxyFilterOpen(false);
         }}
@@ -11224,6 +11250,18 @@ export function AccountsPage() {
               : t('notification.copy_failed', { defaultValue: 'Copy failed' }),
             copied ? 'success' : 'error'
           );
+        }}
+      />
+      <ProxyReplacementModal
+        open={proxyReplacementOpen}
+        managerRequestScope={managerRequestScope}
+        origin="accounts"
+        targets={selectedProxyReplacementTargets}
+        onClose={() => setProxyReplacementOpen(false)}
+        onCompleted={() => {
+          // This only refreshes the credential inventory so the new proxy_url
+          // can render. It never performs quota, usage, history, or probe work.
+          void loadFiles();
         }}
       />
       <OAuthExcludedEditorModal

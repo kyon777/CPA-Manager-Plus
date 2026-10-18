@@ -81,6 +81,7 @@ export type CodexInspectionStoredActionFilter =
   | 'disable'
   | 'enable'
   | 'reauth'
+  | 'proxy_abnormal'
   | 'keep';
 
 const identityT = ((key: string) => key) as TFunction;
@@ -176,6 +177,10 @@ export interface CodexInspectionResultItem extends CodexInspectionAccount {
   quotaInventoryObserved?: boolean;
   errorKind?: string;
   errorDetail?: string;
+  // Transport-only proxy evidence. This is deliberately independent from the
+  // suggested account action: a healthy credential can still have a dead
+  // egress proxy, and a failed credential may have failed for another reason.
+  proxySuspect?: boolean;
   actionHandled?: boolean;
   observedHeaderEvidence?: string[];
   observedHeaderAtMs?: number | null;
@@ -612,7 +617,7 @@ export const createCodexInspectionSession = ({
       }
     );
 
-    const authFilesResponse = await authFilesApi.list(requestScope);
+    const authFilesResponse = await authFilesApi.listWithProxyProjection(requestScope);
     files = Array.isArray(authFilesResponse.files) ? authFilesResponse.files : [];
     const accounts = files.map(toInspectionAccount);
     const connectionFingerprint = createCodexInspectionConnectionFingerprint(

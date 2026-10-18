@@ -31,6 +31,11 @@ import {
   type CodexInspectionSession,
 } from '@/features/monitoring/codexInspection';
 import { Button } from '@/components/ui/Button';
+import { ProxyReplacementModal } from '@/features/accounts/components/ProxyReplacementModal';
+import {
+  buildInspectionProxyReplacementTargets,
+} from '@/features/accounts/model/proxyReplacementTargets';
+import { isLocalProxySuspect } from '@/features/accounts/model/proxyReplacement';
 import { CodexInspectionLogsPanel } from '@/features/monitoring/components/CodexInspectionLogsPanel';
 import { CodexInspectionResultsPanel } from '@/features/monitoring/components/CodexInspectionResultsPanel';
 import { CodexInspectionStatusPanel } from '@/features/monitoring/components/CodexInspectionStatusPanel';
@@ -79,7 +84,10 @@ import {
   type CredentialInspectionSnapshot,
   type CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
-import { resolveInspectionAccountNote } from '@/features/monitoring/model/serverInspectionAccountNote';
+import {
+  resolveInspectionAccountFile,
+  resolveInspectionAccountNote,
+} from '@/features/monitoring/model/serverInspectionAccountNote';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api/authFiles';
 import type {
@@ -114,6 +122,22 @@ const inspectionAccountEmail = (item: CodexInspectionResultItem): string => {
   if (snapshot.includes('@')) return snapshot;
   const displayAccount = item.displayAccount.trim();
   return displayAccount.includes('@') ? displayAccount : '';
+};
+
+const readInspectionProxyURL = (file: AuthFileItem | null | undefined): string => {
+  if (!file) return '';
+  const direct = [file.proxy_url, file.proxyUrl, file['proxy-url']];
+  for (const candidate of direct) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  const metadata = file.metadata;
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    const record = metadata as Record<string, unknown>;
+    for (const candidate of [record.proxy_url, record.proxyUrl, record['proxy-url']]) {
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    }
+  }
+  return '';
 };
 
 const buildInspectionRuntimeMetadataTarget = (
@@ -251,7 +275,9 @@ export function CodexInspectionPage({
     CODEX_INSPECTION_RESULT_PAGE_SIZE_OPTIONS[0]
   );
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
+  const [proxyReplacementOpen, setProxyReplacementOpen] = useState(false);
   const tokenRecoverySignalKeysRef = useRef<Set<string>>(new Set());
+  const proxyFailureSignalKeysRef = useRef<Set<string>>(new Set());
   const logCounterRef = useRef(initialLastRun?.logs.length ?? 0);
   const sessionRef = useRef<CodexInspectionSession | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -287,7 +313,7 @@ export function CodexInspectionPage({
 
     const requestGeneration = ++authFilesRequestGenerationRef.current;
     try {
-      const response = await authFilesApi.list(authFilesRequestScope);
+      const response = await authFilesApi.listWithProxyProjection(authFilesRequestScope);
       if (
         activeConnectionFingerprintRef.current !== requestFingerprint ||
         requestGeneration !== authFilesRequestGenerationRef.current
@@ -321,6 +347,7 @@ export function CodexInspectionPage({
     setPageRecoverySubmitting(false);
     setPageBannedDeleteSubmitting(false);
     setCodexReauthTarget(null);
+    setProxyReplacementOpen(false);
 
     const restored = connectionFingerprint
       ? loadCodexInspectionLastRun(connectionFingerprint)
@@ -1036,7 +1063,84 @@ export function CodexInspectionPage({
     executeItemsRef.current = executeItems;
   }, [executeItems]);
 
-  const displayResults = useMemo(() => (result ? result.results : []), [result]);
+  const displayResults = useMemo(() => {
+    if (!result) return [];
+    return result.results.map((item) => {
+      const currentFile = resolveInspectionAccountFile(item, currentAuthFiles);
+      // Prefer the proxy captured by the run. The current projection is only a
+      // compatibility fallback for an older CPA list response that did not
+      // include proxy_url in the original local inspection input.
+      const proxyURL = readInspectionProxyURL(item.raw) || readInspectionProxyURL(currentFile);
+      const proxySuspect =
+        item.proxySuspect === true ||
+        isLocalProxySuspect({
+          proxyUrl: proxyURL,
+          statusCode: item.statusCode ?? undefined,
+          errorKind: item.errorKind,
+          errorDetail: item.errorDetail || item.error,
+        });
+      if (!currentFile && item.proxySuspect === proxySuspect) return item;
+      return {
+        ...item,
+        proxySuspect,
+        raw: currentFile
+          ? {
+              ...item.raw,
+              ...(proxyURL ? { proxy_url: proxyURL } : {}),
+            }
+          : item.raw,
+      };
+    });
+  }, [currentAuthFiles, result]);
+
+  useEffect(() => {
+    if (
+      !managerRequestScope?.apiBase ||
+      !result ||
+      result.finishedAt <= 0 ||
+      runStatus !== 'success' ||
+      !connectionFingerprint ||
+      resultConnectionFingerprint !== connectionFingerprint
+    ) {
+      return;
+    }
+
+    for (const item of displayResults) {
+      if (!item.proxySuspect) continue;
+      const proxyURL = readInspectionProxyURL(item.raw);
+      if (!proxyURL) continue;
+      const signalKey = [
+        connectionFingerprint,
+        String(result.finishedAt),
+        item.key,
+        proxyURL,
+        String(item.statusCode ?? ''),
+        item.errorKind ?? '',
+      ].join('\u0000');
+      if (proxyFailureSignalKeysRef.current.has(signalKey)) continue;
+      proxyFailureSignalKeysRef.current.add(signalKey);
+      void usageServiceApi
+        .signalProxyInspectionFailure(managerRequestScope.apiBase, managerRequestScope.managementKey, {
+          proxyUrl: proxyURL,
+          statusCode: item.statusCode ?? undefined,
+          errorKind: item.errorKind,
+          errorDetail: item.errorDetail || item.error,
+        })
+        .catch(() => {
+          // A browser-local run never retries proxy-state reporting. The
+          // result remains visible and the next explicit inspection can emit
+          // fresh transport evidence.
+        });
+    }
+  }, [
+    connectionFingerprint,
+    displayResults,
+    managerRequestScope?.apiBase,
+    managerRequestScope?.managementKey,
+    result,
+    resultConnectionFingerprint,
+    runStatus,
+  ]);
 
   const executableResults = useMemo(
     () => (result ? result.results.filter(isExecutableAction) : []),
@@ -1110,6 +1214,15 @@ export function CodexInspectionPage({
           })
         : [],
     [actionFilter, pageRuntimeItemsByClientKey, resultPagination.pageItems]
+  );
+  const pageProxyReplacementTargets = useMemo(
+    () =>
+      actionFilter === 'proxy_abnormal'
+        ? buildInspectionProxyReplacementTargets(
+            resultPagination.pageItems.filter((item) => item.proxySuspect === true)
+          )
+        : [],
+    [actionFilter, resultPagination.pageItems]
   );
 
   const handleResultPageSizeChange = useCallback((pageSize: number) => {
@@ -1674,6 +1787,8 @@ export function CodexInspectionPage({
         return t('monitoring.codex_inspection_filter_enable');
       case 'reauth':
         return t('monitoring.codex_inspection_filter_reauth');
+      case 'proxy_abnormal':
+        return t('monitoring.codex_inspection_filter_proxy_abnormal');
       case 'keep':
         return t('monitoring.codex_inspection_action_keep');
       case 'all':
@@ -1742,6 +1857,7 @@ export function CodexInspectionPage({
         reauthActionCount={reauthResults.length}
         pageRecoveryCount={pageRecoveryTargets.length}
         pageBannedDeleteCount={pageBannedDeleteTargets.length}
+        pageProxyReplacementCount={pageProxyReplacementTargets.length}
         pageRecoverySubmitting={pageRecoverySubmitting}
         pageBannedDeleteSubmitting={pageBannedDeleteSubmitting}
         handlingFilterCounts={handlingFilterCounts}
@@ -1767,6 +1883,11 @@ export function CodexInspectionPage({
         }
         onDeleteCurrentPageBanned={
           actionFilter === 'reauth' ? handleDeleteCurrentPageBanned : undefined
+        }
+        onReplaceCurrentPageProxy={
+          actionFilter === 'proxy_abnormal' && pageProxyReplacementTargets.length > 0
+            ? () => setProxyReplacementOpen(true)
+            : undefined
         }
         onDeleteReauthPlanned={reauthResults.length > 0 ? handleDeleteReauthPlanned : undefined}
         onDeleteReauthSingle={reauthResults.length > 0 ? handleDeleteSingleReauth : undefined}
@@ -1854,6 +1975,18 @@ export function CodexInspectionPage({
         onClose={() => setCodexReauthTarget(null)}
         onSuccess={handleCodexReauthSuccess}
         onServerRecoverySuccess={handleServerTokenRecoverySuccess}
+      />
+      <ProxyReplacementModal
+        open={proxyReplacementOpen}
+        managerRequestScope={managerRequestScope}
+        origin="inspection"
+        targets={pageProxyReplacementTargets}
+        onClose={() => setProxyReplacementOpen(false)}
+        onCompleted={() => {
+          // Inventory only: the modal task itself owns its directed recheck.
+          // Do not trigger quota, billing, history, or a new inspection run.
+          void loadCurrentAuthFiles();
+        }}
       />
     </div>
   );

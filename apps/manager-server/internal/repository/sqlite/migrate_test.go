@@ -2259,8 +2259,10 @@ func TestCodexInspectionAutoRecoverySchema(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	columns := migrationTableColumns(t, db, "codex_inspection_results")
-	if !columns["auto_recover_eligible"] {
-		t.Fatalf("codex inspection results columns = %#v, want auto_recover_eligible", columns)
+	for _, column := range []string{"auto_recover_eligible", "proxy_suspect"} {
+		if !columns[column] {
+			t.Fatalf("codex inspection results columns = %#v, want %s", columns, column)
+		}
 	}
 	ownershipColumns := migrationTableColumns(t, db, "codex_inspection_disable_ownership")
 	for _, column := range []string{"file_name", "provider", "auth_index", "account_id", "account_snapshot", "disabled_at_ms", "updated_at_ms"} {
@@ -2509,7 +2511,7 @@ func TestEnsureAutomationColumnsAddsDecisionMetadata(t *testing.T) {
 	}
 }
 
-func TestEnsureCodexInspectionResultColumnsAddsIdentityAutoRecoveryAndCreditsColumns(t *testing.T) {
+func TestEnsureCodexInspectionResultColumnsAddsIdentityAutoRecoveryCreditsAndProxyColumns(t *testing.T) {
 	db, err := sql.Open("sqlite", dataSourceName(filepath.Join(t.TempDir(), "legacy-codex-inspection.sqlite")))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -2530,6 +2532,7 @@ func TestEnsureCodexInspectionResultColumnsAddsIdentityAutoRecoveryAndCreditsCol
 		"credits_balance",
 		"credits_has_credits",
 		"credits_unlimited",
+		"proxy_suspect",
 	} {
 		if !columns[column] {
 			t.Fatalf("legacy results is missing %s: %#v", column, columns)

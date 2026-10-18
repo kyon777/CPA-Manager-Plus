@@ -95,3 +95,38 @@ func TestFetchWithProxyURLsRequestsProxyProjection(t *testing.T) {
 		t.Fatalf("files=%#v err=%v", files, err)
 	}
 }
+
+func TestResolveProxyURLMutationTargetRequestsProxyProjection(t *testing.T) {
+	requests := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != authFilesPath {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("include_proxy_url"); got != "1" {
+			t.Fatalf("include_proxy_url = %q, want 1 (request %s)", got, r.URL.String())
+		}
+		if r.URL.Query().Get("name") == "runtime-7" && r.URL.Query().Get("auth_index") != "7" {
+			got := r.URL.Query().Get("auth_index")
+			t.Fatalf("auth_index = %q, want 7 (request %s)", got, r.URL.String())
+		}
+		requests = append(requests, r.URL.Query().Get("name"))
+		_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{
+			"id": "runtime-7", "name": "alice.json", "auth_index": "7", "provider": "codex", "proxy_url": "http://old-proxy:8080",
+		}}})
+	}))
+	defer server.Close()
+
+	target, err := New(server.Client()).ResolveProxyURLMutationTarget(
+		context.Background(), server.URL, "key", "runtime-7", "7",
+	)
+	if err != nil {
+		t.Fatalf("resolve proxy mutation target: %v", err)
+	}
+	if got := target.File.Raw["proxy_url"]; got != "http://old-proxy:8080" {
+		t.Fatalf("proxy_url = %#v, want projected current proxy", got)
+	}
+	if len(requests) == 0 || requests[0] != "runtime-7" {
+		t.Fatalf("targeted lookup requests = %#v", requests)
+	}
+}

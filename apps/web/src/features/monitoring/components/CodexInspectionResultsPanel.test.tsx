@@ -68,7 +68,15 @@ const renderPanel = (
         filteredResults={[item]}
         pendingActionCount={0}
         handlingFilterCounts={{ all: 1, pending: 0, no_action: 1 }}
-        filterCounts={{ all: 1, delete: 0, disable: 0, enable: 0, reauth: 0, keep: 1 }}
+        filterCounts={{
+          all: 1,
+          delete: 0,
+          disable: 0,
+          enable: 0,
+          reauth: 0,
+          proxy_abnormal: 0,
+          keep: 1,
+        }}
         handlingFilter="all"
         actionFilter="all"
         pagination={{
@@ -202,6 +210,32 @@ describe('CodexInspectionResultsPanel', () => {
     ).toHaveLength(0);
     expect(
       nonReauthRenderer.root.findAllByProps({ 'data-inspection-page-banned-delete': true })
+    ).toHaveLength(0);
+  });
+
+  it('shows proxy replacement only for the proxy-abnormal filter', () => {
+    const onReplaceCurrentPageProxy = vi.fn();
+    const renderer = renderPanel(createItem({ proxySuspect: true }), {
+      actionFilter: 'proxy_abnormal',
+      pageProxyReplacementCount: 1,
+      onReplaceCurrentPageProxy,
+    });
+
+    const replacementButton = renderer.root.findByProps({
+      'data-inspection-page-proxy-replacement': true,
+    });
+    act(() => {
+      replacementButton.props.onClick();
+    });
+    expect(onReplaceCurrentPageProxy).toHaveBeenCalledTimes(1);
+
+    const ordinaryRenderer = renderPanel(createItem(), {
+      actionFilter: 'all',
+      pageProxyReplacementCount: 1,
+      onReplaceCurrentPageProxy,
+    });
+    expect(
+      ordinaryRenderer.root.findAllByProps({ 'data-inspection-page-proxy-replacement': true })
     ).toHaveLength(0);
   });
 

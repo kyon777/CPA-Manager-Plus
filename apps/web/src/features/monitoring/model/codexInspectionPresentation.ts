@@ -118,6 +118,7 @@ export const ACTION_FILTERS: ActionFilter[] = [
   'delete',
   'disable',
   'enable',
+  'proxy_abnormal',
   'keep',
 ];
 
@@ -844,6 +845,7 @@ export const normalizeActionFilter = (value: unknown): ActionFilter => {
     value === 'disable' ||
     value === 'enable' ||
     value === 'reauth' ||
+    value === 'proxy_abnormal' ||
     value === 'keep'
   ) {
     return value;
@@ -872,6 +874,7 @@ export const getActionFilterCounts = (items: CodexInspectionResultItem[]) => {
     delete: counts.delete,
     disable: counts.disable,
     enable: counts.enable,
+    proxy_abnormal: items.filter((item) => item.proxySuspect === true).length,
     keep: counts.keep,
   } satisfies Record<ActionFilter, number>;
 };
@@ -933,6 +936,7 @@ export const createCompletedProgressSnapshot = (
 
 export const filterByAction = (items: CodexInspectionResultItem[], filter: ActionFilter) => {
   if (filter === 'all') return items;
+  if (filter === 'proxy_abnormal') return items.filter((item) => item.proxySuspect === true);
   return items.filter((item) => item.action === filter);
 };
 

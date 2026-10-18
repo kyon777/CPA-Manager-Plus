@@ -26,6 +26,7 @@ import type {
 } from '@/types';
 import type {
   AccountActionCandidatesResponse,
+  AccountBannedAuthFileDeleteResponse,
   AccountQuotaSnapshotWriteEntry,
   CodexInspectionResult,
   CodexInspectionRun,
@@ -561,6 +562,12 @@ const { mocks } = vi.hoisted(() => {
       requestTokenRecoveryManualBatch: vi.fn(
         async (): Promise<{ items: TokenRecoveryBatchItem[] }> => ({ items: [] })
       ),
+      deleteAccountBannedAuthFilesBatch: vi.fn(async (): Promise<AccountBannedAuthFileDeleteResponse> => ({
+        requested: 0,
+        deleted: [],
+        skipped: [],
+        failed: [],
+      })),
       panelFeatureAvailability: {
         checking: false,
         managerServiceBase: 'http://manager.local:18317',
@@ -966,6 +973,7 @@ vi.mock('@/services/api', () => ({
     getActiveQuotaCooldowns: mocks.getActiveQuotaCooldowns,
     listAccountActionCandidates: mocks.listAccountActionCandidates,
     requestTokenRecoveryManualBatch: mocks.requestTokenRecoveryManualBatch,
+    deleteAccountBannedAuthFilesBatch: mocks.deleteAccountBannedAuthFilesBatch,
   },
   authFilesApi: {
     resetQuota: mocks.resetQuota,
@@ -1466,6 +1474,13 @@ describe('AccountsPage replacement flows', () => {
     mocks.applyCredentialRuntimeBatchTasks.mockReset();
     mocks.requestTokenRecoveryManualBatch.mockReset();
     mocks.requestTokenRecoveryManualBatch.mockResolvedValue({ items: [] });
+    mocks.deleteAccountBannedAuthFilesBatch.mockReset();
+    mocks.deleteAccountBannedAuthFilesBatch.mockResolvedValue({
+      requested: 0,
+      deleted: [],
+      skipped: [],
+      failed: [],
+    });
     vi.mocked(accountQuotaSnapshotApi.write).mockReset();
     vi.mocked(accountQuotaSnapshotApi.write).mockImplementation(
       async (_base, _managementKey, entries) => ({
@@ -9864,7 +9879,6 @@ describe('AccountsPage replacement flows', () => {
         },
       ],
     ]);
-
     const renderer = await renderAccountsPage();
     const proxy = renderer.root.findByProps({ 'data-account-list-proxy': selectionKey });
 
@@ -9952,6 +9966,18 @@ describe('AccountsPage replacement flows', () => {
         },
       ],
     ]);
+    mocks.deleteAccountBannedAuthFilesBatch.mockResolvedValue({
+      requested: 1,
+      deleted: [
+        {
+          clientKey: bannedKey,
+          fileName: bannedFile.name,
+          physicalName: bannedFile.name,
+        },
+      ],
+      skipped: [],
+      failed: [],
+    });
 
     const renderer = await renderAccountsPage();
     const button = findButtonByText(renderer, 'accounts.batch_delete_banned_page:1');
@@ -9962,13 +9988,35 @@ describe('AccountsPage replacement flows', () => {
       button.props.onClick();
     });
 
-    expect(mocks.batchDelete).toHaveBeenCalledTimes(1);
-    expect(mocks.batchDelete.mock.calls[0]?.[0]).toEqual([bannedFile]);
-    const options = mocks.batchDelete.mock.calls[0]?.[1] as
-      | { confirmText?: string; message?: unknown }
-      | undefined;
-    expect(options?.confirmText).toBe('common.delete');
-    expect(isValidElement(options?.message)).toBe(true);
+    const firstConfirmation = mocks.showConfirmation.mock.calls[0]?.[0] as {
+      onConfirm: () => void;
+    };
+    await act(async () => {
+      firstConfirmation.onConfirm();
+    });
+    const secondConfirmation = mocks.showConfirmation.mock.calls[1]?.[0] as {
+      onConfirm: () => void;
+    };
+    await act(async () => {
+      secondConfirmation.onConfirm();
+      await Promise.resolve();
+    });
+
+    expect(mocks.deleteAccountBannedAuthFilesBatch).toHaveBeenCalledWith(
+      'http://manager.local:18317',
+      'manager-key',
+      [
+        {
+          clientKey: bannedKey,
+          fileName: bannedFile.name,
+          authIndex: 'auth-banned',
+          accountEmail: 'banned@example.com',
+          provider: 'codex',
+          accountSnapshot: 'banned@example.com',
+        },
+      ]
+    );
+    expect(mocks.batchDelete).not.toHaveBeenCalled();
   });
 
   it('disables current-page banned deletion when no eligible credential exists', async () => {

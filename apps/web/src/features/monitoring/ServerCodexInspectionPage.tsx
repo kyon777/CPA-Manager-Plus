@@ -27,6 +27,8 @@ import {
   type SummaryCardProps as MonitoringSummaryCardProps,
 } from '@/features/monitoring/components/MonitoringShared';
 import { CodexReauthDialog } from '@/features/oauth/CodexReauthDialog';
+import { ProxyReplacementModal } from '@/features/accounts/components/ProxyReplacementModal';
+import { buildInspectionProxyReplacementTargets } from '@/features/accounts/model/proxyReplacementTargets';
 import type { CodexReauthTarget } from '@/features/oauth/codexReauthModel';
 import {
   createCodexInspectionConnectionFingerprint,
@@ -667,6 +669,7 @@ export function toServerResultItem(
       providerWindowAliases: window.providerWindowAliases,
     })),
     quotaInventoryObserved: item.quotaInventoryObserved,
+    proxySuspect: item.proxySuspect === true,
     errorKind: item.errorKind,
     errorDetail: item.errorDetail || '',
     actionHandled: isHandledServerCodexInspectionResult(item),
@@ -770,6 +773,7 @@ export function ServerCodexInspectionPage({
   const [configDrawerOpen, setConfigDrawerOpen] = useState(false);
   const [configFocusField, setConfigFocusField] = useState<string | null>(null);
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
+  const [proxyReplacementOpen, setProxyReplacementOpen] = useState(false);
   const refreshInFlightRef = useRef(false);
   const actionInFlightRef = useRef(false);
   const runsContextRef = useRef<object | null>(null);
@@ -875,6 +879,7 @@ export function ServerCodexInspectionPage({
     setError('');
     setConfigDrawerOpen(false);
     setCodexReauthTarget(null);
+    setProxyReplacementOpen(false);
   }, [managerConnectionIdentity]);
 
   useEffect(() => {
@@ -2208,6 +2213,12 @@ export function ServerCodexInspectionPage({
     );
     const actionFilterCounts = getActionFilterCounts(resultItems);
     const handlingFilterCounts = countHandlingStates(resultItems);
+    const pageProxyReplacementTargets =
+      actionFilter === 'proxy_abnormal'
+        ? buildInspectionProxyReplacementTargets(
+            resultPagination.pageItems.filter((item) => item.proxySuspect === true)
+          )
+        : [];
     const panelResult: CodexInspectionRunResult | null = resultsRun
       ? {
           settings: {
@@ -2259,6 +2270,8 @@ export function ServerCodexInspectionPage({
           return t('monitoring.codex_inspection_filter_enable');
         case 'reauth':
           return t('monitoring.codex_inspection_filter_reauth');
+        case 'proxy_abnormal':
+          return t('monitoring.codex_inspection_filter_proxy_abnormal');
         case 'keep':
           return t('monitoring.codex_inspection_action_keep');
         case 'all':
@@ -2369,6 +2382,7 @@ export function ServerCodexInspectionPage({
         pendingActionCount={executableResults.length}
         manualActionCount={reauthResults.length}
         reauthActionCount={reauthResults.length}
+        pageProxyReplacementCount={pageProxyReplacementTargets.length}
         handlingFilterCounts={handlingFilterCounts}
         filterCounts={actionFilterCounts}
         handlingFilter={handlingFilter}
@@ -2387,6 +2401,11 @@ export function ServerCodexInspectionPage({
         onPageSizeChange={handleResultPageSizeChange}
         onExecutePlanned={() => handleExecuteServerActions(executableResults, 'bulk')}
         onExecuteSingle={() => undefined}
+        onReplaceCurrentPageProxy={
+          actionFilter === 'proxy_abnormal' && pageProxyReplacementTargets.length > 0
+            ? () => setProxyReplacementOpen(true)
+            : undefined
+        }
         onReauthAccount={(item) => {
           const source = resultByKey.get(item.key);
           if (source) handleOpenCodexReauth(source);
@@ -2502,6 +2521,24 @@ export function ServerCodexInspectionPage({
         onClose={() => setCodexReauthTarget(null)}
         onSuccess={handleCodexReauthSuccess}
         onServerRecoverySuccess={handleServerTokenRecoverySuccess}
+      />
+      <ProxyReplacementModal
+        open={proxyReplacementOpen}
+        managerRequestScope={managerRequestScope}
+        origin="inspection"
+        targets={
+          actionFilter === 'proxy_abnormal'
+            ? buildInspectionProxyReplacementTargets(
+                resultPagination.pageItems.filter((item) => item.proxySuspect === true)
+              )
+            : []
+        }
+        onClose={() => setProxyReplacementOpen(false)}
+        onCompleted={() => {
+          // The durable task performs its own directed recheck. Refresh only
+          // the credential inventory projection; do not request quota/history.
+          void loadCurrentAuthFiles();
+        }}
       />
     </div>
   );

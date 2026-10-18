@@ -145,6 +145,7 @@ const createResultItem = (
   quotaInventoryObserved: overrides.quotaInventoryObserved,
   errorKind: overrides.errorKind ?? '',
   errorDetail: overrides.errorDetail ?? '',
+  proxySuspect: overrides.proxySuspect ?? false,
   actionHandled: overrides.actionHandled ?? false,
 });
 
@@ -653,8 +654,10 @@ describe('Codex inspection error summaries', () => {
 });
 
 describe('local inspection lifecycle log details', () => {
-  it('pins auth-file loading and probes to the connection captured at session start', async () => {
-    const listSpy = vi.spyOn(authFilesApi, 'list').mockResolvedValue({ files: [] });
+  it('loads the proxy projection and pins probes to the connection captured at session start', async () => {
+    const listSpy = vi
+      .spyOn(authFilesApi, 'listWithProxyProjection')
+      .mockResolvedValue({ files: [] });
 
     await inspectCodexAccounts({
       config: null,
@@ -671,7 +674,7 @@ describe('local inspection lifecycle log details', () => {
   });
 
   it('emits server-shaped details for loading, collection, and completion', async () => {
-    vi.spyOn(authFilesApi, 'list').mockResolvedValue({ files: [] });
+    vi.spyOn(authFilesApi, 'listWithProxyProjection').mockResolvedValue({ files: [] });
     const logs: Array<{
       level: string;
       message: string;
@@ -715,7 +718,7 @@ describe('local inspection lifecycle log details', () => {
   });
 
   it('can defer the final completion log until automatic actions finish', async () => {
-    vi.spyOn(authFilesApi, 'list').mockResolvedValue({ files: [] });
+    vi.spyOn(authFilesApi, 'listWithProxyProjection').mockResolvedValue({ files: [] });
     const logs: Array<{ message: string }> = [];
     const session = createCodexInspectionSession({
       config: null,
@@ -734,7 +737,9 @@ describe('local inspection lifecycle log details', () => {
   });
 
   it('emits one structured error when loading auth files fails', async () => {
-    vi.spyOn(authFilesApi, 'list').mockRejectedValue(new Error('auth files unavailable'));
+    vi.spyOn(authFilesApi, 'listWithProxyProjection').mockRejectedValue(
+      new Error('auth files unavailable')
+    );
     const logs: Array<{
       level: string;
       message: string;
@@ -1580,6 +1585,7 @@ describe('Codex inspection action presentation', () => {
       'delete',
       'disable',
       'enable',
+      'proxy_abnormal',
       'keep',
     ]);
   });
@@ -1638,6 +1644,14 @@ describe('Codex inspection action presentation', () => {
       'reauth',
     ]);
     expect(filterByAction(items, 'keep').map((item) => item.action)).toEqual(['keep']);
+  });
+
+  it('filters proxy-suspect results independently of their suggested action', () => {
+    const items = [
+      createResultItem('keep', { key: 'suspect', proxySuspect: true }),
+      createResultItem('reauth', { key: 'reauth', proxySuspect: false }),
+    ];
+    expect(filterByAction(items, 'proxy_abnormal').map((item) => item.key)).toEqual(['suspect']);
   });
 
   it('paginates inspection results and clamps out-of-range pages', () => {
