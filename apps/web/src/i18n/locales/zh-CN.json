@@ -5407,6 +5407,7 @@
     "pool_summary": "未使用 {{unused}} · 可复用 {{fallback}} · 已排除疑似异常 {{suspect}}",
     "inspection_recheck": "写入成功的账号将进行一次定向复检；复检失败会保留新代理，并将该代理标记为疑似异常。",
     "pool_unavailable": "正常可用的保存代理不足，无法生成完整映射。",
+    "restore_suspects_and_retry": "恢复 {{count}} 条疑似代理状态并重新预览",
     "mapping_title": "冻结映射",
     "copy_mapping": "复制映射",
     "copied": "已复制",

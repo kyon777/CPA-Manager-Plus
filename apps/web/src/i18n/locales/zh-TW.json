@@ -5405,6 +5405,7 @@
     "pool_summary": "未使用 {{unused}} · 可重用 {{fallback}} · 已排除疑似異常 {{suspect}}",
     "inspection_recheck": "寫入成功的帳號將進行一次定向複檢；複檢失敗會保留新代理並標記為疑似異常。",
     "pool_unavailable": "正常可用的已儲存代理不足，無法建立完整對應。",
+    "restore_suspects_and_retry": "恢復 {{count}} 條疑似代理狀態並重新預覽",
     "mapping_title": "凍結對應",
     "copy_mapping": "複製對應",
     "copied": "已複製",

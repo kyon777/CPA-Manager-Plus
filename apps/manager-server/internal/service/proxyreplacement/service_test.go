@@ -13,6 +13,27 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
+func TestRecheckTransportVerifiedRequiresResponseEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		result model.ProxyReplacementProbeResult
+		want   bool
+	}{
+		{name: "successful response", result: model.ProxyReplacementProbeResult{Succeeded: true}, want: true},
+		{name: "http status response", result: model.ProxyReplacementProbeResult{ErrorCode: "http_status"}, want: true},
+		{name: "http code response", result: model.ProxyReplacementProbeResult{ErrorCode: "http_401"}, want: true},
+		{name: "missing credential", result: model.ProxyReplacementProbeResult{ErrorCode: "credential_not_found"}, want: false},
+		{name: "suspected transport", result: model.ProxyReplacementProbeResult{ErrorCode: "http_status", ProxySuspect: true}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := recheckTransportVerified(tt.result); got != tt.want {
+				t.Fatalf("recheckTransportVerified(%#v)=%v, want %v", tt.result, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPlanPoolPrefersUnusedThenRotatesAllNormalCandidates(t *testing.T) {
 	unused := []proxyCandidate{{URL: "http://p1", Fingerprint: "p1"}}
 	all := []proxyCandidate{
@@ -218,13 +239,14 @@ func TestInspectionSuccessfulRecheckClearsOnlyThePersistentSourceResult(t *testi
 		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
 	}}
 	inspectionResults := &recordingInspectionResults{}
+	pool := &recordingPoolState{}
 	service := NewWithOptions(Options{
 		Tasks: tasks,
 		SetupResolver: staticSetupResolver{setup: store.Setup{
 			CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key",
 		}},
 		Settings:          staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
-		PoolState:         staticPoolState{},
+		PoolState:         pool,
 		AuthFiles:         authFiles,
 		Rechecker:         &recordingRechecker{},
 		InspectionResults: inspectionResults,
@@ -246,6 +268,12 @@ func TestInspectionSuccessfulRecheckClearsOnlyThePersistentSourceResult(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Simulate a stale quarantine recorded after preview creation but before the
+	// directed recheck completes.
+	pool.states = []model.ProxyPoolState{{
+		Fingerprint: model.ProxyFingerprint("http://new"),
+		Status:      model.ProxyPoolStatusSuspect,
+	}}
 	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +286,118 @@ func TestInspectionSuccessfulRecheckClearsOnlyThePersistentSourceResult(t *testi
 	cleared := inspectionResults.calls[0][0]
 	if cleared.InspectionRunID != 44 || cleared.InspectionAccountKey != "one.json::1" || cleared.ClientKey != "browser-row-7" {
 		t.Fatalf("cleared target=%#v", cleared)
+	}
+	if got := pool.restored; !reflect.DeepEqual(got, []string{model.ProxyFingerprint("http://new")}) {
+		t.Fatalf("restored pool fingerprints=%#v", got)
+	}
+}
+
+func TestInspectionRecheckKeepsSharedProxySuspectWhenAnyTargetHasTransportFailure(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", "http://old-one", false),
+		proxyTestFile("runtime-2", "two.json", "2", "two@example.com", "http://old-two", false),
+	}}
+	pool := &recordingPoolState{}
+	probes := &recordingRechecker{results: []model.ProxyReplacementProbeResult{
+		{Target: model.ProxyReplacementTarget{ClientKey: "one"}, Succeeded: true},
+		{Target: model.ProxyReplacementTarget{ClientKey: "two"}, Succeeded: false, ProxySuspect: true, ErrorCode: "timeout", ErrorMessage: "context deadline exceeded"},
+	}}
+	service := NewWithOptions(Options{
+		Tasks:         tasks,
+		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://shared"}}},
+		PoolState:     pool,
+		AuthFiles:     authFiles,
+		Rechecker:     probes,
+	})
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source: model.ProxyReplacementSourceInspection,
+		Mode:   model.ProxyReplacementModePool,
+		Targets: []model.ProxyReplacementTarget{
+			{ClientKey: "one", FileName: "one.json", AuthIndex: "1", AccountEmail: "one@example.com", Provider: "codex", RuntimeID: "runtime-1"},
+			{ClientKey: "two", FileName: "two.json", AuthIndex: "2", AccountEmail: "two@example.com", Provider: "codex", RuntimeID: "runtime-2"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.restored; len(got) != 0 {
+		t.Fatalf("shared proxy restored despite transport failure: %#v", got)
+	}
+	if len(pool.calls) != 1 || pool.calls[0].proxyURL != "http://shared" {
+		t.Fatalf("shared proxy suspect calls=%#v", pool.calls)
+	}
+}
+
+func TestInspectionRecheckDoesNotRestoreSuspectPoolWithoutTransportEvidence(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", "http://old", false),
+	}}
+	pool := &recordingPoolState{}
+	probes := &recordingRechecker{results: []model.ProxyReplacementProbeResult{{
+		Target:       model.ProxyReplacementTarget{ClientKey: "one"},
+		Succeeded:    false,
+		ProxySuspect: false,
+		ErrorCode:    "credential_not_found",
+		ErrorMessage: "credential vanished before recheck",
+	}}}
+	service := NewWithOptions(Options{
+		Tasks:         tasks,
+		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
+		PoolState:     pool,
+		AuthFiles:     authFiles,
+		Rechecker:     probes,
+	})
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source: model.ProxyReplacementSourceInspection,
+		Mode:   model.ProxyReplacementModePool,
+		Targets: []model.ProxyReplacementTarget{{
+			ClientKey: "one", FileName: "one.json", AuthIndex: "1", AccountEmail: "one@example.com", Provider: "codex", RuntimeID: "runtime-1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.states = []model.ProxyPoolState{{
+		Fingerprint: model.ProxyFingerprint("http://new"),
+		Status:      model.ProxyPoolStatusSuspect,
+	}}
+	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.restored; len(got) != 0 {
+		t.Fatalf("pool restored without transport evidence: %#v", got)
+	}
+}
+
+func TestRestoreAllSuspectProxyPoolEntriesRestoresOnlySuspectStates(t *testing.T) {
+	pool := &recordingPoolState{states: []model.ProxyPoolState{
+		{Fingerprint: "normal", Status: model.ProxyPoolStatusNormal},
+		{Fingerprint: "suspect-a", Status: model.ProxyPoolStatusSuspect},
+		{Fingerprint: "suspect-b", Status: model.ProxyPoolStatusSuspect},
+	}}
+	service := NewWithOptions(Options{PoolState: pool})
+	restored, err := service.RestoreSuspectProxyPoolEntries(context.Background())
+	if err != nil {
+		t.Fatalf("restore suspect pool states: %v", err)
+	}
+	if restored != 2 {
+		t.Fatalf("restored count=%d, want 2", restored)
+	}
+	if got := pool.restored; !reflect.DeepEqual(got, []string{"suspect-a", "suspect-b"}) {
+		t.Fatalf("restored fingerprints=%#v", got)
 	}
 }
 
@@ -520,7 +660,9 @@ type recordedPoolStateCall struct {
 }
 
 type recordingPoolState struct {
-	calls []recordedPoolStateCall
+	states   []model.ProxyPoolState
+	calls    []recordedPoolStateCall
+	restored []string
 }
 
 type recordingInspectionResults struct {
@@ -532,10 +674,16 @@ func (s *recordingInspectionResults) ClearProxySuspects(_ context.Context, targe
 	return nil
 }
 
-func (s *recordingPoolState) List(context.Context) ([]model.ProxyPoolState, error) { return nil, nil }
+func (s *recordingPoolState) List(context.Context) ([]model.ProxyPoolState, error) {
+	return append([]model.ProxyPoolState(nil), s.states...), nil
+}
 func (s *recordingPoolState) MarkSuspect(_ context.Context, proxyURL, reason string) error {
 	s.calls = append(s.calls, recordedPoolStateCall{proxyURL: proxyURL, reason: reason})
 	return nil
+}
+func (s *recordingPoolState) Restore(_ context.Context, fingerprint string) (model.ProxyPoolState, error) {
+	s.restored = append(s.restored, fingerprint)
+	return model.ProxyPoolState{Fingerprint: fingerprint, Status: model.ProxyPoolStatusNormal}, nil
 }
 
 type staticSetupResolver struct {

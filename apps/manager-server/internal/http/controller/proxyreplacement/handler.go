@@ -35,6 +35,7 @@ type Service interface {
 	GetTask(context.Context, int64, int, int) (model.ProxyReplacementTaskPage, error)
 	ListProxyPool(context.Context) ([]model.ProxyPoolState, error)
 	RestoreProxyPoolEntry(context.Context, string) (model.ProxyPoolState, error)
+	RestoreSuspectProxyPoolEntries(context.Context) (int, error)
 	ReportInspectionSignal(context.Context, model.ProxyFailureEvidence) (bool, error)
 }
 
@@ -60,6 +61,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.requireAdmin(w, r, h.inspectionSignal)
 	case path == basePath+"/proxy-pool":
 		h.requirePanel(w, r, h.listPool)
+	case path == basePath+"/proxy-pool/restore-suspects":
+		h.requireAdmin(w, r, h.restoreSuspectPool)
 	case strings.HasPrefix(path, basePath+"/proxy-pool/") && strings.HasSuffix(path, "/restore"):
 		h.requireAdmin(w, r, h.restorePool)
 	case strings.HasPrefix(path, basePath+"/tasks/") && strings.HasSuffix(path, "/confirm"):
@@ -175,6 +178,23 @@ func (h *Handler) listPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.JSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) restoreSuspectPool(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.MethodNotAllowed(w)
+		return
+	}
+	if err := decodeEmptyRequest(http.MaxBytesReader(w, r.Body, maxSmallRequestLen)); err != nil {
+		response.Error(w, http.StatusBadRequest, err)
+		return
+	}
+	restored, err := h.Service.RestoreSuspectProxyPoolEntries(r.Context())
+	if err != nil {
+		response.Error(w, taskErrorStatus(err), safeHandlerError(err))
+		return
+	}
+	response.JSON(w, http.StatusOK, map[string]int{"restoredCount": restored})
 }
 
 func (h *Handler) restorePool(w http.ResponseWriter, r *http.Request) {

@@ -421,6 +421,10 @@ export interface ProxyPoolStatesResponse {
   items: ProxyPoolState[];
 }
 
+export interface ProxyPoolRestoreSuspectsResponse {
+  restoredCount: number;
+}
+
 export interface ProxyInspectionSignalRequest {
   proxyUrl: string;
   statusCode?: number;
@@ -3346,6 +3350,27 @@ export const usageServiceApi = {
     return withUsageServiceError(async () => {
       const response = await axios.get<ProxyPoolStatesResponse>(
         buildUrl(base, '/v0/management/proxy-replacements/proxy-pool'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  restoreSuspectProxyPoolStates: async (
+    base: string,
+    managementKey?: string
+  ): Promise<ProxyPoolRestoreSuspectsResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { restoredCount: 0 };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<ProxyPoolRestoreSuspectsResponse>(
+        buildUrl(base, '/v0/management/proxy-replacements/proxy-pool/restore-suspects'),
+        {},
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),

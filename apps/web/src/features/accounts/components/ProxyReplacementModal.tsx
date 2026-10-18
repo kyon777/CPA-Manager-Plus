@@ -68,6 +68,7 @@ export function ProxyReplacementModal({
   const [loadingPage, setLoadingPage] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [restoringSuspects, setRestoringSuspects] = useState(false);
   const completionNotifiedTaskRef = useRef<number | null>(null);
   const targetKey = useMemo(
     () =>
@@ -88,6 +89,7 @@ export function ProxyReplacementModal({
     setLoadingPage(false);
     setError('');
     setCopied(false);
+    setRestoringSuspects(false);
     completionNotifiedTaskRef.current = null;
   }, [open, origin, targetKey]);
 
@@ -217,6 +219,50 @@ export function ProxyReplacementModal({
     }
   }, [loadTaskPage, managerRequestScope, taskPage]);
 
+  const handleRestoreSuspectsAndRetry = useCallback(async () => {
+    if (!managerRequestScope || taskPage?.task.status !== 'unavailable' || busy) return;
+    setBusy(true);
+    setRestoringSuspects(true);
+    setError('');
+    try {
+      await usageServiceApi.restoreSuspectProxyPoolStates(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey
+      );
+      // An unavailable preview contains a deliberately empty mapping. Rebuild
+      // it only after the Manager-owned pool eligibility state is restored;
+      // no credential, quota, billing, or request-history refresh occurs here.
+      const page = await usageServiceApi.createProxyReplacementPreview(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey,
+        {
+          source: inspectionMode
+            ? 'inspection'
+            : effectiveMode === 'uniform'
+              ? 'batch_uniform'
+              : 'batch_pool',
+          mode: effectiveMode,
+          ...(effectiveMode === 'uniform' ? { uniformProxyUrl: uniformProxyUrl.trim() } : {}),
+          targets: [...targets],
+        }
+      );
+      setTaskPage(page);
+    } catch (restoreError) {
+      setError(asErrorMessage(restoreError));
+    } finally {
+      setRestoringSuspects(false);
+      setBusy(false);
+    }
+  }, [
+    busy,
+    effectiveMode,
+    inspectionMode,
+    managerRequestScope,
+    targets,
+    taskPage,
+    uniformProxyUrl,
+  ]);
+
   const mappingText = useMemo(
     () =>
       (taskPage?.items ?? [])
@@ -336,7 +382,24 @@ export function ProxyReplacementModal({
                 {t('proxy_replacement.inspection_recheck')}
               </p>
             ) : null}
-            {unavailable ? <p className={styles.error}>{t('proxy_replacement.pool_unavailable')}</p> : null}
+            {unavailable ? (
+              <div className={styles.unavailableRecovery}>
+                <p className={styles.error}>{t('proxy_replacement.pool_unavailable')}</p>
+                {task.suspectExcludedCount > 0 ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleRestoreSuspectsAndRetry()}
+                    loading={restoringSuspects}
+                    disabled={busy || !managerRequestScope}
+                  >
+                    {t('proxy_replacement.restore_suspects_and_retry', {
+                      count: task.suspectExcludedCount,
+                    })}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
             {terminal ? (
               <p className={styles.resultSummary}>
                 {t('proxy_replacement.completed_summary', {

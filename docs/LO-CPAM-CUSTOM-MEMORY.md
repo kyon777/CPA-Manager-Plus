@@ -283,3 +283,33 @@ usage/billing collection, quota calculation, or CPA scheduling.
   remains mandatory, so two recovery tasks for the same physical auth file
   never write concurrently. This only controls Token Acquisition/update jobs;
   it does not call CPA quota endpoints or change billing.
+
+## 2026-10-18: Proxy-replacement pool-state recovery after directed recheck
+
+This customization is CPAM-only. It must not alter CPA Core, `cli-proxy-api`,
+credential JSON except during an already-confirmed proxy-replacement task,
+usage/billing collection, quota calculation, or CPA scheduling.
+
+- `proxy_pool_state` is a Manager-owned eligibility quarantine keyed only by
+  normalized SHA-256 proxy fingerprints; it does not store raw proxy URLs.
+  A `suspect` entry excludes that saved proxy from future inspection-pool
+  allocations, which is why an old `transport_timeout` could otherwise leave a
+  usable proxy permanently unavailable.
+- After an inspection-origin replacement's directed recheck, CPAM aggregates
+  evidence **per new-proxy fingerprint**. A successful usage response or an
+  upstream HTTP response (including 401/quota/rate-limit business responses)
+  restores an already-suspect pool entry to `normal`. Local failures such as
+  `credential_not_found`, configuration errors, cancellation, or no response
+  are not transport proof and do not restore it.
+- If any target sharing that same proxy reports explicit `ProxySuspect` in the
+  same recheck batch, the suspect state wins regardless of result order; CPAM
+  keeps it quarantined. This prevents one successful account from resurrecting
+  a truly broken shared proxy.
+- The replacement modal's unavailable-pool state exposes an admin-only
+  **Restore N suspected proxy states and retry preview** action. It changes
+  only Manager `proxy_pool_state` status rows, then regenerates the frozen
+  preview. It never writes auth files, starts a quota refresh, changes billing,
+  or creates a CPA inspection. Preserve
+  `POST /v0/management/proxy-replacements/proxy-pool/restore-suspects` and the
+  paired `usageServiceApi.restoreSuspectProxyPoolStates` call across upstream
+  merges.

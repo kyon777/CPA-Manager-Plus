@@ -57,6 +57,13 @@
   overflow-wrap: anywhere;
 }
 
+.unavailableRecovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-sm;
+}
+
 .preview {
   display: flex;
   flex-direction: column;

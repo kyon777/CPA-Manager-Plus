@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   createPreview: vi.fn(),
   confirm: vi.fn(),
   getTask: vi.fn(),
+  restoreSuspectProxyPoolStates: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -28,6 +29,7 @@ vi.mock('@/services/api/usageService', () => ({
     createProxyReplacementPreview: mocks.createPreview,
     confirmProxyReplacementTask: mocks.confirm,
     getProxyReplacementTask: mocks.getTask,
+    restoreSuspectProxyPoolStates: mocks.restoreSuspectProxyPoolStates,
   },
 }));
 
@@ -143,6 +145,50 @@ describe('ProxyReplacementModal', () => {
       expect.objectContaining({ source: 'inspection', mode: 'pool' })
     );
     expect(renderer!.root.findByProps({ 'data-proxy-replacement-recheck': true }).props.children).toBeTruthy();
+    renderer!.unmount();
+  });
+
+  it('restores stale pool entries then regenerates an unavailable inspection preview', async () => {
+    const unavailableTask = {
+      ...draftPage.task,
+      source: 'inspection',
+      status: 'unavailable',
+      canConfirm: false,
+      recheckAfterWrite: true,
+      totalCount: 46,
+      unusedNormalCount: 0,
+      fallbackNormalCount: 0,
+      suspectExcludedCount: 23,
+    };
+    mocks.createPreview.mockResolvedValueOnce({ ...draftPage, task: unavailableTask });
+    mocks.createPreview.mockResolvedValueOnce(draftPage);
+    mocks.restoreSuspectProxyPoolStates.mockResolvedValue({ restoredCount: 23 });
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ProxyReplacementModal
+          open
+          managerRequestScope={{ apiBase: 'https://manager.example', managementKey: 'key' }}
+          origin="inspection"
+          targets={draftPage.items.map((item) => item.target)}
+          onClose={() => {}}
+        />
+      );
+    });
+
+    const previewCallsBefore = mocks.createPreview.mock.calls.length;
+    await act(async () => {
+      findButton(renderer!, 'proxy_replacement.preview').props.onClick();
+    });
+    await act(async () => {
+      findButton(renderer!, 'proxy_replacement.restore_suspects_and_retry').props.onClick();
+    });
+
+    expect(mocks.restoreSuspectProxyPoolStates).toHaveBeenCalledWith(
+      'https://manager.example',
+      'key'
+    );
+    expect(mocks.createPreview).toHaveBeenCalledTimes(previewCallsBefore + 2);
     renderer!.unmount();
   });
 

@@ -5412,6 +5412,7 @@
     "pool_summary": "Unused {{unused}} · reusable {{fallback}} · excluded suspected {{suspect}}",
     "inspection_recheck": "Successfully written credentials are rechecked once. A failed recheck preserves the new proxy and marks it suspected.",
     "pool_unavailable": "There are not enough normal saved proxies for a complete mapping.",
+    "restore_suspects_and_retry": "Restore {{count}} suspected proxy states and retry preview",
     "mapping_title": "Frozen mapping",
     "copy_mapping": "Copy mapping",
     "copied": "Copied",

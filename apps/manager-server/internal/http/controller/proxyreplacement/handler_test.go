@@ -47,6 +47,23 @@ func TestGetTaskValidatesPaginationBeforeService(t *testing.T) {
 	}
 }
 
+func TestRestoreSuspectPoolEntriesRequiresAdminAndReturnsRestoredCount(t *testing.T) {
+	handler, adminKey, service := newProxyReplacementHandler(t)
+	request := httptest.NewRequest(http.MethodPost, basePath+"/proxy-pool/restore-suspects", bytes.NewBufferString(`{}`))
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+	handler.Handle(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if service.restoreSuspectCalls != 1 {
+		t.Fatalf("restore suspect calls=%d", service.restoreSuspectCalls)
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"restoredCount":3`)) {
+		t.Fatalf("response=%s", recorder.Body.String())
+	}
+}
+
 func TestInspectionSignalForwardsStrictTransportEvidence(t *testing.T) {
 	handler, adminKey, service := newProxyReplacementHandler(t)
 	request := httptest.NewRequest(http.MethodPost, basePath+"/inspection-signals", bytes.NewBufferString(`{
@@ -79,10 +96,11 @@ func TestSafeHandlerErrorRedactsURLEmbeddedInsideStructuredError(t *testing.T) {
 }
 
 type fakeProxyReplacementService struct {
-	previewCalls int
-	getCalls     int
-	signalCalls  int
-	signal       model.ProxyFailureEvidence
+	previewCalls        int
+	getCalls            int
+	signalCalls         int
+	signal              model.ProxyFailureEvidence
+	restoreSuspectCalls int
 }
 
 func (s *fakeProxyReplacementService) CreatePreview(context.Context, model.ProxyReplacementPreviewRequest) (model.ProxyReplacementTaskPage, error) {
@@ -101,6 +119,10 @@ func (s *fakeProxyReplacementService) ListProxyPool(context.Context) ([]model.Pr
 }
 func (s *fakeProxyReplacementService) RestoreProxyPoolEntry(context.Context, string) (model.ProxyPoolState, error) {
 	return model.ProxyPoolState{}, nil
+}
+func (s *fakeProxyReplacementService) RestoreSuspectProxyPoolEntries(context.Context) (int, error) {
+	s.restoreSuspectCalls++
+	return 3, nil
 }
 func (s *fakeProxyReplacementService) ReportInspectionSignal(_ context.Context, evidence model.ProxyFailureEvidence) (bool, error) {
 	s.signalCalls++

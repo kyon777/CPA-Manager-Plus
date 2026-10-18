@@ -142,6 +142,35 @@ func (s *Service) RestoreProxyPoolEntry(ctx context.Context, fingerprint string)
 	return restorer.Restore(ctx, strings.TrimSpace(fingerprint))
 }
 
+// RestoreSuspectProxyPoolEntries deliberately changes only the Manager-owned
+// pool eligibility state. It never writes credential files, triggers a CPA
+// request, or mutates quota, billing, or inspection history.
+func (s *Service) RestoreSuspectProxyPoolEntries(ctx context.Context) (int, error) {
+	if s == nil || s.poolState == nil {
+		return 0, ErrUnavailable
+	}
+	restorer, ok := s.poolState.(poolStateRestorer)
+	if !ok {
+		return 0, ErrUnavailable
+	}
+	states, err := s.poolState.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	restored := 0
+	for _, state := range states {
+		fingerprint := strings.TrimSpace(state.Fingerprint)
+		if state.Status != model.ProxyPoolStatusSuspect || fingerprint == "" {
+			continue
+		}
+		if _, err := restorer.Restore(ctx, fingerprint); err != nil {
+			return restored, err
+		}
+		restored++
+	}
+	return restored, nil
+}
+
 // ReportInspectionSignal persists only independently classifiable proxy-chain
 // evidence from the browser-local inspection mode.  It deliberately ignores
 // every other failure class: authentication, rate limits, quota and normal
@@ -843,9 +872,55 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 	for _, result := range results {
 		byKey[result.Target.ClientKey] = result
 	}
+
+	// A pre-existing suspect entry is restored only after a directed recheck
+	// proves that the replacement proxy reached the upstream.  This lookup also
+	// avoids issuing a no-op Restore call for ordinary pool URLs that have never
+	// been quarantined.
+	preexistingSuspects := make(map[string]struct{})
+	if s.poolState != nil {
+		states, stateErr := s.poolState.List(ctx)
+		if stateErr != nil {
+			log.Printf("load proxy pool state for recheck reconciliation: %s", safeTaskError(stateErr))
+		} else {
+			for _, state := range states {
+				if state.Status != model.ProxyPoolStatusSuspect {
+					continue
+				}
+				if fingerprint := strings.TrimSpace(state.Fingerprint); fingerprint != "" {
+					preexistingSuspects[fingerprint] = struct{}{}
+				}
+			}
+		}
+	}
+	type poolRecheckEvidence struct {
+		verifiedTransport bool
+		proxySuspect      bool
+	}
+	evidenceByFingerprint := make(map[string]poolRecheckEvidence)
 	succeededTargets := make([]model.ProxyReplacementTarget, 0, len(targets))
 	for index, target := range targets {
 		result, found := byKey[target.ClientKey]
+		item, hasItem := itemsByKey[target.ClientKey]
+		fingerprint := ""
+		if hasItem {
+			fingerprint = strings.TrimSpace(item.NewProxyFingerprint)
+			if fingerprint == "" {
+				fingerprint = model.ProxyFingerprint(item.NewProxyURL)
+			}
+		}
+		if found && fingerprint != "" {
+			evidence := evidenceByFingerprint[fingerprint]
+			if result.ProxySuspect {
+				evidence.proxySuspect = true
+			} else if recheckTransportVerified(result) {
+				// HTTP authentication/quota failures are still proof that the
+				// proxy transport connected. Internal lookup/configuration
+				// failures are not, and must leave a quarantine intact.
+				evidence.verifiedTransport = true
+			}
+			evidenceByFingerprint[fingerprint] = evidence
+		}
 		if !found || !result.Succeeded {
 			message := "复检失败"
 			code := "recheck_failed"
@@ -855,13 +930,11 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 			if found && strings.TrimSpace(result.ErrorCode) != "" {
 				code = result.ErrorCode
 			}
-			if found && result.ProxySuspect && s.poolState != nil {
-				if item, ok := itemsByKey[target.ClientKey]; ok {
-					// Store only the new proxy fingerprint and a finite reason code.
-					// Recheck failure never rolls this value back or triggers another
-					// automatic pool allocation.
-					_ = s.poolState.MarkSuspect(ctx, item.NewProxyURL, proxySuspectReasonFromRecheck(result))
-				}
+			if found && result.ProxySuspect && s.poolState != nil && hasItem {
+				// Store only the new proxy fingerprint and a finite reason code.
+				// Recheck failure never rolls this value back or triggers another
+				// automatic pool allocation.
+				_ = s.poolState.MarkSuspect(ctx, item.NewProxyURL, proxySuspectReasonFromRecheck(result))
 			}
 			_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
 				RecheckErrorCode: code, RecheckErrorMessage: message,
@@ -871,6 +944,24 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 		_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemOutcome{})
 		succeededTargets = append(succeededTargets, target)
 	}
+
+	// A single explicit transport failure wins for a shared proxy in this batch.
+	// That prevents result order from resurrecting a genuinely bad pool entry.
+	if restorer, ok := s.poolState.(poolStateRestorer); ok {
+		for fingerprint, evidence := range evidenceByFingerprint {
+			if !evidence.verifiedTransport || evidence.proxySuspect {
+				continue
+			}
+			if _, wasSuspect := preexistingSuspects[fingerprint]; !wasSuspect {
+				continue
+			}
+			if _, restoreErr := restorer.Restore(ctx, fingerprint); restoreErr != nil {
+				// The task result remains authoritative. A later explicit
+				// recheck can reconcile a transient pool-state write failure.
+				log.Printf("restore proxy pool state after directed recheck: %s", safeTaskError(restoreErr))
+			}
+		}
+	}
 	if len(succeededTargets) > 0 && s.inspectionResults != nil {
 		if err := s.inspectionResults.ClearProxySuspects(ctx, succeededTargets); err != nil {
 			// The credential write and recheck are already authoritative. Leave
@@ -879,6 +970,20 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 			log.Printf("reconcile successful proxy recheck state: %s", safeTaskError(err))
 		}
 	}
+}
+
+// recheckTransportVerified distinguishes an actual CPA/ChatGPT HTTP response
+// from local bookkeeping failures such as missing credentials or cancelled
+// work. The latter cannot prove that a proxy has recovered.
+func recheckTransportVerified(result model.ProxyReplacementProbeResult) bool {
+	if result.ProxySuspect {
+		return false
+	}
+	if result.Succeeded {
+		return true
+	}
+	code := strings.ToLower(strings.TrimSpace(result.ErrorCode))
+	return code == "http_status" || strings.HasPrefix(code, "http_")
 }
 
 func proxySuspectReasonFromRecheck(result model.ProxyReplacementProbeResult) string {
