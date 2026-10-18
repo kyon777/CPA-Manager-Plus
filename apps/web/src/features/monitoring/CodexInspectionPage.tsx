@@ -36,6 +36,7 @@ import {
   buildInspectionProxyReplacementTargets,
 } from '@/features/accounts/model/proxyReplacementTargets';
 import { isLocalProxySuspect } from '@/features/accounts/model/proxyReplacement';
+import { reconcileSuccessfulProxyRechecks } from '@/features/monitoring/model/proxyRecheckReconciliation';
 import { CodexInspectionLogsPanel } from '@/features/monitoring/components/CodexInspectionLogsPanel';
 import { CodexInspectionResultsPanel } from '@/features/monitoring/components/CodexInspectionResultsPanel';
 import { CodexInspectionStatusPanel } from '@/features/monitoring/components/CodexInspectionStatusPanel';
@@ -1091,13 +1092,15 @@ export function CodexInspectionPage({
       // include proxy_url in the original local inspection input.
       const proxyURL = readInspectionProxyURL(item.raw) || readInspectionProxyURL(currentFile);
       const proxySuspect =
-        item.proxySuspect === true ||
-        isLocalProxySuspect({
-          proxyUrl: proxyURL,
-          statusCode: item.statusCode ?? undefined,
-          errorKind: item.errorKind,
-          errorDetail: item.errorDetail || item.error,
-        });
+        item.proxyRecheckSucceeded === true
+          ? false
+          : item.proxySuspect === true ||
+            isLocalProxySuspect({
+              proxyUrl: proxyURL,
+              statusCode: item.statusCode ?? undefined,
+              errorKind: item.errorKind,
+              errorDetail: item.errorDetail || item.error,
+            });
       if (!currentFile && item.proxySuspect === proxySuspect) return item;
       return {
         ...item,
@@ -2129,7 +2132,15 @@ export function CodexInspectionPage({
         origin="inspection"
         targets={pageProxyReplacementTargets}
         onClose={() => setProxyReplacementOpen(false)}
-        onCompleted={() => {
+        onCompleted={(completion) => {
+          setResult((previous) =>
+            previous
+              ? {
+                  ...previous,
+                  results: reconcileSuccessfulProxyRechecks(previous.results, completion.items),
+                }
+              : previous
+          );
           // Inventory only: the modal task itself owns its directed recheck.
           // Do not trigger quota, billing, history, or a new inspection run.
           void loadCurrentAuthFiles();

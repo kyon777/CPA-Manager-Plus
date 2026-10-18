@@ -145,4 +145,67 @@ describe('ProxyReplacementModal', () => {
     expect(renderer!.root.findByProps({ 'data-proxy-replacement-recheck': true }).props.children).toBeTruthy();
     renderer!.unmount();
   });
+
+  it('returns every terminal task page to completion reconciliation', async () => {
+    const terminalTask = {
+      ...draftPage.task,
+      source: 'inspection',
+      status: 'partial',
+      canConfirm: false,
+      recheckAfterWrite: true,
+      totalCount: 101,
+      recheckSuccessCount: 63,
+      recheckFailedCount: 38,
+    };
+    mocks.createPreview.mockResolvedValue({ ...draftPage, task: terminalTask, total: 101 });
+    mocks.getTask.mockImplementation(
+      async (_base: string, _key: string, _taskID: number, page: number, pageSize: number) => ({
+        task: terminalTask,
+        items: [
+          {
+            ...draftPage.items[0],
+            id: page,
+            target: { ...draftPage.items[0].target, clientKey: `row-${page}` },
+            status: page === 1 ? 'recheck_succeeded' : 'recheck_failed',
+          },
+        ],
+        page,
+        pageSize,
+        total: 101,
+      })
+    );
+    const onCompleted = vi.fn();
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ProxyReplacementModal
+          open
+          managerRequestScope={{ apiBase: 'https://manager.example', managementKey: 'key' }}
+          origin="inspection"
+          targets={draftPage.items.map((item) => item.target)}
+          onClose={() => {}}
+          onCompleted={onCompleted}
+        />
+      );
+    });
+
+    await act(async () => {
+      findButton(renderer!, 'proxy_replacement.preview').props.onClick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mocks.getTask).toHaveBeenCalledWith('https://manager.example', 'key', 71, 1, 100);
+    expect(mocks.getTask).toHaveBeenCalledWith('https://manager.example', 'key', 71, 2, 100);
+    expect(onCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: terminalTask,
+        items: expect.arrayContaining([
+          expect.objectContaining({ target: expect.objectContaining({ clientKey: 'row-1' }) }),
+          expect.objectContaining({ target: expect.objectContaining({ clientKey: 'row-2' }) }),
+        ]),
+      })
+    );
+    renderer!.unmount();
+  });
 });

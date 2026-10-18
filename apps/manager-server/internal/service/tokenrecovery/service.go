@@ -15,7 +15,11 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
-const defaultIdlePollInterval = 500 * time.Millisecond
+const (
+	defaultIdlePollInterval = 500 * time.Millisecond
+	defaultWorkerCount      = 1
+	maxWorkerCount          = 40
+)
 
 var (
 	ErrRecoveryNotConfigured = errors.New("token recovery is not configured")
@@ -78,6 +82,10 @@ type Options struct {
 	Acquirer            tokenacquisition.Acquirer
 	MutationCoordinator *cpaauthfiles.MutationCoordinator
 	IdlePollInterval    time.Duration
+	// WorkerCount bounds concurrent external token acquisition. The live app
+	// deliberately supplies 40; callers without an explicit setting retain the
+	// historical single-worker behavior.
+	WorkerCount int
 	// AutomaticEnabled is re-evaluated before every claim. A nil callback keeps
 	// the historical raw-service behavior (automatic work enabled); the live
 	// application supplies the persisted policy callback.
@@ -91,6 +99,7 @@ type Service struct {
 	acquirer            tokenacquisition.Acquirer
 	mutationCoordinator *cpaauthfiles.MutationCoordinator
 	idlePollInterval    time.Duration
+	workerCount         int
 	automaticEnabled    func(context.Context) bool
 	wake                chan struct{}
 	startOnce           sync.Once
@@ -109,6 +118,13 @@ func NewWithOptions(options Options) *Service {
 	if idlePollInterval <= 0 {
 		idlePollInterval = defaultIdlePollInterval
 	}
+	workerCount := options.WorkerCount
+	if workerCount <= 0 {
+		workerCount = defaultWorkerCount
+	}
+	if workerCount > maxWorkerCount {
+		workerCount = maxWorkerCount
+	}
 	return &Service{
 		tasks:               options.Tasks,
 		setupResolver:       options.SetupResolver,
@@ -116,8 +132,9 @@ func NewWithOptions(options Options) *Service {
 		acquirer:            options.Acquirer,
 		mutationCoordinator: coordinator,
 		idlePollInterval:    idlePollInterval,
+		workerCount:         workerCount,
 		automaticEnabled:    options.AutomaticEnabled,
-		wake:                make(chan struct{}, 1),
+		wake:                make(chan struct{}, workerCount),
 	}
 }
 
@@ -128,8 +145,22 @@ func (s *Service) Start(ctx context.Context) {
 	if s == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.startOnce.Do(func() {
-		go s.run(ctx)
+		// This recovery fence is process-wide. Running it in every worker would
+		// race the workers that have already claimed new tasks.
+		if s.tasks != nil {
+			_, _ = s.tasks.FailRunningTokenRecoveriesOnStartup(ctx)
+		}
+		for worker := 0; worker < s.workerCount; worker++ {
+			// Every worker may claim manual recovery. Only worker zero may claim an
+			// automatic task when no manual task is waiting, preserving the former
+			// single-worker background behavior while giving the current-page
+			// operator action up to 40 bounded slots.
+			go s.run(ctx, worker == 0)
+		}
 	})
 }
 
@@ -169,17 +200,16 @@ func (s *Service) GetByID(ctx context.Context, id int64) (model.TokenRecoveryTas
 	return s.tasks.GetTokenRecoveryByID(ctx, id)
 }
 
-func (s *Service) run(ctx context.Context) {
+func (s *Service) run(ctx context.Context, mayClaimAutomatic bool) {
 	if s.tasks == nil {
 		return
 	}
-	_, _ = s.tasks.FailRunningTokenRecoveriesOnStartup(ctx)
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		allowAutomatic := true
-		if s.automaticEnabled != nil {
+		allowAutomatic := mayClaimAutomatic
+		if allowAutomatic && s.automaticEnabled != nil {
 			allowAutomatic = s.automaticEnabled(ctx)
 		}
 		task, found, err := s.tasks.ClaimNextEligibleTokenRecovery(ctx, allowAutomatic)
@@ -357,9 +387,12 @@ func (s *Service) resolveSetup(ctx context.Context) (store.Setup, error) {
 }
 
 func (s *Service) notify() {
-	select {
-	case s.wake <- struct{}{}:
-	default:
+	for worker := 0; worker < s.workerCount; worker++ {
+		select {
+		case s.wake <- struct{}{}:
+		default:
+			return
+		}
 	}
 }
 

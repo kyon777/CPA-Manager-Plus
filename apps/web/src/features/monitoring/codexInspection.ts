@@ -161,6 +161,10 @@ export interface CodexInspectionQuotaWindow {
 }
 
 export interface CodexInspectionResultItem extends CodexInspectionAccount {
+  // Server-backed inspection rows retain their durable identity so a directed
+  // proxy recheck can clear only the exact persisted result it verified.
+  inspectionRunId?: number | null;
+  inspectionAccountKey?: string | null;
   action: CodexInspectionAction;
   actionReason: string;
   statusCode: number | null;
@@ -181,6 +185,10 @@ export interface CodexInspectionResultItem extends CodexInspectionAccount {
   // suggested account action: a healthy credential can still have a dead
   // egress proxy, and a failed credential may have failed for another reason.
   proxySuspect?: boolean;
+  // Browser-local result only: a directed proxy replacement recheck succeeded
+  // after this inspection, so the historical transport failure must not be
+  // re-derived against the newly written proxy URL.
+  proxyRecheckSucceeded?: boolean;
   actionHandled?: boolean;
   observedHeaderEvidence?: string[];
   observedHeaderAtMs?: number | null;

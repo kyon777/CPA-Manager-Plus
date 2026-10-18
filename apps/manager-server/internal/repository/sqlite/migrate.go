@@ -860,6 +860,8 @@ func Migrate(db *sql.DB) error {
 			task_id integer not null,
 			item_order integer not null,
 			client_key text not null,
+			inspection_run_id integer not null default 0,
+			inspection_account_key text not null default '',
 			file_name text not null,
 			auth_index text not null default '',
 			account_email text not null default '',
@@ -1286,6 +1288,8 @@ func ensureProxyReplacementTaskColumns(db *sql.DB) error {
 		return fmt.Errorf("ensure proxy_replacement_tasks columns: %w", err)
 	}
 	if err := ensureSQLiteTableColumns(db, "proxy_replacement_task_items", []sqliteColumnDefinition{
+		{name: "inspection_run_id", definition: "integer not null default 0"},
+		{name: "inspection_account_key", definition: "text not null default ''"},
 		{name: "auth_index", definition: "text not null default ''"},
 		{name: "account_email", definition: "text not null default ''"},
 		{name: "runtime_id", definition: "text not null default ''"},

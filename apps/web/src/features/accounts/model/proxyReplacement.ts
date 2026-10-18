@@ -31,6 +31,8 @@ export interface ProxyReplacementTarget {
   runtimeId?: string;
   accountId?: string;
   accountSnapshot?: string;
+  inspectionRunId?: number;
+  inspectionAccountKey?: string;
 }
 
 export interface ProxyReplacementTask {

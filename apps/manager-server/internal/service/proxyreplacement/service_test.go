@@ -159,6 +159,7 @@ func TestInspectionRecheckMarksNewTransportFailedProxySuspectWithoutRollback(t *
 		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
 	}}
 	pool := &recordingPoolState{}
+	inspectionResults := &recordingInspectionResults{}
 	probes := &recordingRechecker{results: []model.ProxyReplacementProbeResult{{
 		Target:       model.ProxyReplacementTarget{ClientKey: "one"},
 		Succeeded:    false,
@@ -171,10 +172,11 @@ func TestInspectionRecheckMarksNewTransportFailedProxySuspectWithoutRollback(t *
 		SetupResolver: staticSetupResolver{setup: store.Setup{
 			CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key",
 		}},
-		Settings:  staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
-		PoolState: pool,
-		AuthFiles: authFiles,
-		Rechecker: probes,
+		Settings:          staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
+		PoolState:         pool,
+		AuthFiles:         authFiles,
+		Rechecker:         probes,
+		InspectionResults: inspectionResults,
 	})
 	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
 		Source: model.ProxyReplacementSourceInspection,
@@ -204,6 +206,58 @@ func TestInspectionRecheckMarksNewTransportFailedProxySuspectWithoutRollback(t *
 	}
 	if len(pool.calls) != 1 || pool.calls[0].proxyURL != "http://new" || pool.calls[0].reason != "transport_timeout" {
 		t.Fatalf("pool suspect calls=%#v", pool.calls)
+	}
+	if len(inspectionResults.calls) != 0 {
+		t.Fatalf("failed recheck must not clear inspection proxy state: %#v", inspectionResults.calls)
+	}
+}
+
+func TestInspectionSuccessfulRecheckClearsOnlyThePersistentSourceResult(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
+	}}
+	inspectionResults := &recordingInspectionResults{}
+	service := NewWithOptions(Options{
+		Tasks: tasks,
+		SetupResolver: staticSetupResolver{setup: store.Setup{
+			CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key",
+		}},
+		Settings:          staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
+		PoolState:         staticPoolState{},
+		AuthFiles:         authFiles,
+		Rechecker:         &recordingRechecker{},
+		InspectionResults: inspectionResults,
+	})
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source: model.ProxyReplacementSourceInspection,
+		Mode:   model.ProxyReplacementModePool,
+		Targets: []model.ProxyReplacementTarget{{
+			ClientKey:            "browser-row-7",
+			FileName:             "one.json",
+			AuthIndex:            "1",
+			AccountEmail:         "a@example.com",
+			Provider:             "codex",
+			RuntimeID:            "runtime-1",
+			InspectionRunID:      44,
+			InspectionAccountKey: "one.json::1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(inspectionResults.calls) != 1 || len(inspectionResults.calls[0]) != 1 {
+		t.Fatalf("inspection clear calls=%#v", inspectionResults.calls)
+	}
+	cleared := inspectionResults.calls[0][0]
+	if cleared.InspectionRunID != 44 || cleared.InspectionAccountKey != "one.json::1" || cleared.ClientKey != "browser-row-7" {
+		t.Fatalf("cleared target=%#v", cleared)
 	}
 }
 
@@ -409,7 +463,6 @@ func (s *previewTaskStore) CompleteTask(_ context.Context, taskID int64) (model.
 			recheckSuccess++
 		case model.ProxyReplacementItemRecheckFailed:
 			updated++
-			failed++
 			recheckFailed++
 		case model.ProxyReplacementItemWriteFailed:
 			failed++
@@ -423,7 +476,7 @@ func (s *previewTaskStore) CompleteTask(_ context.Context, taskID int64) (model.
 	s.task.RecheckSuccessCount = recheckSuccess
 	s.task.RecheckFailedCount = recheckFailed
 	s.task.Status = model.ProxyReplacementTaskCompleted
-	if failed > 0 || skipped > 0 {
+	if failed > 0 || skipped > 0 || recheckFailed > 0 {
 		s.task.Status = model.ProxyReplacementTaskPartial
 	}
 	return s.task, nil
@@ -468,6 +521,15 @@ type recordedPoolStateCall struct {
 
 type recordingPoolState struct {
 	calls []recordedPoolStateCall
+}
+
+type recordingInspectionResults struct {
+	calls [][]model.ProxyReplacementTarget
+}
+
+func (s *recordingInspectionResults) ClearProxySuspects(_ context.Context, targets []model.ProxyReplacementTarget) error {
+	s.calls = append(s.calls, append([]model.ProxyReplacementTarget(nil), targets...))
+	return nil
 }
 
 func (s *recordingPoolState) List(context.Context) ([]model.ProxyPoolState, error) { return nil, nil }

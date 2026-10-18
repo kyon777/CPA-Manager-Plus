@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -296,11 +297,168 @@ func TestServiceStoresStructuredTokenAcquisitionFailureReason(t *testing.T) {
 	}
 }
 
+func TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency(t *testing.T) {
+	const workerCount = 40
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-concurrency.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	authFiles := &concurrentRecoveryAuthFiles{rawByFile: map[string][]byte{}}
+	acquirer := newBlockingRecoveryAcquirer(workerCount)
+	service := NewWithOptions(Options{
+		Tasks:               st,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:           authFiles,
+		Acquirer:            acquirer,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+		IdlePollInterval:    time.Millisecond,
+		WorkerCount:         workerCount,
+	})
+
+	taskIDs := make([]int64, 0, workerCount)
+	for index := 0; index < workerCount; index++ {
+		email := fmt.Sprintf("worker-%02d@example.com", index)
+		task, requestErr := service.RequestManual(ctx, model.TokenRecoveryTarget{
+			FileName:     fmt.Sprintf("worker-%02d.json", index),
+			AuthIndex:    fmt.Sprintf("auth-%02d", index),
+			AccountEmail: email,
+			Provider:     "codex",
+			ObservedAtMS: time.Now().UnixMilli(),
+		})
+		if requestErr != nil {
+			t.Fatalf("queue manual task %d: %v", index, requestErr)
+		}
+		taskIDs = append(taskIDs, task.ID)
+	}
+
+	service.Start(ctx)
+	acquirer.waitForEntries(t, workerCount)
+	if got := acquirer.maxConcurrent(); got != workerCount {
+		t.Fatalf("maximum simultaneous acquisitions = %d, want %d", got, workerCount)
+	}
+	acquirer.releaseAll()
+	for _, taskID := range taskIDs {
+		waitForTaskStatus(t, ctx, service, taskID, model.TokenRecoveryStatusSucceeded)
+	}
+}
+
 type recoveryCore struct {
 	server  *httptest.Server
 	mu      sync.Mutex
 	raw     []byte
 	uploads int
+}
+
+type concurrentRecoveryAuthFiles struct {
+	mu        sync.Mutex
+	rawByFile map[string][]byte
+}
+
+func (f *concurrentRecoveryAuthFiles) Download(_ context.Context, _ string, _ string, fileName string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if raw, ok := f.rawByFile[fileName]; ok {
+		return append([]byte(nil), raw...), nil
+	}
+	email := strings.TrimSuffix(fileName, ".json") + "@example.com"
+	raw, err := json.Marshal(map[string]string{
+		"email":         email,
+		"access_token":  "old-access",
+		"refresh_token": "old-refresh",
+		"id_token":      "old-id",
+	})
+	if err != nil {
+		return nil, err
+	}
+	f.rawByFile[fileName] = raw
+	return append([]byte(nil), raw...), nil
+}
+
+func (f *concurrentRecoveryAuthFiles) Upload(_ context.Context, _ string, _ string, fileName string, raw []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rawByFile[fileName] = append([]byte(nil), raw...)
+	return nil
+}
+
+type blockingRecoveryAcquirer struct {
+	entered chan struct{}
+	release chan struct{}
+
+	mu        sync.Mutex
+	current   int
+	maxActive int
+	once      sync.Once
+}
+
+func newBlockingRecoveryAcquirer(capacity int) *blockingRecoveryAcquirer {
+	return &blockingRecoveryAcquirer{
+		entered: make(chan struct{}, capacity),
+		release: make(chan struct{}),
+	}
+}
+
+func (a *blockingRecoveryAcquirer) Acquire(ctx context.Context, request tokenacquisition.Request) (tokenacquisition.Result, error) {
+	a.mu.Lock()
+	a.current++
+	if a.current > a.maxActive {
+		a.maxActive = a.current
+	}
+	a.mu.Unlock()
+
+	select {
+	case a.entered <- struct{}{}:
+	case <-ctx.Done():
+		a.leave()
+		return tokenacquisition.Result{}, ctx.Err()
+	}
+
+	select {
+	case <-a.release:
+		a.leave()
+		return tokenacquisition.Result{
+			Email:        request.Email,
+			AccessToken:  "new-access",
+			RefreshToken: "new-refresh",
+			IDToken:      "new-id",
+		}, nil
+	case <-ctx.Done():
+		a.leave()
+		return tokenacquisition.Result{}, ctx.Err()
+	}
+}
+
+func (a *blockingRecoveryAcquirer) leave() {
+	a.mu.Lock()
+	a.current--
+	a.mu.Unlock()
+}
+
+func (a *blockingRecoveryAcquirer) waitForEntries(t *testing.T, count int) {
+	t.Helper()
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	for index := 0; index < count; index++ {
+		select {
+		case <-a.entered:
+		case <-timeout.C:
+			t.Fatalf("only %d/%d recovery acquisitions entered", index, count)
+		}
+	}
+}
+
+func (a *blockingRecoveryAcquirer) maxConcurrent() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.maxActive
+}
+
+func (a *blockingRecoveryAcquirer) releaseAll() {
+	a.once.Do(func() { close(a.release) })
 }
 
 func newRecoveryCore(t *testing.T, raw []byte) *recoveryCore {

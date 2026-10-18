@@ -39,6 +39,10 @@ type Repository interface {
 	GetLatestRunByTrigger(ctx context.Context, triggerType, triggerKey string) (model.CodexInspectionRun, bool, error)
 	GetLatestRunByTriggerType(ctx context.Context, triggerType string) (model.CodexInspectionRun, bool, error)
 	ListResults(ctx context.Context, runID int64) ([]model.CodexInspectionResult, error)
+	// ClearProxySuspects acknowledges a successful directed proxy recheck for
+	// only the persisted result row that originated the replacement task.
+	// Historical runs and unrelated accounts remain immutable evidence.
+	ClearProxySuspects(ctx context.Context, targets []model.ProxyReplacementTarget) error
 	ListLogs(ctx context.Context, runID int64) ([]model.CodexInspectionLog, error)
 	ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error)
 	UpsertDisableOwnership(ctx context.Context, item model.CodexInspectionDisableOwnership) error
@@ -483,6 +487,38 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 		results = append(results, result)
 	}
 	return results, rows.Err()
+}
+
+func (r *repository) ClearProxySuspects(ctx context.Context, targets []model.ProxyReplacementTarget) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	return withSQLiteBusyRetry(ctx, func() error {
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, target := range targets {
+			runID := target.InspectionRunID
+			accountKey := strings.TrimSpace(target.InspectionAccountKey)
+			fileName := strings.TrimSpace(target.FileName)
+			provider := strings.ToLower(strings.TrimSpace(target.Provider))
+			if runID <= 0 || accountKey == "" || fileName == "" || provider == "" {
+				// Browser-local and ordinary account-batch replacement targets do
+				// not have a durable server-run identity to reconcile.
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `update codex_inspection_results
+				set proxy_suspect = 0
+				where run_id = ? and account_key = ? and file_name = ?
+					and lower(coalesce(provider, '')) = ?`,
+				runID, accountKey, fileName, provider); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
 }
 
 func (r *repository) ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error) {

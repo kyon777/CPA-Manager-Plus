@@ -75,6 +75,13 @@ type Rechecker interface {
 	RecheckProxyReplacement(context.Context, []model.ProxyReplacementTarget, int) []model.ProxyReplacementProbeResult
 }
 
+// InspectionResultStore is intentionally limited to acknowledging a successful
+// directed proxy recheck. It has no capability to create, alter, or delete
+// inspection evidence beyond clearing the now-resolved transport flag.
+type InspectionResultStore interface {
+	ClearProxySuspects(context.Context, []model.ProxyReplacementTarget) error
+}
+
 type Options struct {
 	Tasks               TaskStore
 	Settings            SettingsStore
@@ -84,6 +91,7 @@ type Options struct {
 	MutationCoordinator *cpaauthfiles.MutationCoordinator
 	Invalidator         InventoryInvalidator
 	Rechecker           Rechecker
+	InspectionResults   InspectionResultStore
 	Concurrency         int
 }
 
@@ -96,6 +104,7 @@ type Service struct {
 	mutationCoordinator *cpaauthfiles.MutationCoordinator
 	invalidator         InventoryInvalidator
 	rechecker           Rechecker
+	inspectionResults   InspectionResultStore
 	concurrency         int
 	now                 func() time.Time
 	workerMu            sync.Mutex
@@ -261,6 +270,7 @@ func NewWithOptions(options Options) *Service {
 		mutationCoordinator: coordinator,
 		invalidator:         options.Invalidator,
 		rechecker:           options.Rechecker,
+		inspectionResults:   options.InspectionResults,
 		concurrency:         concurrency,
 		now:                 time.Now,
 	}
@@ -833,6 +843,7 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 	for _, result := range results {
 		byKey[result.Target.ClientKey] = result
 	}
+	succeededTargets := make([]model.ProxyReplacementTarget, 0, len(targets))
 	for index, target := range targets {
 		result, found := byKey[target.ClientKey]
 		if !found || !result.Succeeded {
@@ -858,6 +869,15 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 			continue
 		}
 		_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemOutcome{})
+		succeededTargets = append(succeededTargets, target)
+	}
+	if len(succeededTargets) > 0 && s.inspectionResults != nil {
+		if err := s.inspectionResults.ClearProxySuspects(ctx, succeededTargets); err != nil {
+			// The credential write and recheck are already authoritative. Leave
+			// task success intact and retry reconciliation on a later explicit
+			// inspection rather than falsely reporting a write failure.
+			log.Printf("reconcile successful proxy recheck state: %s", safeTaskError(err))
+		}
 	}
 }
 

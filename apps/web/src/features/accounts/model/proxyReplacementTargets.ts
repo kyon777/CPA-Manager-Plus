@@ -85,6 +85,8 @@ export type ProxyReplacementInspectionIdentity = {
   accountId?: string | null;
   accountSnapshot?: string | null;
   displayAccount?: string | null;
+  inspectionRunId?: number | null;
+  inspectionAccountKey?: string | null;
 };
 
 export const buildInspectionProxyReplacementTargets = (
@@ -113,6 +115,8 @@ export const buildInspectionProxyReplacementTargets = (
     const accountSnapshot = String(item.accountSnapshot ?? '').trim();
     const accountEmail = firstEmail(accountSnapshot, item.displayAccount);
     const accountId = String(item.accountId ?? '').trim();
+    const inspectionRunId = Number(item.inspectionRunId ?? 0);
+    const inspectionAccountKey = String(item.inspectionAccountKey ?? '').trim();
     targets.push({
       clientKey,
       fileName,
@@ -122,6 +126,10 @@ export const buildInspectionProxyReplacementTargets = (
       ...(runtimeId ? { runtimeId } : {}),
       ...(accountId ? { accountId } : {}),
       ...(accountSnapshot ? { accountSnapshot } : {}),
+      ...(Number.isSafeInteger(inspectionRunId) && inspectionRunId > 0
+        ? { inspectionRunId }
+        : {}),
+      ...(inspectionAccountKey ? { inspectionAccountKey } : {}),
     });
   });
   return targets;

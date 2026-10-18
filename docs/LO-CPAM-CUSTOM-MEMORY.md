@@ -256,3 +256,30 @@ the usage collector, scheduling, quota calculation, or billing data.
   Authentication Required` (case-insensitive). Generic HTTP 500, generic
   proxy 407, other endpoints, and other EOF messages must never be demoted.
   The existing peer-priority rebalance and zero floor remain unchanged.
+
+## 2026-10-18: Proxy-replacement recheck reconciliation and 40-slot manual recovery
+
+This customization is CPAM-only. It must not alter CPA Core, `cli-proxy-api`,
+usage/billing collection, quota calculation, or CPA scheduling.
+
+- An inspection-origin proxy replacement now persists the exact server
+  inspection identity (`inspection_run_id` + `inspection_account_key`) with the
+  durable task item. After a directed recheck succeeds, CPAM clears
+  `proxy_suspect` only for that exact persisted result row. A failed recheck
+  remains in the `proxy_abnormal` filter; historical runs and other accounts
+  are not changed.
+- Browser-local inspection results use `proxyRecheckSucceeded` in the saved
+  last-run state. When the modal task finishes, it retrieves every task page
+  (not just the visible 50 rows) and clears only successful targets from the
+  local proxy-abnormal count. This is inventory/result-state reconciliation;
+  it must not start another inspection or refresh quota, billing, or history.
+- Proxy replacement task totals distinguish write and recheck outcomes:
+  `failed_count` means `write_failed` only. `recheck_failed_count` remains
+  separate, but any recheck failure still makes the task `partial`.
+- The live Token Recovery service is configured with `WorkerCount: 40` for
+  the manual current-page credential update action. All workers can claim
+  manual tasks; only one may claim automatic work when manual work is absent,
+  preserving bounded background behavior. The per-file mutation coordinator
+  remains mandatory, so two recovery tasks for the same physical auth file
+  never write concurrently. This only controls Token Acquisition/update jobs;
+  it does not call CPA quota endpoints or change billing.

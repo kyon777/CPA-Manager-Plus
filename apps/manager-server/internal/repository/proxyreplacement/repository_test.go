@@ -86,3 +86,50 @@ func TestDraftExpiryAndRunningRecoveryAreDurable(t *testing.T) {
 		t.Fatalf("expired task = %#v, err=%v", page.Task, err)
 	}
 }
+
+func TestCompleteTaskSeparatesWriteFailuresFromRecheckFailures(t *testing.T) {
+	db := openTestDB(t)
+	repo := proxyreplacement.New(db, testProtector(t))
+	ctx := context.Background()
+	task, err := repo.CreateDraft(ctx, model.ProxyReplacementTask{
+		Source: model.ProxyReplacementSourceInspection,
+		Mode:   model.ProxyReplacementModePool,
+	}, []model.ProxyReplacementTaskItem{
+		{Target: model.ProxyReplacementTarget{ClientKey: "success", FileName: "success.json", Provider: "codex"}},
+		{Target: model.ProxyReplacementTarget{ClientKey: "recheck-failed", FileName: "recheck-failed.json", Provider: "codex"}},
+		{Target: model.ProxyReplacementTarget{ClientKey: "write-failed", FileName: "write-failed.json", Provider: "codex"}},
+	})
+	if err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+	if _, err := repo.ConfirmDraft(ctx, task.ID, 1); err != nil {
+		t.Fatalf("confirm draft: %v", err)
+	}
+	if _, claimed, err := repo.ClaimNextQueued(ctx); err != nil || !claimed {
+		t.Fatalf("claim queued: claimed=%v err=%v", claimed, err)
+	}
+	page, err := repo.GetTask(ctx, task.ID, 1, 10)
+	if err != nil || len(page.Items) != 3 {
+		t.Fatalf("task page=%#v err=%v", page, err)
+	}
+	if err := repo.MarkItem(ctx, page.Items[0].ID, model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemOutcome{}); err != nil {
+		t.Fatalf("mark recheck success: %v", err)
+	}
+	if err := repo.MarkItem(ctx, page.Items[1].ID, model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{RecheckErrorCode: "timeout"}); err != nil {
+		t.Fatalf("mark recheck failure: %v", err)
+	}
+	if err := repo.MarkItem(ctx, page.Items[2].ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{WriteErrorCode: "write_failed"}); err != nil {
+		t.Fatalf("mark write failure: %v", err)
+	}
+
+	completed, err := repo.CompleteTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+	if completed.UpdatedCount != 2 || completed.FailedCount != 1 || completed.RecheckSuccessCount != 1 || completed.RecheckFailedCount != 1 {
+		t.Fatalf("completed task counts = %#v", completed)
+	}
+	if completed.Status != model.ProxyReplacementTaskPartial {
+		t.Fatalf("completed task status = %q, want %q", completed.Status, model.ProxyReplacementTaskPartial)
+	}
+}

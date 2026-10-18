@@ -629,6 +629,8 @@ export function toServerResultItem(
   const normalizedAccountNote = accountNote.trim();
   return {
     key: `server-${item.id || item.accountKey}`,
+    inspectionRunId: item.runId,
+    inspectionAccountKey: item.accountKey,
     runtimeId: item.runtimeId ?? null,
     fileName: item.fileName,
     displayAccount: item.displayAccount,
@@ -2535,9 +2537,13 @@ export function ServerCodexInspectionPage({
         }
         onClose={() => setProxyReplacementOpen(false)}
         onCompleted={() => {
-          // The durable task performs its own directed recheck. Refresh only
-          // the credential inventory projection; do not request quota/history.
+          // The durable task has already performed the directed recheck. Reload
+          // only this inspection run so persisted proxy-suspect flags/counts
+          // immediately reflect verified replacements; do not request quota or
+          // history data.
           void loadCurrentAuthFiles();
+          const runID = currentDetail?.run.id;
+          if (serviceBase && runID) void loadRunDetail(serviceBase, runID);
         }}
       />
     </div>

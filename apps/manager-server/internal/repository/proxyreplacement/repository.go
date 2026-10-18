@@ -112,13 +112,15 @@ func (r *repository) CreateDraft(ctx context.Context, task model.ProxyReplacemen
 			status = model.ProxyReplacementItemPlanned
 		}
 		if _, err := tx.ExecContext(ctx, `insert into proxy_replacement_task_items (
-			task_id, item_order, client_key, file_name, auth_index, account_email, provider,
+			task_id, item_order, client_key, inspection_run_id, inspection_account_key,
+			file_name, auth_index, account_email, provider,
 			runtime_id, account_id, account_snapshot, old_proxy_fingerprint, old_proxy_ciphertext,
 			new_proxy_fingerprint, new_proxy_ciphertext, allocation_source, status,
 			write_error_code, write_error_message, recheck_error_code, recheck_error_message,
 			created_at_ms, updated_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			taskID, index, item.Target.ClientKey, item.Target.FileName, item.Target.AuthIndex,
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			taskID, index, item.Target.ClientKey, item.Target.InspectionRunID, item.Target.InspectionAccountKey,
+			item.Target.FileName, item.Target.AuthIndex,
 			item.Target.AccountEmail, item.Target.Provider, item.Target.RuntimeID, item.Target.AccountID,
 			item.Target.AccountSnapshot, model.ProxyFingerprint(oldProxyURL), oldCiphertext,
 			model.ProxyFingerprint(newProxyURL), newCiphertext, item.AllocationSource, status,
@@ -158,7 +160,8 @@ func (r *repository) GetTask(ctx context.Context, taskID int64, page, pageSize i
 	}
 	offset := (page - 1) * pageSize
 	rows, err := r.db.QueryContext(ctx, `select
-		id, task_id, item_order, client_key, file_name, auth_index, account_email, provider,
+		id, task_id, item_order, client_key, inspection_run_id, inspection_account_key,
+		file_name, auth_index, account_email, provider,
 		runtime_id, account_id, account_snapshot, old_proxy_fingerprint, old_proxy_ciphertext,
 		new_proxy_fingerprint, new_proxy_ciphertext, allocation_source, status,
 		coalesce(write_error_code, ''), coalesce(write_error_message, ''),
@@ -319,13 +322,13 @@ func (r *repository) CompleteTask(ctx context.Context, taskID int64) (model.Prox
 	var updated, failed, skipped, recheckSucceeded, recheckFailed int
 	err = tx.QueryRowContext(ctx, `select
 		sum(case when status in (?, ?, ?) then 1 else 0 end),
-		sum(case when status in (?, ?) then 1 else 0 end),
+		sum(case when status = ? then 1 else 0 end),
 		sum(case when status = ? then 1 else 0 end),
 		sum(case when status = ? then 1 else 0 end),
 		sum(case when status = ? then 1 else 0 end)
 		from proxy_replacement_task_items where task_id = ?`,
 		model.ProxyReplacementItemUpdated, model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemRecheckFailed,
-		model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemRecheckFailed,
+		model.ProxyReplacementItemWriteFailed,
 		model.ProxyReplacementItemSkippedStale,
 		model.ProxyReplacementItemRecheckSucceeded,
 		model.ProxyReplacementItemRecheckFailed,
@@ -334,7 +337,7 @@ func (r *repository) CompleteTask(ctx context.Context, taskID int64) (model.Prox
 		return model.ProxyReplacementTask{}, err
 	}
 	status := model.ProxyReplacementTaskCompleted
-	if failed > 0 || skipped > 0 {
+	if failed > 0 || skipped > 0 || recheckFailed > 0 {
 		status = model.ProxyReplacementTaskPartial
 	}
 	now := time.Now().UnixMilli()
@@ -477,7 +480,8 @@ func (r *repository) scanTaskItem(scanner taskRowScanner) (model.ProxyReplacemen
 	var oldCiphertext, newCiphertext string
 	err := scanner.Scan(
 		&item.ID, &item.TaskID, &item.ItemOrder,
-		&item.Target.ClientKey, &item.Target.FileName, &item.Target.AuthIndex, &item.Target.AccountEmail, &item.Target.Provider,
+		&item.Target.ClientKey, &item.Target.InspectionRunID, &item.Target.InspectionAccountKey,
+		&item.Target.FileName, &item.Target.AuthIndex, &item.Target.AccountEmail, &item.Target.Provider,
 		&item.Target.RuntimeID, &item.Target.AccountID, &item.Target.AccountSnapshot,
 		&item.OldProxyFingerprint, &oldCiphertext, &item.NewProxyFingerprint, &newCiphertext, &item.AllocationSource, &item.Status,
 		&item.WriteErrorCode, &item.WriteErrorMessage, &item.RecheckErrorCode, &item.RecheckErrorMessage,

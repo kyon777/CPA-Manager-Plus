@@ -192,6 +192,7 @@ func fromExisting(
 		AutomaticEnabled: func(ctx context.Context) bool {
 			return accountProcessingPolicyService.RuntimeSettings(ctx).CodexReauthAutoUpdateEnabled
 		},
+		WorkerCount: 40,
 	})
 	automaticTokenRecoverySignal := tokenrecoverysvc.NewAutomaticSignalGate(tokenrecoverysvc.AutomaticSignalGateOptions{
 		Recovery:      tokenRecoveryService,
@@ -230,6 +231,7 @@ func fromExisting(
 		MutationCoordinator: authFileMutationCoordinator,
 		Invalidator:         proxyService,
 		Rechecker:           codexInspectionService,
+		InspectionResults:   st.CodexInspections,
 	})
 	credentialListService := credentiallistsvc.NewWithRecentRecoveryAndGlobalMetricsReader(
 		proxyService,

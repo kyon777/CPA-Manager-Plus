@@ -86,6 +86,8 @@ describe('proxy replacement model', () => {
           accountId: 'acct-1',
           accountSnapshot: 'Alice@Example.com',
           displayAccount: 'Alice@Example.com',
+          inspectionRunId: 44,
+          inspectionAccountKey: 'alice.json::8',
         },
       ])
     ).toEqual([
@@ -98,6 +100,8 @@ describe('proxy replacement model', () => {
         runtimeId: 'runtime-8',
         accountId: 'acct-1',
         accountSnapshot: 'Alice@Example.com',
+        inspectionRunId: 44,
+        inspectionAccountKey: 'alice.json::8',
       },
     ]);
   });

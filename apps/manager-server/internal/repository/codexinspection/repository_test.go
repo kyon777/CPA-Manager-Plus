@@ -208,6 +208,83 @@ func TestResultRoundTripPreservesProxySuspect(t *testing.T) {
 	}
 }
 
+func TestClearProxySuspectsOnlyChangesTheExactInspectionRunAndAccount(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repository := New(db)
+	ctx := context.Background()
+	createRun := func(t *testing.T) model.CodexInspectionRun {
+		t.Helper()
+		run, createErr := repository.CreateRun(ctx, model.CodexInspectionRun{
+			TriggerType: "manual",
+			Status:      model.CodexInspectionStatusCompleted,
+			StartedAtMS: time.Now().UnixMilli(),
+			Settings:    model.DefaultCodexInspectionConfig(),
+		})
+		if createErr != nil {
+			t.Fatalf("create run: %v", createErr)
+		}
+		return run
+	}
+	runA := createRun(t)
+	runB := createRun(t)
+	for _, result := range []model.CodexInspectionResult{
+		{
+			RunID: runA.ID, AccountKey: "account-a", FileName: "same.json", DisplayAccount: "a@example.com",
+			AccountSnapshot: "a@example.com", AuthIndex: "auth-a", Provider: "codex", Action: "keep", ProxySuspect: true,
+		},
+		{
+			RunID: runA.ID, AccountKey: "account-b", FileName: "other.json", DisplayAccount: "b@example.com",
+			AccountSnapshot: "b@example.com", AuthIndex: "auth-b", Provider: "codex", Action: "keep", ProxySuspect: true,
+		},
+		{
+			RunID: runB.ID, AccountKey: "account-a", FileName: "same.json", DisplayAccount: "a@example.com",
+			AccountSnapshot: "a@example.com", AuthIndex: "auth-a", Provider: "codex", Action: "keep", ProxySuspect: true,
+		},
+	} {
+		if _, insertErr := repository.InsertResult(ctx, result); insertErr != nil {
+			t.Fatalf("insert result: %v", insertErr)
+		}
+	}
+
+	if err := repository.ClearProxySuspects(ctx, []model.ProxyReplacementTarget{{
+		InspectionRunID:      runA.ID,
+		InspectionAccountKey: "account-a",
+		ClientKey:            "browser-row-a",
+		FileName:             "same.json",
+		AuthIndex:            "auth-a",
+		AccountEmail:         "a@example.com",
+		Provider:             "codex",
+	}}); err != nil {
+		t.Fatalf("clear proxy suspect: %v", err)
+	}
+
+	itemsA, err := repository.ListResults(ctx, runA.ID)
+	if err != nil {
+		t.Fatalf("list run A: %v", err)
+	}
+	if len(itemsA) != 2 {
+		t.Fatalf("run A proxy state = %#v", itemsA)
+	}
+	stateA := map[string]bool{}
+	for _, item := range itemsA {
+		stateA[item.AccountKey] = item.ProxySuspect
+	}
+	if stateA["account-a"] || !stateA["account-b"] {
+		t.Fatalf("run A proxy state = %#v", stateA)
+	}
+	itemsB, err := repository.ListResults(ctx, runB.ID)
+	if err != nil {
+		t.Fatalf("list run B: %v", err)
+	}
+	if len(itemsB) != 1 || !itemsB[0].ProxySuspect {
+		t.Fatalf("run B must remain untouched: %#v", itemsB)
+	}
+}
+
 func TestResultRoundTripRejectsMalformedQuotaInventoryAndPreservesValidUpsertEvidence(t *testing.T) {
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

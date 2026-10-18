@@ -55,14 +55,16 @@ const (
 )
 
 type ProxyReplacementTarget struct {
-	ClientKey       string `json:"clientKey"`
-	FileName        string `json:"fileName"`
-	AuthIndex       string `json:"authIndex,omitempty"`
-	AccountEmail    string `json:"accountEmail,omitempty"`
-	Provider        string `json:"provider"`
-	RuntimeID       string `json:"runtimeId,omitempty"`
-	AccountID       string `json:"accountId,omitempty"`
-	AccountSnapshot string `json:"accountSnapshot,omitempty"`
+	ClientKey            string `json:"clientKey"`
+	FileName             string `json:"fileName"`
+	AuthIndex            string `json:"authIndex,omitempty"`
+	AccountEmail         string `json:"accountEmail,omitempty"`
+	Provider             string `json:"provider"`
+	RuntimeID            string `json:"runtimeId,omitempty"`
+	AccountID            string `json:"accountId,omitempty"`
+	AccountSnapshot      string `json:"accountSnapshot,omitempty"`
+	InspectionRunID      int64  `json:"inspectionRunId,omitempty"`
+	InspectionAccountKey string `json:"inspectionAccountKey,omitempty"`
 }
 
 // ProxyReplacementPreviewRequest is the browser-to-Manager request. It has no

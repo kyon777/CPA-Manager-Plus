@@ -6,6 +6,7 @@ import { Modal } from '@/components/ui/Modal';
 import { IconCopy, IconRefreshCw } from '@/components/ui/icons';
 import {
   usageServiceApi,
+  type ProxyReplacementTaskItem,
   type ProxyReplacementTaskPage,
 } from '@/services/api/usageService';
 import {
@@ -18,6 +19,13 @@ import styles from './ProxyReplacementModal.module.scss';
 
 export type ProxyReplacementModalOrigin = 'inspection' | 'accounts';
 
+export type ProxyReplacementCompletion = {
+  task: ProxyReplacementTaskPage['task'];
+  // Completion reconciliation must include every task item, not only the
+  // modal's currently visible 50-row page.
+  items: ProxyReplacementTaskItem[];
+};
+
 export type ProxyReplacementModalProps = {
   open: boolean;
   managerRequestScope?: {
@@ -27,11 +35,12 @@ export type ProxyReplacementModalProps = {
   origin: ProxyReplacementModalOrigin;
   targets: readonly ProxyReplacementTarget[];
   onClose: () => void;
-  onCompleted?: (task: ProxyReplacementTaskPage['task']) => void;
+  onCompleted?: (completion: ProxyReplacementCompletion) => void;
 };
 
 const TASK_POLL_INTERVAL_MS = 700;
 const TASK_PAGE_SIZE = 50;
+const COMPLETION_PAGE_SIZE = 100;
 
 const asErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error || 'Proxy replacement request failed');
@@ -105,6 +114,26 @@ export function ProxyReplacementModal({
     [managerRequestScope]
   );
 
+  const loadCompletedTaskItems = useCallback(
+    async (task: ProxyReplacementTaskPage['task']): Promise<ProxyReplacementTaskItem[]> => {
+      if (!managerRequestScope) return [];
+      const totalPages = Math.max(1, Math.ceil(task.totalCount / COMPLETION_PAGE_SIZE));
+      const pages = await Promise.all(
+        Array.from({ length: totalPages }, (_, index) =>
+          usageServiceApi.getProxyReplacementTask(
+            managerRequestScope.apiBase,
+            managerRequestScope.managementKey,
+            task.id,
+            index + 1,
+            COMPLETION_PAGE_SIZE
+          )
+        )
+      );
+      return pages.flatMap((page) => page.items);
+    },
+    [managerRequestScope]
+  );
+
   useEffect(() => {
     if (!isPollableTask(taskPage) || !open || busy || !managerRequestScope) return;
     const timer = window.setTimeout(() => {
@@ -117,8 +146,23 @@ export function ProxyReplacementModal({
     if (!taskPage || !isProxyReplacementTaskTerminal(taskPage.task.status)) return;
     if (completionNotifiedTaskRef.current === taskPage.task.id) return;
     completionNotifiedTaskRef.current = taskPage.task.id;
-    onCompleted?.(taskPage.task);
-  }, [onCompleted, taskPage]);
+    let cancelled = false;
+    void loadCompletedTaskItems(taskPage.task)
+      .then((items) => {
+        if (!cancelled) onCompleted?.({ task: taskPage.task, items });
+      })
+      .catch((completionError) => {
+        // The replacement itself is terminal. Do not relabel it as a write
+        // failure if the optional UI reconciliation read fails; surface the
+        // read issue and reconcile the currently visible page at minimum.
+        if (cancelled) return;
+        setError(asErrorMessage(completionError));
+        onCompleted?.({ task: taskPage.task, items: taskPage.items });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadCompletedTaskItems, onCompleted, taskPage]);
 
   const handlePreview = useCallback(async () => {
     if (!managerRequestScope || targets.length === 0) return;
