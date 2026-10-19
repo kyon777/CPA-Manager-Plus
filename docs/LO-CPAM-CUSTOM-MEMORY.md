@@ -390,3 +390,41 @@ billing, scheduler, or priority-demotion calls.
   auth-file operation budget. Existing historical `recovery_failed` records
   cannot be retroactively diagnosed because raw errors were intentionally not
   stored; they remain manually retryable.
+
+## 2026-10-19: Visible priority synchronization after server-error demotion
+
+This is CPAM-only. It is a read-only UI projection over CPAM's existing
+durable server-error priority queue. It must never modify CPA Core,
+`cli-proxy-api`, credential JSON, request routing, scheduling, usage events,
+quota, history, or billing/price data.
+
+- Preserve the authenticated Manager endpoint
+  `GET /v0/management/server-error-priority-demotions/updates`. It must remain
+  routed locally before the generic CPA management proxy and may return only
+  the redacted completed `demoted` records: `id`, `fileName`, `authIndex`,
+  `provider`, `priorityBefore`, `priorityTarget`, and `completedAtMs`, using
+  the stable `(completed_at_ms, id)` cursor and the bounded terminal-index
+  query. Do not expose failure bodies, account snapshots, proxy URLs, tokens,
+  or management keys.
+- The endpoint is strictly read-only against CPAM's
+  `server_error_priority_demotion_jobs` table. It must not invoke a CPA
+  auth-file read, CPA PATCH, quota/header/history/window-usage loading, token
+  recovery, or any billing path. Keep
+  `idx_server_error_priority_demotion_updates` as an additive SQLite migration.
+- The accounts workspace must poll this narrow endpoint once per second only
+  while the accounts view is active, the document is visible, the visible
+  auth-file inventory is loaded, and a Manager scope is available. Preserve
+  AbortController cancellation and the single-flight guard on view/scope
+  changes. This polling path must never call `loadFiles()` or create a hidden
+  full credential refresh.
+- Apply a returned update only when the current local row matches exactly on
+  physical `fileName`, normalized `authIndex`, and normalized `provider`, and
+  its priority still equals `priorityBefore`. Update with `replaceFiles` only
+  in that case. This guard is mandatory: it prevents a delayed queue event
+  from overwriting a newer operator priority edit.
+- Preserve the five-second startup overlap and tuple-cursor continuation so a
+  just-completed demotion appears in the open credential list within seconds,
+  without touching the existing priority queue execution semantics. During
+  future upstream merges retain the endpoint, frontend API contract,
+  `applyServerErrorPriorityUpdates`, `useServerErrorPriorityUpdates`, page
+  wiring, and their tests.
