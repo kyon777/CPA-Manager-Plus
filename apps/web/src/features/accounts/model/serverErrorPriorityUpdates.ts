@@ -51,9 +51,10 @@ export const applyServerErrorPriorityUpdates = (
     ) {
       continue;
     }
-    const currentFiles = nextFiles ?? files;
+    const currentFiles: readonly AuthFileItem[] = nextFiles ?? files;
     const index = currentFiles.findIndex(
-      (file) => sameCredential(file, update) && readPriority(file) === update.priorityBefore
+      (file: AuthFileItem) =>
+        sameCredential(file, update) && readPriority(file) === update.priorityBefore
     );
     if (index < 0) continue;
 

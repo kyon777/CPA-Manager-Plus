@@ -32,6 +32,7 @@ import type {
   CodexInspectionRun,
   CredentialRuntimeMetadataItem,
   QuotaCooldownInfo,
+  ServerErrorPriorityDemotionUpdate,
   TokenRecoveryBatchItem,
   UsageHeaderSnapshot,
 } from '@/services/api/usageService';
@@ -436,6 +437,13 @@ const { mocks } = vi.hoisted(() => {
       loadFiles: vi.fn<
         (options?: { throwOnError?: boolean }) => Promise<AuthFileItem[] | undefined>
       >(async () => undefined),
+      replaceFiles: vi.fn(),
+      lastServerErrorPriorityUpdatesOptions: null as null | {
+        active: boolean;
+        documentVisible: boolean;
+        hasLoaded: boolean;
+        onUpdates: (updates: readonly ServerErrorPriorityDemotionUpdate[]) => void;
+      },
       lastAuthFilesDataOptions: null as null | {
         connectionFingerprint?: string | null;
         onCredentialMutation?: (mutation: AuthFilesCredentialMutation) => void;
@@ -700,6 +708,7 @@ vi.mock('@/features/authFiles/hooks/useAuthFilesData', () => ({
       batchFieldsUpdating: mocks.batchFieldsUpdating,
       fileInputRef: { current: null },
       loadFiles: mocks.loadFiles,
+      replaceFiles: mocks.replaceFiles,
       handleUploadClick: vi.fn(),
       handleFileChange: vi.fn(),
       savePastedAuthJson: vi.fn(async () => 'saved.json'),
@@ -727,6 +736,17 @@ vi.mock('@/features/accounts/hooks/useCredentialRuntimeMetadata', () => ({
     applyBatchTasks: mocks.applyCredentialRuntimeBatchTasks,
     refresh: async () => undefined,
   }),
+}));
+
+vi.mock('@/features/accounts/hooks/useServerErrorPriorityUpdates', () => ({
+  useServerErrorPriorityUpdates: (options: {
+    active: boolean;
+    documentVisible: boolean;
+    hasLoaded: boolean;
+    onUpdates: (updates: readonly ServerErrorPriorityDemotionUpdate[]) => void;
+  }) => {
+    mocks.lastServerErrorPriorityUpdatesOptions = options;
+  },
 }));
 
 vi.mock('@/features/authFiles/hooks/useAuthFilesOauth', () => ({
@@ -1530,6 +1550,8 @@ describe('AccountsPage replacement flows', () => {
     mocks.quotaState.setXaiQuota.mockReset();
     mocks.loadFiles.mockReset();
     mocks.loadFiles.mockImplementation(async () => mocks.files);
+    mocks.replaceFiles.mockReset();
+    mocks.lastServerErrorPriorityUpdatesOptions = null;
     mocks.lastAuthFilesDataOptions = null;
     mocks.loadExcluded.mockClear();
     mocks.loadModelAlias.mockClear();
@@ -1555,6 +1577,46 @@ describe('AccountsPage replacement flows', () => {
     await act(async () => {
       renderer.unmount();
     });
+  });
+
+  it('applies completed priority demotions locally without reloading credentials', async () => {
+    mocks.files = [
+      {
+        ...makeCodexFile('priority.json', 'priority-1', 'priority@example.com'),
+        priority: 27004,
+      },
+    ];
+    await renderAccountsPage();
+
+    const priorityUpdates = mocks.lastServerErrorPriorityUpdatesOptions;
+    expect(priorityUpdates).not.toBeNull();
+    expect(priorityUpdates).toMatchObject({
+      active: true,
+      documentVisible: true,
+      hasLoaded: true,
+    });
+    // Initial page mount owns the normal inventory load. The passive priority
+    // projection itself must not trigger another CPA credential fetch.
+    mocks.loadFiles.mockClear();
+
+    await act(async () => {
+      priorityUpdates?.onUpdates([
+        {
+          id: 1,
+          fileName: 'priority.json',
+          authIndex: 'priority-1',
+          provider: 'codex',
+          priorityBefore: 27004,
+          priorityTarget: 27003,
+          completedAtMs: 2_000,
+        },
+      ]);
+    });
+
+    expect(mocks.replaceFiles).toHaveBeenCalledWith([
+      expect.objectContaining({ name: 'priority.json', priority: 27003 }),
+    ]);
+    expect(mocks.loadFiles).not.toHaveBeenCalled();
   });
 
   it('opens OAuth editors inline instead of navigating to auth-files routes', async () => {

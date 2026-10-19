@@ -86,6 +86,7 @@ import {
 import { useAccountsWorkspaceRefresh } from '@/features/accounts/hooks/useAccountsWorkspaceRefresh';
 import { useCredentialRuntimeMetadata } from '@/features/accounts/hooks/useCredentialRuntimeMetadata';
 import { useProxyFilterInventory } from '@/features/accounts/hooks/useProxyFilterInventory';
+import { useServerErrorPriorityUpdates } from '@/features/accounts/hooks/useServerErrorPriorityUpdates';
 import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderSnapshotsLoader';
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
@@ -139,6 +140,7 @@ import {
 } from '@/features/accounts/model/accountRows';
 import { isEnabledProxyFilterCredential } from '@/features/accounts/model/proxyFilter';
 import { buildProxyReplacementTargets } from '@/features/accounts/model/proxyReplacementTargets';
+import { applyServerErrorPriorityUpdates } from '@/features/accounts/model/serverErrorPriorityUpdates';
 import {
   buildInspectionCodexQuotaState,
   getEffectiveAccountInspectionAction,
@@ -1356,6 +1358,7 @@ export function AccountsPage() {
     batchFieldsUpdating,
     fileInputRef,
     loadFiles,
+    replaceFiles,
     handleUploadClick,
     handleFileChange,
     savePastedAuthJson,
@@ -1435,6 +1438,19 @@ export function AccountsPage() {
   );
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  );
+  const prioritySyncFilesRef = useRef<AuthFileItem[]>(files);
+  prioritySyncFilesRef.current = files;
+  const handleServerErrorPriorityUpdates = useCallback(
+    (updates: Parameters<typeof applyServerErrorPriorityUpdates>[1]) => {
+      const result = applyServerErrorPriorityUpdates(prioritySyncFilesRef.current, updates);
+      if (!result.changed) return;
+      // Keep the ref authoritative until React commits, so a fast subsequent
+      // delta cannot replay from the pre-demotion list snapshot.
+      prioritySyncFilesRef.current = result.files;
+      replaceFiles(result.files);
+    },
+    [replaceFiles]
   );
   const previousDocumentVisibleRef = useRef(documentVisible);
   const [healthMode, setHealthMode] = useState<CredentialHealthInspectionMode>(
@@ -2425,6 +2441,13 @@ export function AccountsPage() {
     activeView === 'accounts' &&
     managerStorageAvailable &&
     featureAvailability.serverCodexInspectionAvailable;
+  useServerErrorPriorityUpdates({
+    active: activeView === 'accounts',
+    documentVisible,
+    hasLoaded,
+    managerRequestScope,
+    onUpdates: handleServerErrorPriorityUpdates,
+  });
   const refreshPassiveAccountsEvidence = useCallback(async () => {
     await Promise.all([
       canLoadHeaderSnapshots ? loadHeaderSnapshots() : Promise.resolve(),
