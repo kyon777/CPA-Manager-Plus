@@ -244,3 +244,108 @@ func nullableString(value string) any {
 	}
 	return value
 }
+
+func TestClaimSerializesSameCredentialAndAllowsDifferentCredential(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	repo := New(db)
+	if err := repo.Bootstrap(ctx, true, 1); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	events := []usage.Event{
+		eligible502ForCredential("a-1", "a.json", "a-index"),
+		eligible502ForCredential("a-2", "a.json", "a-index"),
+		eligible502ForCredential("b-1", "b.json", "b-index"),
+	}
+	for _, event := range events {
+		insertUsageEvent(t, db, event)
+	}
+	if _, err := repo.EnqueueEvents(ctx, events, 2); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	first, ok, err := repo.ClaimNext(ctx, 100, 200, "lease-a")
+	if err != nil || !ok || first.EventHash != "a-1" {
+		t.Fatalf("first claim = %#v, %t, %v", first, ok, err)
+	}
+	second, ok, err := repo.ClaimNext(ctx, 100, 200, "lease-b")
+	if err != nil || !ok || second.EventHash != "b-1" {
+		t.Fatalf("second claim = %#v, %t, %v", second, ok, err)
+	}
+}
+
+func TestExpiredLeaseCanBeClaimedAgain(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	repo := New(db)
+	if err := repo.Bootstrap(ctx, true, 1); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	event := eligible502("recover-event")
+	insertUsageEvent(t, db, event)
+	if _, err := repo.EnqueueEvents(ctx, []usage.Event{event}, 2); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	first, ok, err := repo.ClaimNext(ctx, 100, 200, "first-lease")
+	if err != nil || !ok {
+		t.Fatalf("first claim = %#v, %t, %v", first, ok, err)
+	}
+	recovered, err := repo.RecoverExpiredLeases(ctx, 201)
+	if err != nil || recovered != 1 {
+		t.Fatalf("recovered = %d, %v", recovered, err)
+	}
+	second, ok, err := repo.ClaimNext(ctx, 201, 301, "second-lease")
+	if err != nil || !ok || second.ID != first.ID || second.LeaseToken != "second-lease" {
+		t.Fatalf("second claim = %#v, %t, %v", second, ok, err)
+	}
+}
+
+func TestCleanupDeletesOnlyOldCompletedAndIgnored(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	repo := New(db)
+	const cutoff = int64(1_000)
+	for index, state := range []string{"completed", "ignored", "pending", "retry_wait", "leased", "failed"} {
+		completedAt := any(nil)
+		if state == "completed" || state == "ignored" {
+			completedAt = int64(999)
+		}
+		if _, err := db.ExecContext(ctx, `insert into server_error_priority_demotion_jobs (
+			event_hash, source_event_id, credential_key, file_name, auth_index, provider,
+			status_code, qualification_code, event_at_ms, state, available_at_ms,
+			created_at_ms, updated_at_ms, completed_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("cleanup-%d", index), index+1, fmt.Sprintf("credential-%d", index), "file.json", "index", "codex",
+			502, "http_502", 1, state, 1, 1, 1, completedAt); err != nil {
+			t.Fatalf("seed %s: %v", state, err)
+		}
+	}
+	deleted, err := repo.CleanupTerminal(ctx, cutoff)
+	if err != nil || deleted != 2 {
+		t.Fatalf("deleted = %d, %v", deleted, err)
+	}
+	rows, err := db.QueryContext(ctx, `select state from server_error_priority_demotion_jobs order by state`)
+	if err != nil {
+		t.Fatalf("list remaining jobs: %v", err)
+	}
+	defer rows.Close()
+	got := make([]string, 0)
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			t.Fatalf("scan state: %v", err)
+		}
+		got = append(got, state)
+	}
+	want := []string{"failed", "leased", "pending", "retry_wait"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("remaining states = %v, want %v", got, want)
+	}
+}
+
+func eligible502ForCredential(hash, fileName, authIndex string) usage.Event {
+	event := eligible502(hash)
+	event.AuthFileSnapshot = fileName
+	event.AuthIndex = authIndex
+	event.AccountSnapshot = authIndex + "@example.com"
+	return event
+}

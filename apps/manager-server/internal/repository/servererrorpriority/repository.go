@@ -19,6 +19,7 @@ import (
 var (
 	ErrNotBootstrapped   = errors.New("server-error priority demotion queue is not bootstrapped")
 	ErrSourceEventAbsent = errors.New("server-error priority demotion source event is absent")
+	ErrLeaseLost         = errors.New("server-error priority demotion job lease was lost")
 )
 
 // Repository is intentionally narrow. Its source of truth is SQLite; callers
@@ -28,6 +29,14 @@ type Repository interface {
 	SetEnabled(context.Context, bool, int64) error
 	EnqueueEvents(context.Context, []usage.Event, int64) (model.ServerErrorPriorityDemotionEnqueueResult, error)
 	Reconcile(context.Context, int, int64) (model.ServerErrorPriorityDemotionReconcileResult, error)
+	RecoverExpiredLeases(context.Context, int64) (int64, error)
+	ClaimNext(context.Context, int64, int64, string) (model.ServerErrorPriorityDemotionJob, bool, error)
+	RecordPriorityPlan(context.Context, int64, string, int, int, int64) error
+	Complete(context.Context, int64, string, string, int64) error
+	Retry(context.Context, int64, string, string, string, int64, int64) error
+	Terminal(context.Context, int64, string, string, string, string, string, int64) error
+	CleanupTerminal(context.Context, int64) (int64, error)
+	Stats(context.Context, int64) (model.ServerErrorPriorityDemotionStats, error)
 }
 
 type repository struct {
@@ -386,4 +395,246 @@ func normalizeNowMS(nowMS int64) int64 {
 		return nowMS
 	}
 	return time.Now().UnixMilli()
+}
+
+// RecoverExpiredLeases makes only abandoned in-flight work eligible again. It
+// intentionally preserves the attempt counter and recorded before/target pair
+// so the processor can decide whether a prior external PATCH already happened.
+func (r *repository) RecoverExpiredLeases(ctx context.Context, nowMS int64) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, ErrNotBootstrapped
+	}
+	nowMS = normalizeNowMS(nowMS)
+	result, err := r.db.ExecContext(ctx, `update server_error_priority_demotion_jobs set
+		state = ?, available_at_ms = ?, lease_token = null, lease_until_ms = null,
+		updated_at_ms = ?
+		where state = ? and lease_until_ms is not null and lease_until_ms <= ?`,
+		model.ServerErrorPriorityDemotionRetryWait, nowMS, nowMS,
+		model.ServerErrorPriorityDemotionLeased, nowMS)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// ClaimNext atomically leases the earliest ready item whose credential has no
+// older unfinished job. The write statement, rather than an in-memory mutex,
+// is what preserves FIFO across independent worker goroutines.
+func (r *repository) ClaimNext(ctx context.Context, nowMS, leaseUntilMS int64, leaseToken string) (model.ServerErrorPriorityDemotionJob, bool, error) {
+	if r == nil || r.db == nil {
+		return model.ServerErrorPriorityDemotionJob{}, false, ErrNotBootstrapped
+	}
+	nowMS = normalizeNowMS(nowMS)
+	leaseToken = strings.TrimSpace(leaseToken)
+	if leaseToken == "" || leaseUntilMS <= nowMS {
+		return model.ServerErrorPriorityDemotionJob{}, false, errors.New("server-error priority demotion lease is invalid")
+	}
+	result, err := r.db.ExecContext(ctx, `update server_error_priority_demotion_jobs set
+		state = ?, lease_token = ?, lease_until_ms = ?, attempt_count = attempt_count + 1,
+		updated_at_ms = ?
+		where id = (
+			select candidate.id from server_error_priority_demotion_jobs candidate
+			where candidate.state in (?, ?) and candidate.available_at_ms <= ?
+			and not exists (
+				select 1 from server_error_priority_demotion_jobs earlier
+				where earlier.credential_key = candidate.credential_key
+				and earlier.id < candidate.id
+				and earlier.state in (?, ?, ?)
+			)
+			order by candidate.id asc limit 1
+		) and state in (?, ?)`,
+		model.ServerErrorPriorityDemotionLeased, leaseToken, leaseUntilMS, nowMS,
+		model.ServerErrorPriorityDemotionPending, model.ServerErrorPriorityDemotionRetryWait, nowMS,
+		model.ServerErrorPriorityDemotionPending, model.ServerErrorPriorityDemotionRetryWait, model.ServerErrorPriorityDemotionLeased,
+		model.ServerErrorPriorityDemotionPending, model.ServerErrorPriorityDemotionRetryWait)
+	if err != nil {
+		return model.ServerErrorPriorityDemotionJob{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return model.ServerErrorPriorityDemotionJob{}, false, err
+	}
+	if changed == 0 {
+		return model.ServerErrorPriorityDemotionJob{}, false, nil
+	}
+	job, err := r.jobByLeaseToken(ctx, leaseToken)
+	if err != nil {
+		return model.ServerErrorPriorityDemotionJob{}, false, err
+	}
+	return job, true, nil
+}
+
+func (r *repository) RecordPriorityPlan(ctx context.Context, id int64, leaseToken string, before, target int, nowMS int64) error {
+	if before < 0 || target < 0 {
+		return errors.New("server-error priority demotion plan cannot be negative")
+	}
+	return r.updateLeased(ctx, id, leaseToken, nowMS, `update server_error_priority_demotion_jobs set
+		priority_before = ?, priority_target = ?, updated_at_ms = ?
+		where id = ? and state = ? and lease_token = ?`, before, target, normalizeNowMS(nowMS), id, model.ServerErrorPriorityDemotionLeased, strings.TrimSpace(leaseToken))
+}
+
+func (r *repository) Complete(ctx context.Context, id int64, leaseToken, reason string, nowMS int64) error {
+	nowMS = normalizeNowMS(nowMS)
+	return r.updateLeased(ctx, id, leaseToken, nowMS, `update server_error_priority_demotion_jobs set
+		state = ?, lease_token = null, lease_until_ms = null, completed_reason = ?,
+		completed_at_ms = ?, updated_at_ms = ?
+		where id = ? and state = ? and lease_token = ?`,
+		model.ServerErrorPriorityDemotionCompleted, boundedText(reason, 96), nowMS, nowMS,
+		id, model.ServerErrorPriorityDemotionLeased, strings.TrimSpace(leaseToken))
+}
+
+func (r *repository) Retry(ctx context.Context, id int64, leaseToken, code, message string, availableAtMS, nowMS int64) error {
+	nowMS = normalizeNowMS(nowMS)
+	if availableAtMS < nowMS {
+		availableAtMS = nowMS
+	}
+	return r.updateLeased(ctx, id, leaseToken, nowMS, `update server_error_priority_demotion_jobs set
+		state = ?, available_at_ms = ?, lease_token = null, lease_until_ms = null,
+		last_error_code = ?, last_error = ?, updated_at_ms = ?
+		where id = ? and state = ? and lease_token = ?`,
+		model.ServerErrorPriorityDemotionRetryWait, availableAtMS, boundedText(code, 96), boundedText(message, 384), nowMS,
+		id, model.ServerErrorPriorityDemotionLeased, strings.TrimSpace(leaseToken))
+}
+
+func (r *repository) Terminal(ctx context.Context, id int64, leaseToken, state, code, message, reason string, nowMS int64) error {
+	if state != model.ServerErrorPriorityDemotionFailed && state != model.ServerErrorPriorityDemotionIgnored {
+		return fmt.Errorf("invalid terminal server-error priority demotion state %q", state)
+	}
+	nowMS = normalizeNowMS(nowMS)
+	return r.updateLeased(ctx, id, leaseToken, nowMS, `update server_error_priority_demotion_jobs set
+		state = ?, lease_token = null, lease_until_ms = null, last_error_code = ?, last_error = ?,
+		completed_reason = ?, completed_at_ms = ?, updated_at_ms = ?
+		where id = ? and state = ? and lease_token = ?`,
+		state, boundedText(code, 96), boundedText(message, 384), boundedText(reason, 96), nowMS, nowMS,
+		id, model.ServerErrorPriorityDemotionLeased, strings.TrimSpace(leaseToken))
+}
+
+func (r *repository) CleanupTerminal(ctx context.Context, completedBeforeMS int64) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, ErrNotBootstrapped
+	}
+	result, err := r.db.ExecContext(ctx, `delete from server_error_priority_demotion_jobs
+		where state in (?, ?) and completed_at_ms is not null and completed_at_ms < ?`,
+		model.ServerErrorPriorityDemotionCompleted, model.ServerErrorPriorityDemotionIgnored, completedBeforeMS)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (r *repository) Stats(ctx context.Context, nowMS int64) (model.ServerErrorPriorityDemotionStats, error) {
+	if r == nil || r.db == nil {
+		return model.ServerErrorPriorityDemotionStats{}, ErrNotBootstrapped
+	}
+	nowMS = normalizeNowMS(nowMS)
+	stats := model.ServerErrorPriorityDemotionStats{}
+	rows, err := r.db.QueryContext(ctx, `select state, count(*) from server_error_priority_demotion_jobs group by state`)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state string
+		var count int64
+		if err := rows.Scan(&state, &count); err != nil {
+			return stats, err
+		}
+		switch state {
+		case model.ServerErrorPriorityDemotionPending:
+			stats.Pending = count
+		case model.ServerErrorPriorityDemotionLeased:
+			stats.Leased = count
+		case model.ServerErrorPriorityDemotionRetryWait:
+			stats.RetryWait = count
+		case model.ServerErrorPriorityDemotionCompleted:
+			stats.Completed = count
+		case model.ServerErrorPriorityDemotionFailed:
+			stats.Failed = count
+		case model.ServerErrorPriorityDemotionIgnored:
+			stats.Ignored = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return stats, err
+	}
+	if err := r.db.QueryRowContext(ctx, `select coalesce(min(created_at_ms), 0)
+		from server_error_priority_demotion_jobs
+		where state in (?, ?) and available_at_ms <= ?`,
+		model.ServerErrorPriorityDemotionPending, model.ServerErrorPriorityDemotionRetryWait, nowMS).Scan(&stats.OldestReadyMS); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+func (r *repository) updateLeased(ctx context.Context, id int64, leaseToken string, nowMS int64, query string, args ...any) error {
+	if r == nil || r.db == nil {
+		return ErrNotBootstrapped
+	}
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+const selectJobColumns = `id, event_hash, source_event_id, credential_key, file_name,
+	auth_index, provider, account_snapshot, account_id_snapshot, status_code,
+	qualification_code, event_at_ms, state, available_at_ms, lease_token,
+	lease_until_ms, attempt_count, priority_before, priority_target,
+	last_error_code, last_error, completed_reason, created_at_ms, updated_at_ms,
+	completed_at_ms`
+
+func (r *repository) jobByLeaseToken(ctx context.Context, leaseToken string) (model.ServerErrorPriorityDemotionJob, error) {
+	return scanJob(r.db.QueryRowContext(ctx, `select `+selectJobColumns+`
+		from server_error_priority_demotion_jobs where state = ? and lease_token = ?`,
+		model.ServerErrorPriorityDemotionLeased, leaseToken))
+}
+
+func scanJob(scanner interface{ Scan(...any) error }) (model.ServerErrorPriorityDemotionJob, error) {
+	var (
+		job                                                   model.ServerErrorPriorityDemotionJob
+		leaseUntil, before, target, completedAt               sql.NullInt64
+		leaseToken, lastErrorCode, lastError, completedReason sql.NullString
+	)
+	err := scanner.Scan(
+		&job.ID, &job.EventHash, &job.SourceEventID, &job.CredentialKey, &job.FileName,
+		&job.AuthIndex, &job.Provider, &job.AccountSnapshot, &job.AccountIDSnapshot, &job.StatusCode,
+		&job.QualificationCode, &job.EventAtMS, &job.State, &job.AvailableAtMS, &leaseToken,
+		&leaseUntil, &job.AttemptCount, &before, &target,
+		&lastErrorCode, &lastError, &completedReason, &job.CreatedAtMS, &job.UpdatedAtMS,
+		&completedAt,
+	)
+	if err != nil {
+		return model.ServerErrorPriorityDemotionJob{}, err
+	}
+	job.LeaseToken = leaseToken.String
+	job.LeaseUntilMS = leaseUntil.Int64
+	if before.Valid {
+		value := int(before.Int64)
+		job.PriorityBefore = &value
+	}
+	if target.Valid {
+		value := int(target.Int64)
+		job.PriorityTarget = &value
+	}
+	job.LastErrorCode = lastErrorCode.String
+	job.LastError = lastError.String
+	job.CompletedReason = completedReason.String
+	job.CompletedAtMS = completedAt.Int64
+	return job, nil
+}
+
+func boundedText(value string, limit int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit]
 }
