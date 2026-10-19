@@ -180,10 +180,14 @@ func fromExisting(
 	}))
 	authFileMutationCoordinator := cpaauthfiles.NewMutationCoordinator()
 	authFiles := cpaauthfiles.New(nil)
+	recoveryAuthFiles := cpaauthfiles.New(nil, tokenrecoverysvc.DefaultCPAAuthFileOperationTimeout)
 	tokenRecoveryService := tokenrecoverysvc.NewWithOptions(tokenrecoverysvc.Options{
-		Tasks:               st,
-		SetupResolver:       managerConfigService,
-		AuthFiles:           authFiles,
+		Tasks:         st,
+		SetupResolver: managerConfigService,
+		// Recovery is the only CPAM workflow allowed to wait through a busy
+		// CPA Core auth-file write. Keep ordinary panel endpoints on their
+		// existing 60-second client budget.
+		AuthFiles:           recoveryAuthFiles,
 		MutationCoordinator: authFileMutationCoordinator,
 		Acquirer: tokenacquisition.New(tokenacquisition.Config{
 			BaseURL: cfg.TokenAcquisitionBaseURL,

@@ -330,3 +330,32 @@ usage/billing collection, quota calculation, or CPA scheduling.
 - 继续复用 `MutationCoordinator`，并对同一 CPA setup 的全量 peer inventory 保留 20 秒 TTL、45 秒失败冷却和 in-flight single-flight；8 个 worker 不得同时发起同一个全量 inventory 请求。
 - lease 过期只能转回 `retry_wait`，不得删除、不得减少 attempt；成功/ignored 保留 14 天后可清理，`pending/retry_wait/leased/failed` 不得按时间自动删。
 - 新队列仅能重建/重启 CPAM 时随 CPAM 启动迁移；部署时仍严格遵循 CPAM-only 规则，禁止重启或重建 CPA Core / `cli-proxy-api`，禁止覆盖现有 `usage.sqlite`。
+
+
+## 2026-10-19: Token Recovery CPA write-pressure containment
+
+This customization is CPAM-only. It must never modify, restart, rebuild, or
+reconfigure CPA Core / `cli-proxy-api`, and it must not query quota, usage,
+history, billing, or scheduling endpoints as part of credential recovery.
+
+- Token Recovery now uses its own `cpaauthfiles.Client` budget of **4 minutes**
+  (`tokenrecovery.DefaultCPAAuthFileOperationTimeout`). Normal panel/auth-file
+  list calls retain their existing 60-second budget. This prevents a busy CPA
+  Core `/v0/management/auth-files` upload from being falsely reported as the
+  generic `recovery_failed` after 60 seconds.
+- Recovery keeps the existing 40-slot Token Acquisition concurrency, but CPAM
+  limits the CPA credential mutation phase (`download current -> merge -> upload
+  -> read-back verify`) to **4 concurrent accounts**. The per-file
+  `MutationCoordinator` remains mandatory. This prevents a current-page/manual
+  recovery burst from causing dozens of simultaneous CPA auth-file writes.
+- A CPA auth-file operation reaching its context deadline is persisted as
+  `cpa_auth_file_timeout`, never an empty generic `recovery_failed`. The
+  redacted UI reason distinguishes initial/read timeout (nothing submitted),
+  upload timeout (write result pending confirmation), and post-upload verify
+  timeout (write may already have completed; refresh to verify).
+- Do not reduce this recovery-specific 4-minute timeout or remove the 4-slot
+  write gate during future upstream merges. Preserve the regression tests in
+  `internal/service/tokenrecovery/service_test.go`. These controls only affect
+  CPAM token replacement file I/O; they do not alter CPA request routing,
+  downstream API billing, `usage_events`, quota collection, or priority
+  demotion.

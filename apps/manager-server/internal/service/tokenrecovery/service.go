@@ -3,6 +3,7 @@ package tokenrecovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -16,14 +17,18 @@ import (
 )
 
 const (
-	defaultIdlePollInterval = 500 * time.Millisecond
-	defaultWorkerCount      = 1
-	maxWorkerCount          = 40
+	defaultIdlePollInterval            = 500 * time.Millisecond
+	defaultWorkerCount                 = 1
+	maxWorkerCount                     = 40
+	defaultWriteConcurrency            = 4
+	maxWriteConcurrency                = maxWorkerCount
+	DefaultCPAAuthFileOperationTimeout = 4 * time.Minute
 )
 
 var (
-	ErrRecoveryNotConfigured = errors.New("token recovery is not configured")
-	ErrRecoveryUnavailable   = errors.New("token recovery dependencies are unavailable")
+	ErrRecoveryNotConfigured       = errors.New("token recovery is not configured")
+	ErrRecoveryUnavailable         = errors.New("token recovery dependencies are unavailable")
+	ErrCPAAuthFileOperationTimeout = errors.New("CPA auth-file operation timed out")
 )
 
 // IsTerminalAccountBanned reports whether the latest redacted recovery task
@@ -90,6 +95,9 @@ type Options struct {
 	// the historical raw-service behavior (automatic work enabled); the live
 	// application supplies the persisted policy callback.
 	AutomaticEnabled func(context.Context) bool
+	// WriteConcurrency bounds cross-account CPA Core auth-file mutations after
+	// token acquisition has completed. Zero retains the production-safe default.
+	WriteConcurrency int
 }
 
 type Service struct {
@@ -100,9 +108,33 @@ type Service struct {
 	mutationCoordinator *cpaauthfiles.MutationCoordinator
 	idlePollInterval    time.Duration
 	workerCount         int
+	writeGate           chan struct{}
 	automaticEnabled    func(context.Context) bool
 	wake                chan struct{}
 	startOnce           sync.Once
+}
+
+type cpaAuthFileOperationTimeoutError struct {
+	operation string
+	err       error
+}
+
+func (e *cpaAuthFileOperationTimeoutError) Error() string {
+	if e == nil {
+		return ErrCPAAuthFileOperationTimeout.Error()
+	}
+	return fmt.Sprintf("%s: %s", e.operation, ErrCPAAuthFileOperationTimeout)
+}
+
+func (e *cpaAuthFileOperationTimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (e *cpaAuthFileOperationTimeoutError) Is(target error) bool {
+	return target == ErrCPAAuthFileOperationTimeout
 }
 
 func NewWithOptions(options Options) *Service {
@@ -125,6 +157,13 @@ func NewWithOptions(options Options) *Service {
 	if workerCount > maxWorkerCount {
 		workerCount = maxWorkerCount
 	}
+	writeConcurrency := options.WriteConcurrency
+	if writeConcurrency <= 0 {
+		writeConcurrency = defaultWriteConcurrency
+	}
+	if writeConcurrency > maxWriteConcurrency {
+		writeConcurrency = maxWriteConcurrency
+	}
 	return &Service{
 		tasks:               options.Tasks,
 		setupResolver:       options.SetupResolver,
@@ -133,6 +172,7 @@ func NewWithOptions(options Options) *Service {
 		mutationCoordinator: coordinator,
 		idlePollInterval:    idlePollInterval,
 		workerCount:         workerCount,
+		writeGate:           make(chan struct{}, writeConcurrency),
 		automaticEnabled:    options.AutomaticEnabled,
 		wake:                make(chan struct{}, workerCount),
 	}
@@ -276,7 +316,7 @@ func (s *Service) readCurrentCredential(ctx context.Context, fileName string, lo
 	}
 	raw, err := s.authFiles.Download(ctx, setup.CPAUpstreamURL, setup.ManagementKey, fileName)
 	if err != nil {
-		return Credential{}, Locator{}, err
+		return Credential{}, Locator{}, classifyCPAAuthFileOperationError("initial_read", err)
 	}
 	credential, resolvedLocator, err := readCredentialWithStaleAuthIndexFallback(raw, locator)
 	if err != nil {
@@ -340,6 +380,11 @@ func authIndexPresentInAuthDocument(raw []byte, authIndex string) bool {
 }
 
 func (s *Service) writeCurrentCredential(ctx context.Context, fileName string, locator Locator, originalEmail string, result AcquisitionResult) error {
+	if err := s.acquireWriteSlot(ctx); err != nil {
+		return err
+	}
+	defer s.releaseWriteSlot()
+
 	release, err := s.mutationCoordinator.Acquire(ctx, fileName)
 	if err != nil {
 		return err
@@ -351,7 +396,7 @@ func (s *Service) writeCurrentCredential(ctx context.Context, fileName string, l
 	}
 	raw, err := s.authFiles.Download(ctx, setup.CPAUpstreamURL, setup.ManagementKey, fileName)
 	if err != nil {
-		return err
+		return classifyCPAAuthFileOperationError("write_read", err)
 	}
 	current, err := ReadCredential(raw, locator)
 	if err != nil {
@@ -366,13 +411,39 @@ func (s *Service) writeCurrentCredential(ctx context.Context, fileName string, l
 		return err
 	}
 	if err := s.authFiles.Upload(ctx, setup.CPAUpstreamURL, setup.ManagementKey, fileName, merged); err != nil {
-		return err
+		return classifyCPAAuthFileOperationError("upload", err)
 	}
 	verifiedRaw, err := s.authFiles.Download(ctx, setup.CPAUpstreamURL, setup.ManagementKey, fileName)
 	if err != nil {
-		return err
+		return classifyCPAAuthFileOperationError("verify", err)
 	}
 	return VerifyMergedAuthJSON(verifiedRaw, mergeLocator, result)
+}
+
+func (s *Service) acquireWriteSlot(ctx context.Context) error {
+	if s == nil || s.writeGate == nil {
+		return nil
+	}
+	select {
+	case s.writeGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) releaseWriteSlot() {
+	if s == nil || s.writeGate == nil {
+		return
+	}
+	<-s.writeGate
+}
+
+func classifyCPAAuthFileOperationError(operation string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &cpaAuthFileOperationTimeoutError{operation: operation, err: err}
+	}
+	return err
 }
 
 func (s *Service) resolveSetup(ctx context.Context) (store.Setup, error) {
@@ -428,6 +499,8 @@ func recoveryFailureCode(err error) string {
 		return "token_acquisition_failed"
 	case errors.Is(err, tokenacquisition.ErrRequestFailed):
 		return "token_acquisition_request_failed"
+	case errors.Is(err, ErrCPAAuthFileOperationTimeout):
+		return "cpa_auth_file_timeout"
 	case errors.Is(err, cpaauthfiles.ErrMutationCoordinatorUnavailable):
 		return "mutation_unavailable"
 	default:
@@ -436,5 +509,19 @@ func recoveryFailureCode(err error) string {
 }
 
 func recoveryFailureMessage(err error) string {
+	if errors.Is(err, ErrCPAAuthFileOperationTimeout) {
+		var timeoutErr *cpaAuthFileOperationTimeoutError
+		if errors.As(err, &timeoutErr) {
+			switch timeoutErr.operation {
+			case "initial_read", "write_read":
+				return "CPA Core 凭证读取超时：当前读取繁忙，本次未提交更新"
+			case "upload":
+				return "CPA Core 凭证写入超时：当前写入繁忙，写入结果待确认"
+			case "verify":
+				return "CPA Core 凭证复核超时：写入可能已完成，请刷新后核实"
+			}
+		}
+		return "CPA Core 凭证文件操作超时：请稍后重试"
+	}
 	return tokenacquisition.FailureReason(err)
 }

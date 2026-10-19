@@ -650,3 +650,195 @@ func TestIsTerminalAccountBanned(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceReportsCPAAuthFileUploadTimeout(t *testing.T) {
+	files := &timeoutOnUploadRecoveryAuthFiles{raw: []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old-access","refresh_token":"old-refresh","id_token":"old-id"}`)}
+	acquirer := &fakeAcquirer{result: tokenacquisition.Result{
+		Email: "person@example.com", AccessToken: "new-access", RefreshToken: "new-refresh", IDToken: "new-id",
+	}}
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-timeout.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewWithOptions(Options{
+		Tasks:               st,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:           files,
+		Acquirer:            acquirer,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+		IdlePollInterval:    time.Millisecond,
+	})
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	failed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusAutoFailedManualOnly)
+	if failed.LastErrorCode != "cpa_auth_file_timeout" {
+		t.Fatalf("failure code = %q, want cpa_auth_file_timeout", failed.LastErrorCode)
+	}
+	if !strings.Contains(failed.LastErrorMessage, "CPA Core") {
+		t.Fatalf("failure message = %q, want actionable CPA Core timeout reason", failed.LastErrorMessage)
+	}
+}
+
+func TestDefaultCPAAuthFileOperationTimeout(t *testing.T) {
+	if got, want := DefaultCPAAuthFileOperationTimeout, 4*time.Minute; got != want {
+		t.Fatalf("DefaultCPAAuthFileOperationTimeout = %s, want %s", got, want)
+	}
+}
+
+func TestRecoveryFailureMessageDistinguishesCPAAuthFileTimeoutStages(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		want      string
+	}{
+		{name: "initial read", operation: "initial_read", want: "CPA Core 凭证读取超时：当前读取繁忙，本次未提交更新"},
+		{name: "upload", operation: "upload", want: "CPA Core 凭证写入超时：当前写入繁忙，写入结果待确认"},
+		{name: "verify", operation: "verify", want: "CPA Core 凭证复核超时：写入可能已完成，请刷新后核实"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &cpaAuthFileOperationTimeoutError{operation: tc.operation, err: context.DeadlineExceeded}
+			if got := recoveryFailureMessage(err); got != tc.want {
+				t.Fatalf("recoveryFailureMessage() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *testing.T) {
+	const workers = 8
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-write-limit.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	files := newBlockingWriteRecoveryAuthFiles(workers)
+	acquirer := newBlockingRecoveryAcquirer(workers)
+	service := NewWithOptions(Options{
+		Tasks:               st,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:           files,
+		Acquirer:            acquirer,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+		IdlePollInterval:    time.Millisecond,
+		WorkerCount:         workers,
+	})
+
+	taskIDs := make([]int64, 0, workers)
+	for index := 0; index < workers; index++ {
+		email := fmt.Sprintf("writer-%02d@example.com", index)
+		task, requestErr := service.RequestManual(ctx, model.TokenRecoveryTarget{
+			FileName: fmt.Sprintf("writer-%02d.json", index), AuthIndex: fmt.Sprintf("auth-%02d", index), AccountEmail: email, Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+		})
+		if requestErr != nil {
+			t.Fatalf("RequestManual(%d): %v", index, requestErr)
+		}
+		taskIDs = append(taskIDs, task.ID)
+	}
+	service.Start(ctx)
+	acquirer.waitForEntries(t, workers)
+	if got := acquirer.maxConcurrent(); got != workers {
+		t.Fatalf("maximum simultaneous acquisitions = %d, want %d", got, workers)
+	}
+	acquirer.releaseAll()
+
+	files.waitForUploads(t, 4)
+	select {
+	case <-files.entered:
+		t.Fatal("a fifth CPA auth-file write started before one of the first four completed")
+	case <-time.After(120 * time.Millisecond):
+	}
+	files.releaseAll()
+	for _, taskID := range taskIDs {
+		waitForTaskStatus(t, ctx, service, taskID, model.TokenRecoveryStatusSucceeded)
+	}
+}
+
+type timeoutOnUploadRecoveryAuthFiles struct {
+	raw []byte
+}
+
+func (f *timeoutOnUploadRecoveryAuthFiles) Download(_ context.Context, _ string, _ string, _ string) ([]byte, error) {
+	return append([]byte(nil), f.raw...), nil
+}
+
+func (f *timeoutOnUploadRecoveryAuthFiles) Upload(_ context.Context, _ string, _ string, _ string, _ []byte) error {
+	return fmt.Errorf("POST /v0/management/auth-files: %w", context.DeadlineExceeded)
+}
+
+type blockingWriteRecoveryAuthFiles struct {
+	mu        sync.Mutex
+	rawByFile map[string][]byte
+	entered   chan struct{}
+	release   chan struct{}
+	once      sync.Once
+}
+
+func newBlockingWriteRecoveryAuthFiles(capacity int) *blockingWriteRecoveryAuthFiles {
+	return &blockingWriteRecoveryAuthFiles{
+		rawByFile: make(map[string][]byte),
+		entered:   make(chan struct{}, capacity),
+		release:   make(chan struct{}),
+	}
+}
+
+func (f *blockingWriteRecoveryAuthFiles) Download(_ context.Context, _ string, _ string, fileName string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if raw, ok := f.rawByFile[fileName]; ok {
+		return append([]byte(nil), raw...), nil
+	}
+	email := strings.TrimSuffix(fileName, ".json") + "@example.com"
+	raw, err := json.Marshal(map[string]string{
+		"email":         email,
+		"access_token":  "old-access",
+		"refresh_token": "old-refresh",
+		"id_token":      "old-id",
+	})
+	if err != nil {
+		return nil, err
+	}
+	f.rawByFile[fileName] = raw
+	return append([]byte(nil), raw...), nil
+}
+
+func (f *blockingWriteRecoveryAuthFiles) Upload(_ context.Context, _ string, _ string, fileName string, raw []byte) error {
+	select {
+	case f.entered <- struct{}{}:
+	default:
+	}
+	<-f.release
+	f.mu.Lock()
+	f.rawByFile[fileName] = append([]byte(nil), raw...)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *blockingWriteRecoveryAuthFiles) waitForUploads(t *testing.T, count int) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for index := 0; index < count; index++ {
+		select {
+		case <-f.entered:
+		case <-deadline.C:
+			t.Fatalf("only %d/%d CPA auth-file writes entered", index, count)
+		}
+	}
+}
+
+func (f *blockingWriteRecoveryAuthFiles) releaseAll() {
+	f.once.Do(func() { close(f.release) })
+}
