@@ -141,6 +141,54 @@ func TestEligibleMissingIdentityIsRetainedAsIgnoredJob(t *testing.T) {
 	}
 }
 
+func TestQueueLifecycleLeavesUsageEventAccountingSourceUntouched(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	repo := New(db)
+	if err := repo.Bootstrap(ctx, true, 1); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	event := eligible502("accounting-source")
+	event.FailBody = `{"detail":"original source body"}`
+	insertUsageEvent(t, db, event)
+
+	var before struct {
+		Hash   string
+		Failed int
+		Status sql.NullInt64
+		Body   sql.NullString
+	}
+	if err := db.QueryRowContext(ctx, `select event_hash, failed, fail_status_code, fail_body from usage_events where event_hash = ?`, event.EventHash).Scan(&before.Hash, &before.Failed, &before.Status, &before.Body); err != nil {
+		t.Fatalf("read source before queue lifecycle: %v", err)
+	}
+	if _, err := repo.EnqueueEvents(ctx, []usage.Event{event}, 2); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, claimed, err := repo.ClaimNext(ctx, 3, 100, "accounting-lease")
+	if err != nil || !claimed {
+		t.Fatalf("claim: %#v %t %v", job, claimed, err)
+	}
+	if err := repo.RecordPriorityPlan(ctx, job.ID, job.LeaseToken, 20, 19, 4); err != nil {
+		t.Fatalf("record plan: %v", err)
+	}
+	if err := repo.Complete(ctx, job.ID, job.LeaseToken, "demoted", 5); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	var after struct {
+		Hash   string
+		Failed int
+		Status sql.NullInt64
+		Body   sql.NullString
+	}
+	if err := db.QueryRowContext(ctx, `select event_hash, failed, fail_status_code, fail_body from usage_events where event_hash = ?`, event.EventHash).Scan(&after.Hash, &after.Failed, &after.Status, &after.Body); err != nil {
+		t.Fatalf("read source after queue lifecycle: %v", err)
+	}
+	if fmt.Sprintf("%#v", before) != fmt.Sprintf("%#v", after) {
+		t.Fatalf("usage source changed by priority queue: before=%#v after=%#v", before, after)
+	}
+}
+
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
