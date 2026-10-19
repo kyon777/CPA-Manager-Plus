@@ -220,3 +220,28 @@ func TestFailureReasonDoesNotExposeSensitiveStructuredMessage(t *testing.T) {
 		t.Fatalf("FailureReason() = %q, want %q", got, want)
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestAcquireClassifiesHTTPTransportFailure(t *testing.T) {
+	client := New(Config{
+		BaseURL: "https://token-acquisition.invalid",
+		APIKey:  "test-admin-key",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("dial tcp proxy-user:secret@proxy.invalid: connect: reset")
+		})},
+		Timeout: time.Second,
+	})
+
+	_, err := client.Acquire(context.Background(), Request{Email: "person@example.com"})
+	if !errors.Is(err, ErrTransportFailed) {
+		t.Fatalf("Acquire() error = %v, want ErrTransportFailed", err)
+	}
+	if got := FailureReason(err); got != "" {
+		t.Fatalf("FailureReason() must not expose transport data, got %q", got)
+	}
+}

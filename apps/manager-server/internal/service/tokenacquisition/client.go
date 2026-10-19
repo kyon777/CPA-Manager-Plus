@@ -27,12 +27,13 @@ const (
 )
 
 var (
-	ErrNotConfigured = errors.New("token acquisition is not configured")
-	ErrConflict      = errors.New("token acquisition already has an active job")
-	ErrRequestFailed = errors.New("token acquisition request failed")
-	ErrInvalidResult = errors.New("token acquisition returned an invalid result")
-	ErrJobFailed     = errors.New("token acquisition job failed")
-	ErrTimedOut      = errors.New("token acquisition timed out")
+	ErrNotConfigured   = errors.New("token acquisition is not configured")
+	ErrConflict        = errors.New("token acquisition already has an active job")
+	ErrRequestFailed   = errors.New("token acquisition request failed")
+	ErrInvalidResult   = errors.New("token acquisition returned an invalid result")
+	ErrJobFailed       = errors.New("token acquisition job failed")
+	ErrTimedOut        = errors.New("token acquisition timed out")
+	ErrTransportFailed = errors.New("token acquisition transport failed")
 )
 
 // Request carries a single account. HTTPProxy is only populated from the
@@ -254,7 +255,13 @@ func (c *Client) doJSON(ctx context.Context, method, path string, payload any, o
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return err
+		}
+		// Deliberately discard the raw transport error. It can contain the
+		// Token Acquisition URL or a credential proxy URL, neither of which
+		// belongs in a durable recovery task or browser-visible error.
+		return ErrTransportFailed
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
