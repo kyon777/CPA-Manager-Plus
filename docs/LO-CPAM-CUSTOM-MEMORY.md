@@ -313,3 +313,20 @@ usage/billing collection, quota calculation, or CPA scheduling.
   `POST /v0/management/proxy-replacements/proxy-pool/restore-suspects` and the
   paired `usageServiceApi.restoreSuspectProxyPoolStates` call across upstream
   merges.
+
+## 2026-10-19：持久化服务器错误降优先级队列
+
+此项为 CPAM-only 二改。它绝不修改 CPA Core、`cli-proxy-api`、用量采集、计费、额度、历史请求或 `usage_events` 的既有字段/行；队列仅只读 `usage_events`，并只写 CPAM 自己的新增 SQLite 表。
+
+未来“更新 CPAM”合并上游时，必须保留以下不可变行为：
+
+- `server_error_priority_demotion_jobs`、`server_error_priority_demotion_cursor`、`server_error_priority_demotion_enabled_intervals` 是 `usage.sqlite` 的**加法迁移**；不得删除、重建、迁移走或用旧的内存 channel 替换。它们不包含 management key、Token、认证 JSON、代理 URL/凭据或失败原文。
+- 旧的 `[server-error-priority] job queue full, dropped auth file ...` 丢弃路径已经废除。每个合格事件先由 SQLite `event_hash UNIQUE` 持久化；wake buffer 仅是通知，不是容量上限。满时允许合并 wake，绝不丢已确认事件。
+- 默认 8 个 worker，环境变量 `USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WORKERS` 限制为 `1..32`；`USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WAKE_BUFFER` 默认 `8192`、限制为 `64..32768`。同一 credential 依据持久化 `credential_key` 严格 FIFO，不同 credential 可并发。
+- 首次启动必须在 listener/collector 之前执行 queue `Bootstrap`，把当前最大 `usage_events.id` 设为不可回放 floor。老历史事件不能重放；新事件在 live fanout 或 reconciler 中恰好入队一次。
+- 开关状态必须由 `AutomationRuntime.Reload -> SetEnabled` 先写入 enabled interval 再生效。关闭时 worker 暂停领取、已入队 backlog 保留；reconciler 仍可依据已关闭的 interval 推进 cursor 并跳过 disabled 时段，之后重新打开不得回放关闭期间产生的事件。
+- 严格资格规则保持不变：HTTP `502`、`503`；HTTP `429` 仅 JSON `detail == "Rate limit exceeded"`；HTTP `500` 仅 Codex responses 请求标记加 `unexpected EOF` 或精确 `utls: dial upstream: proxy CONNECT returned status 407 Proxy Authentication Required`。其余 500/407/EOF 一律不降级。
+- 每个事件都是一个独立 `-1` 工作，不合并为 `-N`。重试记录 `priority_before/priority_target`：当前值已等于 target 时完成 `already_at_target` 且不再 PATCH；当前值仍等于 before 时重放同一 target；否则重算既有 peer-rebalance 公式。仍排除自己、取同 provider 已启用 peer 最高优先级，最低 clamp 到 0。
+- 继续复用 `MutationCoordinator`，并对同一 CPA setup 的全量 peer inventory 保留 20 秒 TTL、45 秒失败冷却和 in-flight single-flight；8 个 worker 不得同时发起同一个全量 inventory 请求。
+- lease 过期只能转回 `retry_wait`，不得删除、不得减少 attempt；成功/ignored 保留 14 天后可清理，`pending/retry_wait/leased/failed` 不得按时间自动删。
+- 新队列仅能重建/重启 CPAM 时随 CPAM 启动迁移；部署时仍严格遵循 CPAM-only 规则，禁止重启或重建 CPA Core / `cli-proxy-api`，禁止覆盖现有 `usage.sqlite`。

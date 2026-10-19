@@ -287,7 +287,7 @@ type Repository interface {
 }
 ```
 
-`Bootstrap` inserts the cursor once with both values equal to `max(usage_events.id)`, then opens/closes the active interval from the supplied effective setting. `SetEnabled(true)` opens at `max(id)+1`; `SetEnabled(false)` closes at current max ID and advances cursor to that boundary. Both operate in one SQLite transaction.
+`Bootstrap` inserts the cursor once with both values equal to `max(usage_events.id)`, then opens/closes the active interval from the supplied effective setting. `SetEnabled(true)` opens at `max(id)+1`; `SetEnabled(false)` closes at current max ID. The scan cursor is deliberately not advanced on disable: reconciliation still records the exact closed enabled interval and skips disabled rows transactionally, while claiming remains paused. Both transitions operate in one SQLite transaction.
 
 `EnqueueEvents` resolves each source ID by hash, verifies source floor and active interval, uses Task 1's pure classifier, and `INSERT OR IGNORE`s by hash. A matching error with no stable identity is a terminal `ignored` job with bounded `credential_identity_missing`; a nonmatching failure creates no job. `Reconcile` scans minimal source columns in ascending fixed batches, uses the same classifier/interval check, inserts idempotently, and moves the scan cursor in the same transaction.
 
@@ -511,7 +511,7 @@ type ServerErrorPriorityDemotionOptions struct {
 
 Construct it from `Store.ServerErrorPriorityDemotions`, existing `MutationCoordinator`, existing setup resolver, and the bounded config settings. `HandleUsageEvents` calls `EnqueueEvents`, logs explicit SQLite admission errors, then performs nonblocking `wake()`. Delete `job queue full, dropped auth file` entirely. If wake buffer is full, return normally because admission already committed the job.
 
-`Start` launches exactly `Workers` claim loops plus one scheduler. Claim loops pause while disabled and otherwise claim/process repeatedly until none are ready. Scheduler recovers expired leases, reconciles only while enabled, cleans old terminal records, and logs bounded aggregate queue stats every sixty seconds.
+`Start` launches exactly `Workers` claim loops plus one scheduler. Claim loops pause while disabled and otherwise claim/process repeatedly until none are ready. Scheduler always reconciles source rows through the persisted enabled intervals (so a closed enabled interval cannot be lost), but only enabled claim loops execute mutations; it also recovers expired leases, cleans old terminal records, and logs bounded aggregate queue stats every sixty seconds.
 
 - [ ] **Step 4: Implement the CPA idempotence protocol.**
 

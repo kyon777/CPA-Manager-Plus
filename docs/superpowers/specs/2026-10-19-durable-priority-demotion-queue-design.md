@@ -88,8 +88,8 @@ usage_events（现有，原子持久化；不改计费语义）
 
 - 首次初始化发生在 HTTP listener/collector 启动之前。它读取当时 `usage_events` 的最大 `id` 作为 `source_floor_event_id`；任何 `id <= floor` 的历史事件永远不回放；
 - 当开关开启时，在一个短 SQLite 事务中读取当前最大 `id`，新建一个从 `max(id)+1` 开始的 enabled interval；只有落在该 interval 的事件才有资格被 live fanout 或 reconciler 入队；
-- 当开关关闭时，在一个短 SQLite 事务中以当前最大 `id` 封闭 active interval，并把 cursor 前移到该边界；关闭后新产生的事件不在 enabled interval，既不会 live 入队，也不会在后续重新开启时被回扫；
-- 后台 reconciler 只按 `id > cursor` 固定小批量读取必要字段，并只对 enabled interval 内的事件调用同一资格函数；cursor 和本批次的 `INSERT OR IGNORE` 在同一事务提交；
+- 当开关关闭时，在一个短 SQLite 事务中以当前最大 `id` 封闭 active interval；关闭后新产生的事件不在 enabled interval，既不会 live 入队，也不会在后续重新开启时被回扫。关闭不人为前移 scan cursor：这样 reconciler 可以把此前已关闭的 enabled 区间和 disabled 区间按真实边界逐条结算，而不会因崩溃窗口漏掉已启用期间的事件；
+- 后台 reconciler 只按 `id > cursor` 固定小批量读取必要字段，并只对 enabled interval 内的事件调用同一资格函数；它在开关关闭时仍推进 cursor 并跳过 disabled 区间，但 worker 不领取任务。cursor 和本批次的 `INSERT OR IGNORE` 在同一事务提交；
 - 如果 live fanout 已入队，唯一哈希使 reconciler 无副作用；如果进程在 `usage_events` 提交后、live fanout 入队前崩溃，reconciler 会补上任务；如果开关在这期间关闭，区间边界决定该事件是否应保留，不能由陈旧内存状态决定。
 
 关闭时 worker 不再领取新任务，已入队 backlog 保留；重新打开后先恢复这批 backlog，再接收落在新 enabled interval 的实时事件。这既保留了原开关“关闭后不再触发降级”的语义，也不以静默丢弃覆盖已确认入队的工作。
@@ -207,8 +207,8 @@ live fanout 和 reconciler 必须调用同一个纯函数，不允许复制两�
 现有 `USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED` 和面板互动开关不改名称、不改 API 语义。
 
 - `AutomationRuntime` 在 listener/collector 启动前初始化 queue bootstrap，并在 `Start`、`Reload`、面板开关更新的同步路径中向 worker 调用持久化 `SetEnabled`；HTTP PATCH 在区间事务提交成功后才返回成功；
-- disabled：封闭 active interval、推进 cursor 至关闭边界、暂停 reconciler 和领取；已入队任务保留；
-- enabled：创建新的 active interval、恢复 reconciler 和领取，先处理持久化 backlog，再接收实时事件；
+- disabled：封闭 active interval、暂停领取；reconciler 继续依据已持久化区间推进 cursor 并跳过 disabled 行，已入队任务保留；
+- enabled：创建新的 active interval、恢复领取，先处理持久化 backlog，再接收实时事件；
 - 关闭期间产生的失败事件保留在现有 `usage_events` 用于计费/历史，但不属于 enabled interval，重新开启后也不会补作优先级降级；
 - 开关关闭不会影响 `usage_events` 写入、计费、quota 或历史统计。
 
