@@ -23,6 +23,7 @@ type accountAutomationWorker interface {
 
 type serverErrorPriorityAutomationWorker interface {
 	Start(ctx context.Context)
+	SetEnabled(ctx context.Context, enabled bool) error
 	HandleUsageEvents(ctx context.Context, cfg collectorpkg.RuntimeConfig, events []usage.Event)
 }
 
@@ -91,6 +92,11 @@ func (r *AutomationRuntime) Reload(ctx context.Context) error {
 	settings := r.settings.RuntimeSettings(ctx)
 	if r.accountWorker != nil {
 		r.accountWorker.SetAutoDisable(settings.AccountActionsAutoDisable)
+	}
+	if r.serverErrorPriorityWorker != nil {
+		if err := r.serverErrorPriorityWorker.SetEnabled(ctx, settings.ServerErrorPriorityDemotionEnabled); err != nil {
+			return err
+		}
 	}
 	r.logState(ctx, "reloaded")
 	return nil

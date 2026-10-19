@@ -204,10 +204,18 @@ func runServer() {
 		serverApp.AppContext().AuthFileMutationCoordinator,
 		runtimeSettings.AccountActionsAutoDisable,
 	)
-	serverErrorPriorityDemotionWorker := worker.NewServerErrorPriorityDemotionWorkerWithMutationCoordinatorAndSetupResolver(
+	serverErrorPriorityDemotionWorker := worker.NewServerErrorPriorityDemotionWorkerWithQueueAndSetupResolver(
+		serverApp.AppContext().Store.ServerErrorPriorityDemotions,
 		serverApp.AppContext().AuthFileMutationCoordinator,
 		serverApp.AppContext().ManagerConfigService,
+		worker.ServerErrorPriorityDemotionOptions{
+			Workers:    cfg.ServerErrorPriorityDemotionWorkers,
+			WakeBuffer: cfg.ServerErrorPriorityDemotionWakeBuffer,
+		},
 	)
+	if err := serverErrorPriorityDemotionWorker.Bootstrap(ctx, runtimeSettings.ServerErrorPriorityDemotionEnabled); err != nil {
+		log.Fatalf("bootstrap durable server-error priority demotion queue: %v", err)
+	}
 	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryAutomaticSignal)
 	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)
 	usageDerivedRollupWorker := worker.NewUsagePricingRollupWorker(db)

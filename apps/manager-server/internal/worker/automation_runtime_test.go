@@ -135,12 +135,20 @@ func (w *recordingAccountAutomationWorker) HandleUsageEvents(context.Context, co
 }
 
 type recordingServerErrorPriorityAutomationWorker struct {
-	startCount  int
-	handleCount int
+	startCount      int
+	handleCount     int
+	setEnabledCount int
+	enabled         bool
 }
 
 func (w *recordingServerErrorPriorityAutomationWorker) Start(context.Context) {
 	w.startCount++
+}
+
+func (w *recordingServerErrorPriorityAutomationWorker) SetEnabled(_ context.Context, enabled bool) error {
+	w.setEnabledCount++
+	w.enabled = enabled
+	return nil
 }
 
 func (w *recordingServerErrorPriorityAutomationWorker) HandleUsageEvents(context.Context, collectorpkg.RuntimeConfig, []usage.Event) {
@@ -149,4 +157,25 @@ func (w *recordingServerErrorPriorityAutomationWorker) HandleUsageEvents(context
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func TestAutomationRuntimeReloadSynchronizesPriorityQueue(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	settings := automationsvc.New(config.Config{}, st)
+	priority := &recordingServerErrorPriorityAutomationWorker{}
+	runtime := NewAutomationRuntime(settings, nil, nil, nil, priority)
+	if _, err := settings.Update(ctx, automationsvc.UpdateRequest{ServerErrorPriorityDemotionEnabled: boolPtr(true)}); err != nil {
+		t.Fatalf("enable priority queue: %v", err)
+	}
+	if err := runtime.Reload(ctx); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if priority.setEnabledCount != 1 || !priority.enabled {
+		t.Fatalf("priority worker state = %#v", priority)
+	}
 }

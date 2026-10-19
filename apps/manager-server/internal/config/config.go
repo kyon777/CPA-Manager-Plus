@@ -21,54 +21,62 @@ const defaultDataKeySecretFile = "/run/secrets/cpa_data_key"
 const defaultTokenAcquisitionSecretFile = "/run/secrets/token_acquisition_api_key"
 
 const (
-	DefaultUsageImportChunkBytes        int64 = 4 * 1024 * 1024
-	DefaultUsageImportDiskQuotaBytes    int64 = 16 * 1024 * 1024 * 1024
-	DefaultUsageImportMaxSessions             = 2
-	DefaultUsageImportSessionTTL              = 24 * time.Hour
-	DefaultUsageArchiveRetentionEnabled       = false
-	DefaultUsageArchiveRetentionDays          = 30
-	maxUsageArchiveRetentionDays        int64 = math.MaxInt64 / int64(24*time.Hour)
+	DefaultUsageImportChunkBytes                 int64 = 4 * 1024 * 1024
+	DefaultUsageImportDiskQuotaBytes             int64 = 16 * 1024 * 1024 * 1024
+	DefaultUsageImportMaxSessions                      = 2
+	DefaultUsageImportSessionTTL                       = 24 * time.Hour
+	DefaultUsageArchiveRetentionEnabled                = false
+	DefaultUsageArchiveRetentionDays                   = 30
+	DefaultServerErrorPriorityDemotionWorkers          = 8
+	DefaultServerErrorPriorityDemotionWakeBuffer       = 8192
+	maxUsageArchiveRetentionDays                 int64 = math.MaxInt64 / int64(24*time.Hour)
+	minServerErrorPriorityDemotionWorkers              = 1
+	maxServerErrorPriorityDemotionWorkers              = 32
+	minServerErrorPriorityDemotionWakeBuffer           = 64
+	maxServerErrorPriorityDemotionWakeBuffer           = 32768
 )
 
 type Config struct {
-	HTTPAddr                           string
-	DataDir                            string
-	DBPath                             string
-	CPAUpstreamURL                     string
-	ManagementKey                      string
-	AdminKey                           string
-	DataKey                            string
-	DataKeyPath                        string
-	TokenAcquisitionBaseURL            string
-	TokenAcquisitionAPIKey             string
-	CollectorMode                      string
-	Queue                              string
-	PopSide                            string
-	BatchSize                          int
-	PollInterval                       time.Duration
-	QueryLimit                         int
-	PprofAddr                          string
-	PanelPath                          string
-	CORSOrigins                        []string
-	TLSSkipVerify                      bool
-	QuotaCooldownEnabled               bool
-	AccountActionsEnabled              bool
-	AccountActionsAutoDisable          bool
-	ServerErrorPriorityDemotionEnabled bool
-	CodexReauthAutoUpdateEnabled       bool
-	DashboardHourlyRollupEnabled       bool
-	UsageImportChunkBytes              int64
-	UsageImportDiskQuotaBytes          int64
-	UsageImportMaxSessions             int
-	UsageImportSessionTTL              time.Duration
-	UsageArchiveDir                    string
-	UsageArchiveRetentionEnabled       bool
-	UsageArchiveRetentionDays          int
-	QuotaCooldownEnvSet                bool
-	AccountActionsEnvSet               bool
-	AccountActionsAutoEnvSet           bool
-	ServerErrorPriorityDemotionEnvSet  bool
-	CodexReauthAutoUpdateEnvSet        bool
+	HTTPAddr                              string
+	DataDir                               string
+	DBPath                                string
+	CPAUpstreamURL                        string
+	ManagementKey                         string
+	AdminKey                              string
+	DataKey                               string
+	DataKeyPath                           string
+	TokenAcquisitionBaseURL               string
+	TokenAcquisitionAPIKey                string
+	CollectorMode                         string
+	Queue                                 string
+	PopSide                               string
+	BatchSize                             int
+	PollInterval                          time.Duration
+	QueryLimit                            int
+	PprofAddr                             string
+	PanelPath                             string
+	CORSOrigins                           []string
+	TLSSkipVerify                         bool
+	QuotaCooldownEnabled                  bool
+	AccountActionsEnabled                 bool
+	AccountActionsAutoDisable             bool
+	ServerErrorPriorityDemotionEnabled    bool
+	ServerErrorPriorityDemotionWorkers    int
+	ServerErrorPriorityDemotionWakeBuffer int
+	CodexReauthAutoUpdateEnabled          bool
+	DashboardHourlyRollupEnabled          bool
+	UsageImportChunkBytes                 int64
+	UsageImportDiskQuotaBytes             int64
+	UsageImportMaxSessions                int
+	UsageImportSessionTTL                 time.Duration
+	UsageArchiveDir                       string
+	UsageArchiveRetentionEnabled          bool
+	UsageArchiveRetentionDays             int
+	QuotaCooldownEnvSet                   bool
+	AccountActionsEnvSet                  bool
+	AccountActionsAutoEnvSet              bool
+	ServerErrorPriorityDemotionEnvSet     bool
+	CodexReauthAutoUpdateEnvSet           bool
 }
 
 type LoadOptions struct {
@@ -188,8 +196,18 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		AccountActionsEnabled:              envBool("USAGE_ACCOUNT_ACTIONS_ENABLED", cfgFile.AccountActionsEnabled),
 		AccountActionsAutoDisable:          envBool("USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE", cfgFile.AccountActionsAutoDisable),
 		ServerErrorPriorityDemotionEnabled: envBool("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED", cfgFile.ServerErrorPriorityDemotionEnabled),
-		CodexReauthAutoUpdateEnabled:       envBool("USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED", cfgFile.CodexReauthAutoUpdateEnabled),
-		DashboardHourlyRollupEnabled:       envBool("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", true),
+		ServerErrorPriorityDemotionWorkers: clampInt(
+			envInt("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WORKERS", DefaultServerErrorPriorityDemotionWorkers),
+			minServerErrorPriorityDemotionWorkers,
+			maxServerErrorPriorityDemotionWorkers,
+		),
+		ServerErrorPriorityDemotionWakeBuffer: clampInt(
+			envInt("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WAKE_BUFFER", DefaultServerErrorPriorityDemotionWakeBuffer),
+			minServerErrorPriorityDemotionWakeBuffer,
+			maxServerErrorPriorityDemotionWakeBuffer,
+		),
+		CodexReauthAutoUpdateEnabled: envBool("USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED", cfgFile.CodexReauthAutoUpdateEnabled),
+		DashboardHourlyRollupEnabled: envBool("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", true),
 		UsageImportChunkBytes: envInt64(
 			"USAGE_IMPORT_CHUNK_BYTES",
 			int64Fallback(cfgFile.UsageImportChunkBytes, DefaultUsageImportChunkBytes),
@@ -385,6 +403,16 @@ func stringFallback(value string, fallback string) string {
 func intFallback(value int, fallback int) int {
 	if value <= 0 {
 		return fallback
+	}
+	return value
+}
+
+func clampInt(value, minimum, maximum int) int {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
 	}
 	return value
 }

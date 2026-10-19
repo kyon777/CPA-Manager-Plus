@@ -419,6 +419,8 @@ func clearConfigEnv(t *testing.T) {
 		"USAGE_ACCOUNT_ACTIONS_ENABLED",
 		"USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE",
 		"USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED",
+		"USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WORKERS",
+		"USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WAKE_BUFFER",
 		"USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED",
 		"USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED",
 		"USAGE_IMPORT_CHUNK_BYTES",
@@ -430,5 +432,40 @@ func clearConfigEnv(t *testing.T) {
 		"PANEL_PATH",
 	} {
 		t.Setenv(key, "")
+	}
+}
+
+func TestLoadPriorityQueueSettingsAreBounded(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv(configEnvKey, filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WORKERS", "99")
+	t.Setenv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WAKE_BUFFER", "1")
+	cfg, err := LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.ServerErrorPriorityDemotionWorkers != 32 || cfg.ServerErrorPriorityDemotionWakeBuffer != 64 {
+		t.Fatalf("priority queue config = %#v", cfg)
+	}
+}
+
+func TestLoadPriorityQueueSettingsDefaultAndLowerBound(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv(configEnvKey, filepath.Join(t.TempDir(), "missing-config.json"))
+	cfg, err := LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("load defaults: %v", err)
+	}
+	if cfg.ServerErrorPriorityDemotionWorkers != 8 || cfg.ServerErrorPriorityDemotionWakeBuffer != 8192 {
+		t.Fatalf("default priority queue config = %#v", cfg)
+	}
+	t.Setenv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WORKERS", "0")
+	t.Setenv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_WAKE_BUFFER", "-10")
+	cfg, err = LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("load lower bound: %v", err)
+	}
+	if cfg.ServerErrorPriorityDemotionWorkers != 8 || cfg.ServerErrorPriorityDemotionWakeBuffer != 8192 {
+		t.Fatalf("lower-bound priority queue config = %#v", cfg)
 	}
 }
