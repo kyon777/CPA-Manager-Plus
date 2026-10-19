@@ -1422,6 +1422,28 @@ export interface CredentialListResponse {
   global_metrics_generated_at_ms?: number;
 }
 
+export interface ServerErrorPriorityDemotionCursor {
+  completedAtMs: number;
+  id: number;
+}
+
+// This is intentionally the redacted Manager projection of a completed queue
+// job. It contains neither request content nor credential/runtime metadata.
+export interface ServerErrorPriorityDemotionUpdate {
+  id: number;
+  fileName: string;
+  authIndex: string;
+  provider: string;
+  priorityBefore: number;
+  priorityTarget: number;
+  completedAtMs: number;
+}
+
+export interface ServerErrorPriorityDemotionUpdatesResponse {
+  items: ServerErrorPriorityDemotionUpdate[];
+  nextCursor: ServerErrorPriorityDemotionCursor;
+}
+
 export interface MonitoringAccountWindowUsageTarget {
   request_key?: string;
   row_key: string;
@@ -3212,6 +3234,40 @@ const runUsageArchiveAction = async (
   });
 
 export const usageServiceApi = {
+  listServerErrorPriorityDemotionUpdates: async (
+    base: string,
+    managementKey: string | undefined,
+    cursor: ServerErrorPriorityDemotionCursor,
+    signal?: AbortSignal
+  ): Promise<ServerErrorPriorityDemotionUpdatesResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        items: [],
+        nextCursor: {
+          completedAtMs: Math.max(0, Number(cursor.completedAtMs) || 0),
+          id: Math.max(0, Number(cursor.id) || 0),
+        },
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<ServerErrorPriorityDemotionUpdatesResponse>(
+        buildUrl(base, '/v0/management/server-error-priority-demotions/updates'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          params: {
+            after_completed_at_ms: Math.max(0, Number(cursor.completedAtMs) || 0),
+            after_id: Math.max(0, Number(cursor.id) || 0),
+            limit: 200,
+          },
+          ...optionalAbortSignal(signal),
+        }
+      );
+      return response.data;
+    });
+  },
+
   getInfo: async (base: string): Promise<UsageServiceInfo> => {
     if (__DEMO_SITE__ && isDemoMode()) {
       return getDemoUsageServiceInfo();
