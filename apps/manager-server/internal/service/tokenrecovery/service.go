@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -17,12 +18,13 @@ import (
 )
 
 const (
-	defaultIdlePollInterval            = 500 * time.Millisecond
-	defaultWorkerCount                 = 1
-	maxWorkerCount                     = 40
-	defaultWriteConcurrency            = 4
-	maxWriteConcurrency                = maxWorkerCount
-	DefaultCPAAuthFileOperationTimeout = 4 * time.Minute
+	defaultIdlePollInterval                = 500 * time.Millisecond
+	defaultWorkerCount                     = 1
+	maxWorkerCount                         = 40
+	defaultWriteConcurrency                = 4
+	maxWriteConcurrency                    = maxWorkerCount
+	DefaultCPAAuthFileOperationTimeout     = 4 * time.Minute
+	RecommendedTokenAcquisitionWorkerCount = 12
 )
 
 var (
@@ -88,8 +90,9 @@ type Options struct {
 	MutationCoordinator *cpaauthfiles.MutationCoordinator
 	IdlePollInterval    time.Duration
 	// WorkerCount bounds concurrent external token acquisition. The live app
-	// deliberately supplies 40; callers without an explicit setting retain the
-	// historical single-worker behavior.
+	// supplies RecommendedTokenAcquisitionWorkerCount while the operator may
+	// still queue a full current page immediately; callers without an explicit
+	// setting retain the historical single-worker behavior.
 	WorkerCount int
 	// AutomaticEnabled is re-evaluated before every claim. A nil callback keeps
 	// the historical raw-service behavior (automatic work enabled); the live
@@ -135,6 +138,32 @@ func (e *cpaAuthFileOperationTimeoutError) Unwrap() error {
 
 func (e *cpaAuthFileOperationTimeoutError) Is(target error) bool {
 	return target == ErrCPAAuthFileOperationTimeout
+}
+
+// cpaAuthFileOperationError retains only the recovery phase and an optional
+// HTTP status. Its Error method deliberately does not reveal the underlying
+// CPA response, credential contents, management key, or proxy URL.
+type cpaAuthFileOperationError struct {
+	operation  string
+	statusCode int
+	err        error
+}
+
+func (e *cpaAuthFileOperationError) Error() string {
+	if e == nil {
+		return "CPA auth-file operation failed"
+	}
+	if e.statusCode >= 300 && e.statusCode <= 999 {
+		return fmt.Sprintf("%s: CPA auth-file operation failed: HTTP %d", e.operation, e.statusCode)
+	}
+	return fmt.Sprintf("%s: CPA auth-file operation failed", e.operation)
+}
+
+func (e *cpaAuthFileOperationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 func NewWithOptions(options Options) *Service {
@@ -198,7 +227,7 @@ func (s *Service) Start(ctx context.Context) {
 			// Every worker may claim manual recovery. Only worker zero may claim an
 			// automatic task when no manual task is waiting, preserving the former
 			// single-worker background behavior while giving the current-page
-			// operator action up to 40 bounded slots.
+			// operator action the configured number of bounded slots.
 			go s.run(ctx, worker == 0)
 		}
 	})
@@ -276,7 +305,12 @@ func (s *Service) process(ctx context.Context, task model.TokenRecoveryTask) {
 		// second external POST if shutdown interrupted a request or upload.
 		return
 	}
-	_, _ = s.tasks.FailTokenRecovery(ctx, task.ID, recoveryFailureCode(err), recoveryFailureMessage(err))
+	code := recoveryFailureCode(err)
+	message := recoveryFailureMessage(err)
+	// code and message are both deliberately redacted, bounded task fields;
+	// never log the raw error because it can contain upstream or proxy details.
+	log.Printf("[token-recovery] task_id=%d failed code=%s reason=%q", task.ID, code, message)
+	_, _ = s.tasks.FailTokenRecovery(ctx, task.ID, code, message)
 }
 
 func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) error {
@@ -440,10 +474,18 @@ func (s *Service) releaseWriteSlot() {
 }
 
 func classifyCPAAuthFileOperationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &cpaAuthFileOperationTimeoutError{operation: operation, err: err}
 	}
-	return err
+	statusCode := 0
+	var operationErr *cpaauthfiles.OperationError
+	if errors.As(err, &operationErr) && operationErr != nil {
+		statusCode = operationErr.StatusCode
+	}
+	return &cpaAuthFileOperationError{operation: operation, statusCode: statusCode, err: err}
 }
 
 func (s *Service) resolveSetup(ctx context.Context) (store.Setup, error) {
@@ -495,6 +537,8 @@ func recoveryFailureCode(err error) string {
 		return "token_acquisition_conflict"
 	case errors.Is(err, tokenacquisition.ErrTimedOut):
 		return "token_acquisition_timeout"
+	case errors.Is(err, tokenacquisition.ErrTransportFailed):
+		return "token_acquisition_transport_failed"
 	case errors.Is(err, tokenacquisition.ErrJobFailed):
 		return "token_acquisition_failed"
 	case errors.Is(err, tokenacquisition.ErrRequestFailed):
@@ -503,9 +547,20 @@ func recoveryFailureCode(err error) string {
 		return "cpa_auth_file_timeout"
 	case errors.Is(err, cpaauthfiles.ErrMutationCoordinatorUnavailable):
 		return "mutation_unavailable"
-	default:
-		return "recovery_failed"
 	}
+	if operationErr := recoveryCPAAuthFileOperation(err); operationErr != nil {
+		switch operationErr.operation {
+		case "initial_read", "write_read":
+			return "cpa_auth_file_read_failed"
+		case "upload":
+			return "cpa_auth_file_upload_failed"
+		case "verify":
+			return "cpa_auth_file_verify_failed"
+		default:
+			return "cpa_auth_file_operation_failed"
+		}
+	}
+	return "recovery_failed"
 }
 
 func recoveryFailureMessage(err error) string {
@@ -523,5 +578,58 @@ func recoveryFailureMessage(err error) string {
 		}
 		return "CPA Core 凭证文件操作超时：请稍后重试"
 	}
-	return tokenacquisition.FailureReason(err)
+	if operationErr := recoveryCPAAuthFileOperation(err); operationErr != nil {
+		return recoveryCPAAuthFileOperationMessage(operationErr)
+	}
+	if reason := tokenacquisition.FailureReason(err); reason != "" {
+		return reason
+	}
+	switch {
+	case errors.Is(err, tokenacquisition.ErrTransportFailed):
+		return "Token Acquisition 网络请求失败：服务或链路暂时不可用，请稍后手动重试"
+	case errors.Is(err, tokenacquisition.ErrRequestFailed):
+		return "Token Acquisition 请求失败：外部接口未接受请求，请稍后手动重试"
+	case errors.Is(err, tokenacquisition.ErrJobFailed):
+		return "Token Acquisition 返回失败：外部接口未提供可用凭证，请稍后手动重试"
+	case errors.Is(err, tokenacquisition.ErrInvalidResult):
+		return "Token Acquisition 返回数据无效：请稍后手动重试"
+	case errors.Is(err, tokenacquisition.ErrConflict):
+		return "Token Acquisition 当前已有处理中任务：请稍后手动重试"
+	default:
+		return "恢复过程未返回可识别原因，请手动重试"
+	}
+}
+
+func recoveryCPAAuthFileOperation(err error) *cpaAuthFileOperationError {
+	var operationErr *cpaAuthFileOperationError
+	if errors.As(err, &operationErr) {
+		return operationErr
+	}
+	return nil
+}
+
+func recoveryCPAAuthFileOperationMessage(err *cpaAuthFileOperationError) string {
+	if err == nil {
+		return "CPA Core 凭证文件操作失败：请稍后手动重试"
+	}
+	if err.statusCode >= 300 && err.statusCode <= 999 {
+		switch err.operation {
+		case "initial_read", "write_read":
+			return fmt.Sprintf("CPA Core 凭证读取失败：HTTP %d", err.statusCode)
+		case "upload":
+			return fmt.Sprintf("CPA Core 凭证写入失败：HTTP %d", err.statusCode)
+		case "verify":
+			return fmt.Sprintf("CPA Core 凭证复核失败：HTTP %d，写入可能已完成，请刷新后核实", err.statusCode)
+		}
+	}
+	switch err.operation {
+	case "initial_read", "write_read":
+		return "CPA Core 凭证读取失败：请稍后手动重试"
+	case "upload":
+		return "CPA Core 凭证写入失败：写入结果未确认，请刷新后核实"
+	case "verify":
+		return "CPA Core 凭证复核失败：写入可能已完成，请刷新后核实"
+	default:
+		return "CPA Core 凭证文件操作失败：请稍后手动重试"
+	}
 }

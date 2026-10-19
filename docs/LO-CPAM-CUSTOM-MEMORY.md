@@ -359,3 +359,34 @@ history, billing, or scheduling endpoints as part of credential recovery.
   CPAM token replacement file I/O; they do not alter CPA request routing,
   downstream API billing, `usage_events`, quota collection, or priority
   demotion.
+
+
+## 2026-10-19: Token Recovery outbound-acquisition boundary and diagnostics
+
+This customization is CPAM-only. It must never modify, restart, rebuild, or
+reconfigure CPA Core / `cli-proxy-api`, and it must not make quota, history,
+billing, scheduler, or priority-demotion calls.
+
+- The browser may still queue a current page of up to 40 manual credential
+  updates immediately. The durable SQLite queue retains those jobs. The live
+  CPAM `TokenRecoveryService` uses
+  `RecommendedTokenAcquisitionWorkerCount = 12`, so no more than 12 external
+  Token Acquisition flows run concurrently. This replaces the former live 40
+  worker configuration; do not restore it during an upstream merge.
+- CPA auth-file mutation remains separately limited to 4 concurrent accounts,
+  and the per-file `MutationCoordinator` remains mandatory. The 12/4 controls
+  do not change CPA scheduling, billing, quota, usage collection, or the
+  one-shot automatic-recovery behavior.
+- Known outbound Token Acquisition transport failures must persist as
+  `token_acquisition_transport_failed`, with only a fixed redacted operator
+  message. Do not persist raw socket/DNS/TLS errors because they can contain
+  proxy URLs or credentials.
+- CPAM must distinguish CPA auth-file failure phases as
+  `cpa_auth_file_read_failed`, `cpa_auth_file_upload_failed`, and
+  `cpa_auth_file_verify_failed`; the UI may show only the phase and an HTTP
+  status when available. CPA response bodies, tokens, management keys and
+  proxy credentials must never enter task state, browser responses, or logs.
+- Preserve the existing `cpa_auth_file_timeout` mapping and the four-minute
+  auth-file operation budget. Existing historical `recovery_failed` records
+  cannot be retroactively diagnosed because raw errors were intentionally not
+  stored; they remain manually retryable.

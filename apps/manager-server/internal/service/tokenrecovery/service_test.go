@@ -297,6 +297,30 @@ func TestServiceStoresStructuredTokenAcquisitionFailureReason(t *testing.T) {
 	}
 }
 
+func TestServiceStoresRedactedTokenAcquisitionTransportFailure(t *testing.T) {
+	core := newRecoveryCore(t, []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old","refresh_token":"old","id_token":"old"}`))
+	acquirer := &fakeAcquirer{err: fmt.Errorf("dial proxy-user:proxy-password@proxy.example:8080: %w", tokenacquisition.ErrTransportFailed)}
+	service, ctx, cancel := newRecoveryService(t, core.server.URL, cpaauthfiles.NewMutationCoordinator(), acquirer)
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	failed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusAutoFailedManualOnly)
+	if got, want := failed.LastErrorCode, "token_acquisition_transport_failed"; got != want {
+		t.Fatalf("failure code = %q, want %q", got, want)
+	}
+	if !strings.Contains(failed.LastErrorMessage, "网络请求失败") {
+		t.Fatalf("failure message = %q, want actionable transport reason", failed.LastErrorMessage)
+	}
+	if strings.Contains(failed.LastErrorMessage, "proxy-password") || strings.Contains(failed.LastErrorMessage, "proxy.example") {
+		t.Fatalf("failure message leaked transport detail: %q", failed.LastErrorMessage)
+	}
+}
 func TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency(t *testing.T) {
 	const workerCount = 40
 	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-concurrency.sqlite"))
@@ -688,6 +712,42 @@ func TestServiceReportsCPAAuthFileUploadTimeout(t *testing.T) {
 	}
 }
 
+func TestServiceStoresCPAAuthFileUploadFailureStage(t *testing.T) {
+	files := &uploadFailureRecoveryAuthFiles{raw: []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old-access","refresh_token":"old-refresh","id_token":"old-id"}`)}
+	acquirer := &fakeAcquirer{result: tokenacquisition.Result{
+		Email: "person@example.com", AccessToken: "new-access", RefreshToken: "new-refresh", IDToken: "new-id",
+	}}
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-upload-failure.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewWithOptions(Options{
+		Tasks:               st,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:           files,
+		Acquirer:            acquirer,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+		IdlePollInterval:    time.Millisecond,
+	})
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	failed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusAutoFailedManualOnly)
+	if got, want := failed.LastErrorCode, "cpa_auth_file_upload_failed"; got != want {
+		t.Fatalf("failure code = %q, want %q", got, want)
+	}
+	if got, want := failed.LastErrorMessage, "CPA Core 凭证写入失败：HTTP 502"; got != want {
+		t.Fatalf("failure message = %q, want %q", got, want)
+	}
+}
 func TestDefaultCPAAuthFileOperationTimeout(t *testing.T) {
 	if got, want := DefaultCPAAuthFileOperationTimeout, 4*time.Minute; got != want {
 		t.Fatalf("DefaultCPAAuthFileOperationTimeout = %s, want %s", got, want)
@@ -714,6 +774,66 @@ func TestRecoveryFailureMessageDistinguishesCPAAuthFileTimeoutStages(t *testing.
 	}
 }
 
+func TestRecoveryFailureClassifiesTokenAcquisitionTransport(t *testing.T) {
+	if got, want := recoveryFailureCode(tokenacquisition.ErrTransportFailed), "token_acquisition_transport_failed"; got != want {
+		t.Fatalf("recoveryFailureCode() = %q, want %q", got, want)
+	}
+	if got, want := recoveryFailureMessage(tokenacquisition.ErrTransportFailed), "Token Acquisition 网络请求失败：服务或链路暂时不可用，请稍后手动重试"; got != want {
+		t.Fatalf("recoveryFailureMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestRecoveryFailureClassifiesCPAAuthFileOperationStages(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		status    int
+		wantCode  string
+		wantText  string
+	}{
+		{
+			name:      "initial read",
+			operation: "initial_read",
+			status:    http.StatusServiceUnavailable,
+			wantCode:  "cpa_auth_file_read_failed",
+			wantText:  "CPA Core 凭证读取失败：HTTP 503",
+		},
+		{
+			name:      "upload",
+			operation: "upload",
+			status:    http.StatusBadGateway,
+			wantCode:  "cpa_auth_file_upload_failed",
+			wantText:  "CPA Core 凭证写入失败：HTTP 502",
+		},
+		{
+			name:      "verify transport",
+			operation: "verify",
+			status:    0,
+			wantCode:  "cpa_auth_file_verify_failed",
+			wantText:  "CPA Core 凭证复核失败：写入可能已完成，请刷新后核实",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := classifyCPAAuthFileOperationError(tc.operation, &cpaauthfiles.OperationError{
+				Operation:  cpaauthfiles.OperationDownload,
+				StatusCode: tc.status,
+			})
+			if got := recoveryFailureCode(err); got != tc.wantCode {
+				t.Fatalf("recoveryFailureCode() = %q, want %q", got, tc.wantCode)
+			}
+			if got := recoveryFailureMessage(err); got != tc.wantText {
+				t.Fatalf("recoveryFailureMessage() = %q, want %q", got, tc.wantText)
+			}
+		})
+	}
+}
+
+func TestRecommendedTokenAcquisitionWorkerCount(t *testing.T) {
+	if got, want := RecommendedTokenAcquisitionWorkerCount, 12; got != want {
+		t.Fatalf("RecommendedTokenAcquisitionWorkerCount = %d, want %d", got, want)
+	}
+}
 func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *testing.T) {
 	const workers = 8
 	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-write-limit.sqlite"))
@@ -764,6 +884,18 @@ func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *t
 	for _, taskID := range taskIDs {
 		waitForTaskStatus(t, ctx, service, taskID, model.TokenRecoveryStatusSucceeded)
 	}
+}
+
+type uploadFailureRecoveryAuthFiles struct {
+	raw []byte
+}
+
+func (f *uploadFailureRecoveryAuthFiles) Download(_ context.Context, _ string, _ string, _ string) ([]byte, error) {
+	return append([]byte(nil), f.raw...), nil
+}
+
+func (f *uploadFailureRecoveryAuthFiles) Upload(_ context.Context, _ string, _ string, _ string, _ []byte) error {
+	return &cpaauthfiles.OperationError{Operation: cpaauthfiles.OperationUpload, StatusCode: http.StatusBadGateway}
 }
 
 type timeoutOnUploadRecoveryAuthFiles struct {

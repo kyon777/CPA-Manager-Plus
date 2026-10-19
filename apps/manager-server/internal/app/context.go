@@ -196,7 +196,7 @@ func fromExisting(
 		AutomaticEnabled: func(ctx context.Context) bool {
 			return accountProcessingPolicyService.RuntimeSettings(ctx).CodexReauthAutoUpdateEnabled
 		},
-		WorkerCount: 40,
+		WorkerCount: tokenrecoverysvc.RecommendedTokenAcquisitionWorkerCount,
 	})
 	automaticTokenRecoverySignal := tokenrecoverysvc.NewAutomaticSignalGate(tokenrecoverysvc.AutomaticSignalGateOptions{
 		Recovery:      tokenRecoveryService,
