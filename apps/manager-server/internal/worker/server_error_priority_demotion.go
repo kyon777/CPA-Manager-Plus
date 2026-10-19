@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/servererrorpriority"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialpolicy"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -410,77 +410,25 @@ func serverErrorPriorityDemotionCandidateFromEvent(
 	baseURL string,
 	managementKey string,
 ) (serverErrorPriorityDemotionCandidate, bool) {
-	if !isServerErrorPriorityDemotionEvent(event) {
+	input, ok := servererrorpriority.Classify(event)
+	if !ok || strings.TrimSpace(input.IgnoredReason) != "" {
 		return serverErrorPriorityDemotionCandidate{}, false
 	}
-	fileName := strings.TrimSpace(event.AuthFileSnapshot)
-	provider := credentialpolicy.NormalizeProvider(firstNonEmpty(event.AuthProviderSnapshot, event.Provider))
-	if fileName == "" || provider == "" {
-		return serverErrorPriorityDemotionCandidate{}, false
-	}
-	candidate := serverErrorPriorityDemotionCandidate{
+	return serverErrorPriorityDemotionCandidate{
 		BaseURL:         strings.TrimSpace(baseURL),
 		ManagementKey:   strings.TrimSpace(managementKey),
-		FileName:        fileName,
-		AuthIndex:       strings.TrimSpace(event.AuthIndex),
-		Provider:        provider,
-		AccountID:       strings.TrimSpace(event.AuthAccountIDSnapshot),
-		AccountSnapshot: stableEventAccountSnapshot(fileName, event.AccountSnapshot),
-		EventHash:       strings.TrimSpace(event.EventHash),
-		StatusCode:      event.FailStatusCode,
-	}
-	if candidate.Provider == "codex" && candidate.AuthIndex == "" {
-		return serverErrorPriorityDemotionCandidate{}, false
-	}
-	if candidate.AuthIndex == "" && candidate.AccountID == "" && candidate.AccountSnapshot == "" {
-		return serverErrorPriorityDemotionCandidate{}, false
-	}
-	return candidate, true
+		FileName:        input.FileName,
+		AuthIndex:       input.AuthIndex,
+		Provider:        input.Provider,
+		AccountID:       input.AccountIDSnapshot,
+		AccountSnapshot: input.AccountSnapshot,
+		EventHash:       input.EventHash,
+		StatusCode:      input.StatusCode,
+	}, true
 }
 
 func isServerErrorPriorityDemotionEvent(event usage.Event) bool {
-	if !event.Failed {
-		return false
-	}
-	switch event.FailStatusCode {
-	case http.StatusBadGateway, http.StatusServiceUnavailable:
-		return true
-	case http.StatusTooManyRequests:
-		return isQualifiedRateLimit429(event.FailBody)
-	case http.StatusInternalServerError:
-		return isQualifiedCodexResponsesTransportFailure500(event.FailBody)
-	default:
-		return false
-	}
-}
-
-// isQualifiedRateLimit429 deliberately requires the raw local-only response
-// body. A generic 429 can mean many different things; only the precise
-// TokenAcquisition rate-limit response is eligible for priority demotion.
-func isQualifiedRateLimit429(failBody string) bool {
-	var response struct {
-		Detail string `json:"detail"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(failBody)), &response); err != nil {
-		return false
-	}
-	return response.Detail == "Rate limit exceeded"
-}
-
-// isQualifiedCodexResponsesTransportFailure500 intentionally admits only two
-// exact upstream transport failures emitted while CPA calls the Codex responses
-// endpoint. Generic HTTP 500 errors, generic proxy 407 errors, and failures for
-// other endpoints must not change scheduling priority.
-func isQualifiedCodexResponsesTransportFailure500(failBody string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(failBody))
-	if !strings.Contains(normalized, `post "https://chatgpt.com/backend-api/codex/responses":`) {
-		return false
-	}
-	return strings.Contains(normalized, "unexpected eof") ||
-		strings.Contains(
-			normalized,
-			"utls: dial upstream: proxy connect returned status 407 proxy authentication required",
-		)
+	return servererrorpriority.IsEligible(event)
 }
 
 func (candidate serverErrorPriorityDemotionCandidate) identity() (cpaauthfiles.Identity, error) {
