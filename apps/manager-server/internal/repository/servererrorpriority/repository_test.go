@@ -9,6 +9,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -396,4 +397,50 @@ func eligible502ForCredential(hash, fileName, authIndex string) usage.Event {
 	event.AuthIndex = authIndex
 	event.AccountSnapshot = authIndex + "@example.com"
 	return event
+}
+
+func TestListCompletedDemotionsUsesStableCursorAndOnlyReturnsAppliedChanges(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	repo := New(db)
+	seed := func(id, completedAt int64, state, reason string, before, target any) {
+		t.Helper()
+		_, err := db.ExecContext(ctx, `insert into server_error_priority_demotion_jobs (
+			id, event_hash, source_event_id, credential_key, file_name, auth_index, provider,
+			status_code, qualification_code, event_at_ms, state, available_at_ms,
+			priority_before, priority_target, completed_reason, created_at_ms, updated_at_ms, completed_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, fmt.Sprintf("update-%d", id), id, fmt.Sprintf("credential-%d", id), fmt.Sprintf("account-%d.json", id), fmt.Sprintf("auth-%d", id), "codex",
+			502, "http_502", 1, state, 1, before, target, reason, 1, 1, completedAt)
+		if err != nil {
+			t.Fatalf("seed %d: %v", id, err)
+		}
+	}
+	seed(9, 1000, "completed", "demoted", 27004, 27003)
+	seed(10, 1000, "completed", "demoted", 27003, 27002)
+	seed(11, 1000, "completed", "demoted", 27002, 27001)
+	seed(12, 1001, "completed", "demoted", 27001, 27000)
+	seed(13, 1002, "completed", "credential_not_found", 27000, 26999)
+	seed(14, 1003, "ignored", "mutation_scope_unsupported", 26999, 26998)
+	seed(15, 1004, "completed", "demoted", nil, 26997)
+
+	page, err := repo.ListCompletedDemotions(ctx, model.ServerErrorPriorityDemotionCursor{
+		CompletedAtMS: 1000,
+		ID:            10,
+	}, 50)
+	if err != nil {
+		t.Fatalf("list completed demotions: %v", err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("updates = %#v, want two items", page.Items)
+	}
+	if page.Items[0].ID != 11 || page.Items[1].ID != 12 {
+		t.Fatalf("update IDs = [%d %d], want [11 12]", page.Items[0].ID, page.Items[1].ID)
+	}
+	if page.Items[0].FileName != "account-11.json" || page.Items[0].AuthIndex != "auth-11" || page.Items[0].Provider != "codex" || page.Items[0].PriorityBefore != 27002 || page.Items[0].PriorityTarget != 27001 || page.Items[0].CompletedAtMS != 1000 {
+		t.Fatalf("first update = %#v", page.Items[0])
+	}
+	if page.NextCursor.CompletedAtMS != 1001 || page.NextCursor.ID != 12 {
+		t.Fatalf("next cursor = %#v, want completed_at_ms=1001 id=12", page.NextCursor)
+	}
 }

@@ -854,6 +854,8 @@ func Migrate(db *sql.DB) error {
 			on server_error_priority_demotion_jobs(credential_key, id)`,
 		`create index if not exists idx_server_error_priority_demotion_terminal
 			on server_error_priority_demotion_jobs(completed_at_ms, state)`,
+		`create index if not exists idx_server_error_priority_demotion_updates
+			on server_error_priority_demotion_jobs(state, completed_reason, completed_at_ms, id)`,
 		`create table if not exists server_error_priority_demotion_cursor (
 			id integer primary key check(id = 1),
 			source_floor_event_id integer not null,

@@ -37,6 +37,7 @@ type Repository interface {
 	Terminal(context.Context, int64, string, string, string, string, string, int64) error
 	CleanupTerminal(context.Context, int64) (int64, error)
 	Stats(context.Context, int64) (model.ServerErrorPriorityDemotionStats, error)
+	ListCompletedDemotions(context.Context, model.ServerErrorPriorityDemotionCursor, int) (model.ServerErrorPriorityDemotionUpdatePage, error)
 }
 
 type repository struct {
@@ -564,6 +565,78 @@ func (r *repository) Stats(ctx context.Context, nowMS int64) (model.ServerErrorP
 		return stats, err
 	}
 	return stats, nil
+}
+
+// ListCompletedDemotions returns only successfully applied priority changes.
+// The tuple cursor avoids missing jobs when more than one job completes in a
+// single millisecond. This is a read-only UI projection over CPAM's local
+// queue and never talks to CPA or usage/billing tables.
+func (r *repository) ListCompletedDemotions(
+	ctx context.Context,
+	after model.ServerErrorPriorityDemotionCursor,
+	limit int,
+) (model.ServerErrorPriorityDemotionUpdatePage, error) {
+	page := model.ServerErrorPriorityDemotionUpdatePage{NextCursor: after}
+	if r == nil || r.db == nil {
+		return page, ErrNotBootstrapped
+	}
+	if after.CompletedAtMS < 0 {
+		after.CompletedAtMS = 0
+	}
+	if after.ID < 0 {
+		after.ID = 0
+	}
+	page.NextCursor = after
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	rows, err := r.db.QueryContext(ctx, `select id, file_name, auth_index, provider,
+		priority_before, priority_target, completed_at_ms
+		from server_error_priority_demotion_jobs
+		where state = ? and completed_reason = ?
+			and priority_before is not null and priority_target is not null
+			and (completed_at_ms > ? or (completed_at_ms = ? and id > ?))
+		order by completed_at_ms asc, id asc
+		limit ?`,
+		model.ServerErrorPriorityDemotionCompleted,
+		"demoted",
+		after.CompletedAtMS,
+		after.CompletedAtMS,
+		after.ID,
+		limit,
+	)
+	if err != nil {
+		return page, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var update model.ServerErrorPriorityDemotionUpdate
+		if err := rows.Scan(
+			&update.ID,
+			&update.FileName,
+			&update.AuthIndex,
+			&update.Provider,
+			&update.PriorityBefore,
+			&update.PriorityTarget,
+			&update.CompletedAtMS,
+		); err != nil {
+			return page, err
+		}
+		page.Items = append(page.Items, update)
+		page.NextCursor = model.ServerErrorPriorityDemotionCursor{
+			CompletedAtMS: update.CompletedAtMS,
+			ID:            update.ID,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	return page, nil
 }
 
 func (r *repository) updateLeased(ctx context.Context, id int64, leaseToken string, nowMS int64, query string, args ...any) error {
