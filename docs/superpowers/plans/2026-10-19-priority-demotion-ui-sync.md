@@ -33,17 +33,17 @@
 
 **Files:** model, repository, repository tests, SQLite migration.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Insert terminal rows with equal `completed_at_ms`, mixed terminal reasons and absent priority columns. Assert `ListCompletedDemotions(ctx, Cursor{CompletedAtMS: 1000, ID: 10}, 50)` returns only demoted rows ordered by `(completed_at_ms,id)` and advances to the final row.
 
-- [ ] **Step 2: Run it to make sure it fails**
+- [x] **Step 2: Run it to make sure it fails**
 
 Run: `cd apps/manager-server && go test ./internal/repository/servererrorpriority -run TestListCompletedDemotions -count=1`
 
 Expected: FAIL because the cursor/page API does not exist.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Add `ServerErrorPriorityDemotionCursor`, `ServerErrorPriorityDemotionUpdate`, `ServerErrorPriorityDemotionUpdatePage`, extend the repository interface, and query with:
 
@@ -60,13 +60,13 @@ create index if not exists idx_server_error_priority_demotion_updates
 on server_error_priority_demotion_jobs(state, completed_reason, completed_at_ms, id)
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run: `cd apps/manager-server && go test ./internal/repository/servererrorpriority ./internal/repository/sqlite -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/manager-server/internal/model/server_error_priority_demotion.go apps/manager-server/internal/repository/servererrorpriority apps/manager-server/internal/repository/sqlite/migrate.go
@@ -77,27 +77,27 @@ git commit -m "feat: expose completed priority demotion deltas"
 
 **Files:** new controller/handler tests; router/router test.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Test `GET /v0/management/server-error-priority-demotions/updates` with a Panel Bearer key. Assert 200 returns only six redacted update fields; invalid numeric cursor or limit returns 400 and non-GET returns 405. Add a router test whose CPA upstream fails if reached; the Manager route must return the local response.
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `cd apps/manager-server && go test ./internal/http/controller/servererrorpriority ./internal/http/router -run 'Test.*PriorityDemotion' -count=1`
 
 Expected: FAIL because controller and route do not exist.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Use `middleware.AuthorizePanel`, parse non-negative `after_completed_at_ms`, `after_id`, and `limit`, call the repository method, and serialize an update page. Insert the exact route branch before generic `/v0/management/` CPA proxy.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run: `cd apps/manager-server && go test ./internal/http/controller/servererrorpriority ./internal/http/router -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/manager-server/internal/http/controller/servererrorpriority apps/manager-server/internal/http/router
@@ -108,27 +108,27 @@ git commit -m "feat: add priority demotion update endpoint"
 
 **Files:** `usageService.ts`, API test, new model/helper and model test.
 
-- [ ] **Step 1: Write failing API and merge tests**
+- [x] **Step 1: Write failing API and merge tests**
 
 Assert Axios calls the Manager Server URL with the existing 240-second timeout, Panel Bearer key and cursor params. Assert the pure helper changes only a `fileName + authIndex + provider` match whose priority still equals `priorityBefore`; changed, provider-mismatched and unmatched rows remain unchanged.
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `npm --workspace apps/web run test -- src/services/api/usageService.serverErrorPriority.test.ts src/features/accounts/model/serverErrorPriorityUpdates.test.ts`
 
 Expected: FAIL because API method/helper do not exist.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Add response/cursor types and `usageServiceApi.listServerErrorPriorityDemotionUpdates`. Implement a pure helper using `normalizeAuthIndex`; preserve the original file array when no row changes and always expose the newest cursor.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run: `npm --workspace apps/web run test -- src/services/api/usageService.serverErrorPriority.test.ts src/features/accounts/model/serverErrorPriorityUpdates.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/services/api/usageService.ts apps/web/src/services/api/usageService.serverErrorPriority.test.ts apps/web/src/features/accounts/model/serverErrorPriorityUpdates.ts apps/web/src/features/accounts/model/serverErrorPriorityUpdates.test.ts
@@ -139,21 +139,21 @@ git commit -m "feat: merge priority demotion deltas locally"
 
 **Files:** new hook/hook test; `AccountsPage.tsx`; page test.
 
-- [ ] **Step 1: Write failing hook/page tests**
+- [x] **Step 1: Write failing hook/page tests**
 
 With fake timers, assert polling starts only for active, visible, loaded account view with Manager scope; it remains single-flight and aborts on deactivation. Assert received deltas update the visible file array through `replaceFiles`, without calling `loadFiles`, quota refresh or history loading.
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `npm --workspace apps/web run test -- src/features/accounts/hooks/useServerErrorPriorityUpdates.test.tsx src/features/accounts/AccountsPage.test.tsx`
 
 Expected: FAIL because poller/wiring do not exist.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Use a one-second interval, an `AbortController`, a five-second startup overlap and no concurrent fetches. Feed the pure helper's output to `replaceFiles` only if a visible row changed. Do not call `loadFiles()` in this path.
 
-- [ ] **Step 4: Run tests and static check**
+- [x] **Step 4: Run tests and static check**
 
 Run:
 
@@ -164,7 +164,7 @@ npm --workspace apps/web run type-check
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/features/accounts/hooks/useServerErrorPriorityUpdates.ts apps/web/src/features/accounts/hooks/useServerErrorPriorityUpdates.test.tsx apps/web/src/features/accounts/AccountsPage.tsx apps/web/src/features/accounts/AccountsPage.test.tsx
@@ -175,11 +175,11 @@ git commit -m "feat: sync visible priorities after server errors"
 
 **Files:** `docs/LO-CPAM-CUSTOM-MEMORY.md`, design, plan.
 
-- [ ] **Step 1: Record the customization**
+- [x] **Step 1: Record the customization**
 
 Document the endpoint, read-only/no-billing invariant, `priorityBefore` guard, visibility gating, and retention during future CPAM merges.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run:
 
@@ -193,7 +193,7 @@ npm --workspace apps/web run build
 
 Expected: PASS. Capture unrelated pre-existing failures separately.
 
-- [ ] **Step 3: Commit and inspect**
+- [x] **Step 3: Commit and inspect**
 
 ```bash
 git add docs/LO-CPAM-CUSTOM-MEMORY.md docs/superpowers
@@ -202,7 +202,7 @@ git status --short
 git log --oneline origin/lo/custom..HEAD
 ```
 
-- [ ] **Step 4: Deploy only CPAM after verification**
+- [x] **Step 4: Deploy only CPAM after verification**
 
 Record CPA Core container/service identity before and after. Build the CPAM candidate from this clean worktree; deploy only local `cpa-manager-plus` and remote `cpam.service`; migrate only CPAM `usage.sqlite`; health-check the new endpoint and public panel. Never rebuild/restart/deploy CPA Core or `cli-proxy-api`.
 
