@@ -20,6 +20,7 @@ import (
 	proxyreplacementrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proxyreplacement"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotacooldown"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
+	servererrorpriorityrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/servererrorpriority"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	tokenrecoveryrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/tokenrecovery"
@@ -157,23 +158,24 @@ type Store struct {
 	db            *sql.DB
 	modelPricesMu sync.RWMutex
 
-	Settings          setting.Repository
-	UsageEvents       usageevent.Repository
-	DeadLetters       deadletter.Repository
-	ModelPrices       modelprice.Repository
-	APIKeyAliases     apikeyalias.Repository
-	AccountActions    accountaction.Repository
-	TokenRecoveries   tokenrecoveryrepo.Repository
-	ProxyReplacements proxyreplacementrepo.Repository
-	CodexInspections  codexinspection.Repository
-	DataMigrations    datamigration.Repository
-	QuotaCooldowns    quotacooldown.Repository
-	QuotaSnapshots    quotasnapshot.Repository
-	UsageAggregates   usageaggregate.Repository
-	UsageArchives     *usagearchive.Repository
-	UsagePricing      usagepricing.Repository
-	UsageMonitoring   usagemonitoring.Repository
-	UsageRollups      usagerollup.Repository
+	Settings                     setting.Repository
+	UsageEvents                  usageevent.Repository
+	DeadLetters                  deadletter.Repository
+	ModelPrices                  modelprice.Repository
+	APIKeyAliases                apikeyalias.Repository
+	AccountActions               accountaction.Repository
+	TokenRecoveries              tokenrecoveryrepo.Repository
+	ServerErrorPriorityDemotions servererrorpriorityrepo.Repository
+	ProxyReplacements            proxyreplacementrepo.Repository
+	CodexInspections             codexinspection.Repository
+	DataMigrations               datamigration.Repository
+	QuotaCooldowns               quotacooldown.Repository
+	QuotaSnapshots               quotasnapshot.Repository
+	UsageAggregates              usageaggregate.Repository
+	UsageArchives                *usagearchive.Repository
+	UsagePricing                 usagepricing.Repository
+	UsageMonitoring              usagemonitoring.Repository
+	UsageRollups                 usagerollup.Repository
 }
 
 func Open(path string, protector ...*security.Protector) (*Store, error) {
@@ -186,24 +188,25 @@ func Open(path string, protector ...*security.Protector) (*Store, error) {
 
 func New(db *sql.DB, protector ...*security.Protector) *Store {
 	return &Store{
-		db:                db,
-		Settings:          setting.New(db, protector...),
-		UsageEvents:       usageevent.New(db),
-		DeadLetters:       deadletter.New(db),
-		ModelPrices:       modelprice.New(db),
-		APIKeyAliases:     apikeyalias.New(db),
-		AccountActions:    accountaction.New(db),
-		TokenRecoveries:   tokenrecoveryrepo.New(db),
-		ProxyReplacements: proxyreplacementrepo.New(db, protector...),
-		CodexInspections:  codexinspection.New(db),
-		DataMigrations:    datamigration.New(db),
-		QuotaCooldowns:    quotacooldown.New(db),
-		QuotaSnapshots:    quotasnapshot.New(db),
-		UsageAggregates:   usageaggregate.New(db),
-		UsageArchives:     usagearchive.New(db),
-		UsagePricing:      usagepricing.New(db),
-		UsageMonitoring:   usagemonitoring.New(db),
-		UsageRollups:      usagerollup.New(db),
+		db:                           db,
+		Settings:                     setting.New(db, protector...),
+		UsageEvents:                  usageevent.New(db),
+		DeadLetters:                  deadletter.New(db),
+		ModelPrices:                  modelprice.New(db),
+		APIKeyAliases:                apikeyalias.New(db),
+		AccountActions:               accountaction.New(db),
+		TokenRecoveries:              tokenrecoveryrepo.New(db),
+		ServerErrorPriorityDemotions: servererrorpriorityrepo.New(db),
+		ProxyReplacements:            proxyreplacementrepo.New(db, protector...),
+		CodexInspections:             codexinspection.New(db),
+		DataMigrations:               datamigration.New(db),
+		QuotaCooldowns:               quotacooldown.New(db),
+		QuotaSnapshots:               quotasnapshot.New(db),
+		UsageAggregates:              usageaggregate.New(db),
+		UsageArchives:                usagearchive.New(db),
+		UsagePricing:                 usagepricing.New(db),
+		UsageMonitoring:              usagemonitoring.New(db),
+		UsageRollups:                 usagerollup.New(db),
 	}
 }
 
