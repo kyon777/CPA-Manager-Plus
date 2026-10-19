@@ -1638,3 +1638,49 @@ func TestResolveVerifiedPhysicalFileDeleteTargetFromInventoryUsesSingleRuntimeID
 		t.Fatalf("selector = %q, want runtime-1", target.Selector)
 	}
 }
+
+func TestClientDownloadReturnsRedactedOperationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"detail":"proxy=http://user:password@proxy.example:8080 secret=keep-out"}`)
+	}))
+	defer server.Close()
+
+	_, err := New(server.Client()).Download(context.Background(), server.URL, "mgmt", "account.json")
+	if err == nil {
+		t.Fatal("Download() succeeded")
+	}
+	var operationErr *OperationError
+	if !errors.As(err, &operationErr) {
+		t.Fatalf("Download() error = %T %v, want OperationError", err, err)
+	}
+	if operationErr.Operation != OperationDownload || operationErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("operation error = %#v", operationErr)
+	}
+	if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "proxy.example") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("Download() error leaked response body: %q", err)
+	}
+}
+
+func TestClientUploadReturnsRedactedOperationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"detail":"proxy=http://user:password@proxy.example:8080 secret=keep-out"}`)
+	}))
+	defer server.Close()
+
+	err := New(server.Client()).Upload(context.Background(), server.URL, "mgmt", "account.json", []byte(`{}`))
+	if err == nil {
+		t.Fatal("Upload() succeeded")
+	}
+	var operationErr *OperationError
+	if !errors.As(err, &operationErr) {
+		t.Fatalf("Upload() error = %T %v, want OperationError", err, err)
+	}
+	if operationErr.Operation != OperationUpload || operationErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("operation error = %#v", operationErr)
+	}
+	if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "proxy.example") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("Upload() error leaked response body: %q", err)
+	}
+}

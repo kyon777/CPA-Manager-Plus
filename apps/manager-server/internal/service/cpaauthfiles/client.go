@@ -38,6 +38,47 @@ var ErrResponseTooLarge = errors.New("CPA response too large")
 
 var ErrAuthFileUploadRejected = errors.New("CPA auth file upload was rejected")
 
+type Operation string
+
+const (
+	OperationDownload Operation = "download"
+	OperationUpload   Operation = "upload"
+)
+
+// OperationError carries only the redacted operation boundary needed by
+// callers that need to distinguish a CPA auth-file read from a write. It never
+// embeds a CPA response body, management key, credential, or proxy URL.
+type OperationError struct {
+	Operation  Operation
+	StatusCode int
+	cause      error
+}
+
+func (e *OperationError) Error() string {
+	if e == nil {
+		return "CPA auth-file operation failed"
+	}
+	operation := strings.TrimSpace(string(e.Operation))
+	if operation == "" {
+		operation = "operation"
+	}
+	if e.StatusCode >= http.StatusContinue && e.StatusCode <= 999 {
+		return fmt.Sprintf("CPA auth-file %s failed: HTTP %d", operation, e.StatusCode)
+	}
+	return fmt.Sprintf("CPA auth-file %s failed", operation)
+}
+
+func (e *OperationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func newOperationError(operation Operation, statusCode int, cause error) error {
+	return &OperationError{Operation: operation, StatusCode: statusCode, cause: cause}
+}
+
 const cpaPluginVirtualMutationConflict = "plugin virtual auth cannot be modified directly; edit or delete the source auth file"
 
 type actionHTTPError struct {
@@ -169,31 +210,19 @@ func (c *Client) Download(ctx context.Context, baseURL string, managementKey str
 		nil,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", authFilesDownloadPath, err)
+		return nil, newOperationError(OperationDownload, 0, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+managementKey)
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", authFilesDownloadPath, err)
+		return nil, newOperationError(OperationDownload, 0, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
 		if res.StatusCode == http.StatusNotFound {
-			return nil, fmt.Errorf(
-				"%w: GET %s: HTTP %d %s",
-				ErrAuthFileNotFound,
-				authFilesDownloadPath,
-				res.StatusCode,
-				strings.TrimSpace(string(body)),
-			)
+			return nil, newOperationError(OperationDownload, res.StatusCode, ErrAuthFileNotFound)
 		}
-		return nil, fmt.Errorf(
-			"GET %s: HTTP %d %s",
-			authFilesDownloadPath,
-			res.StatusCode,
-			strings.TrimSpace(string(body)),
-		)
+		return nil, newOperationError(OperationDownload, res.StatusCode, errors.New("unexpected CPA auth-file download status"))
 	}
 	limit := c.maxResponseBytes
 	if limit <= 0 {
@@ -201,14 +230,10 @@ func (c *Client) Download(ctx context.Context, baseURL string, managementKey str
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", authFilesDownloadPath, err)
+		return nil, newOperationError(OperationDownload, 0, err)
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf(
-			"GET %s: %w",
-			authFilesDownloadPath,
-			responseTooLargeError("auth-file download", limit),
-		)
+		return nil, newOperationError(OperationDownload, 0, responseTooLargeError("auth-file download", limit))
 	}
 	return body, nil
 }
@@ -224,13 +249,13 @@ func (c *Client) Upload(ctx context.Context, baseURL string, managementKey strin
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("file", fileName)
 	if err != nil {
-		return fmt.Errorf("create auth-file upload form: %w", err)
+		return newOperationError(OperationUpload, 0, err)
 	}
 	if _, err := part.Write(contents); err != nil {
-		return fmt.Errorf("write auth-file upload form: %w", err)
+		return newOperationError(OperationUpload, 0, err)
 	}
 	if err := writer.Close(); err != nil {
-		return fmt.Errorf("close auth-file upload form: %w", err)
+		return newOperationError(OperationUpload, 0, err)
 	}
 
 	base := cpa.NormalizeBaseURL(baseURL)
@@ -238,20 +263,20 @@ func (c *Client) Upload(ctx context.Context, baseURL string, managementKey strin
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+authFilesPath, &body)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+		return newOperationError(OperationUpload, 0, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+managementKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+		return newOperationError(OperationUpload, 0, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("POST %s: HTTP %d", authFilesPath, res.StatusCode)
+		return newOperationError(OperationUpload, res.StatusCode, errors.New("unexpected CPA auth-file upload status"))
 	}
 	if err := validateAuthFileUploadResponse(res.Body); err != nil {
-		return fmt.Errorf("POST %s: %w", authFilesPath, err)
+		return newOperationError(OperationUpload, 0, err)
 	}
 	return nil
 }
