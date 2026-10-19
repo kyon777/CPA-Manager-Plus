@@ -218,3 +218,33 @@ func (routerBannedAuthFiles) Fetch(context.Context, string, string) ([]cpaauthfi
 }
 
 func (routerBannedAuthFiles) Delete(context.Context, string, string, string) error { return nil }
+func TestRouterRoutesPriorityDemotionUpdatesBeforeCoreManagementProxy(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "router-server-error-priority.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const adminKey = "cpamp_router_server_error_priority"
+	credential, err := security.NewAdminCredential(adminKey, "test")
+	if err != nil {
+		t.Fatalf("new admin credential: %v", err)
+	}
+	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
+		t.Fatalf("save admin credential: %v", err)
+	}
+	appContext := &app.Context{
+		Config:           config.Config{CORSOrigins: []string{"*"}},
+		Store:            st,
+		AdminAuthService: adminauthsvc.New(config.Config{}, st),
+	}
+	handler := New(appContext)
+	request := httptest.NewRequest(http.MethodGet, "/v0/management/server-error-priority-demotions/updates", nil)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"items"`)) {
+		t.Fatalf("route status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
