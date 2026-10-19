@@ -821,6 +821,55 @@ func Migrate(db *sql.DB) error {
 			on token_recovery_tasks(status, created_at_ms, id)`,
 		`create index if not exists idx_token_recovery_tasks_updated
 			on token_recovery_tasks(updated_at_ms desc, id desc)`,
+		`create table if not exists server_error_priority_demotion_jobs (
+			id integer primary key autoincrement,
+			event_hash text not null unique,
+			source_event_id integer not null,
+			credential_key text not null,
+			file_name text not null,
+			auth_index text not null default '',
+			provider text not null,
+			account_snapshot text not null default '',
+			account_id_snapshot text not null default '',
+			status_code integer not null,
+			qualification_code text not null,
+			event_at_ms integer not null,
+			state text not null,
+			available_at_ms integer not null,
+			lease_token text,
+			lease_until_ms integer,
+			attempt_count integer not null default 0,
+			priority_before integer,
+			priority_target integer,
+			last_error_code text,
+			last_error text,
+			completed_reason text,
+			created_at_ms integer not null,
+			updated_at_ms integer not null,
+			completed_at_ms integer
+		)`,
+		`create index if not exists idx_server_error_priority_demotion_claim
+			on server_error_priority_demotion_jobs(state, available_at_ms, id)`,
+		`create index if not exists idx_server_error_priority_demotion_credential_fifo
+			on server_error_priority_demotion_jobs(credential_key, id)`,
+		`create index if not exists idx_server_error_priority_demotion_terminal
+			on server_error_priority_demotion_jobs(completed_at_ms, state)`,
+		`create table if not exists server_error_priority_demotion_cursor (
+			id integer primary key check(id = 1),
+			source_floor_event_id integer not null,
+			scan_cursor_event_id integer not null,
+			updated_at_ms integer not null
+		)`,
+		`create table if not exists server_error_priority_demotion_enabled_intervals (
+			id integer primary key autoincrement,
+			start_event_id integer not null,
+			end_event_id integer,
+			created_at_ms integer not null,
+			closed_at_ms integer
+		)`,
+		`create unique index if not exists idx_server_error_priority_demotion_active_interval
+			on server_error_priority_demotion_enabled_intervals(end_event_id)
+			where end_event_id is null`,
 		`create table if not exists proxy_pool_state (
 			proxy_fingerprint text primary key,
 			status text not null,
