@@ -4,9 +4,19 @@ import {
   type AccountRowSort,
   type AccountStatusFilter,
 } from './accountRows';
+import {
+  ACCOUNT_RECENT_REQUEST_OPERATIONAL_FILTERS,
+  type AccountRecentRequestOperationalFilter,
+} from './accountRecentRequestAnomaly';
 import type { QuotaAccountDisplayMode } from '@/components/quota/quotaDisplay';
 
-export type AccountOperationalFilter = 'all' | 'reauth' | 'cooldown' | 'automation' | 'recovered';
+export type AccountOperationalFilter =
+  | 'all'
+  | 'reauth'
+  | 'cooldown'
+  | 'automation'
+  | 'recovered'
+  | AccountRecentRequestOperationalFilter;
 export type AccountsLayoutMode = 'table' | 'grid';
 
 export interface AccountsWorkspaceUiState {
@@ -39,7 +49,14 @@ const SORT_KEYS = new Set([
 const SORT_DIRECTIONS = new Set(['asc', 'desc']);
 const STATUS_FILTERS = new Set<AccountStatusFilter>(ACCOUNT_STATUS_FILTERS);
 const QUOTA_BANDS = new Set(['all', 'ge50', 'between20and50', 'lt20', 'spent']);
-const OPERATIONAL_FILTERS = new Set(['all', 'reauth', 'cooldown', 'automation', 'recovered']);
+const OPERATIONAL_FILTERS = new Set<AccountOperationalFilter>([
+  'all',
+  'reauth',
+  'cooldown',
+  'automation',
+  'recovered',
+  ...ACCOUNT_RECENT_REQUEST_OPERATIONAL_FILTERS,
+]);
 
 export const DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE: AccountsWorkspaceUiState = {
   search: '',

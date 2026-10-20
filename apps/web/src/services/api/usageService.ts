@@ -1326,6 +1326,7 @@ export interface MonitoringAccountHistoryRequest {
 
 export interface MonitoringAccountRecentIndexRequest {
   accounts: MonitoringAccountHistoryTarget[];
+  recent_limit?: number;
 }
 
 export interface MonitoringAccountHistoryCheckpoint {

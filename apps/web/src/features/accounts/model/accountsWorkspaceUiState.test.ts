@@ -58,4 +58,10 @@ describe('accountsWorkspaceUiState', () => {
       })
     ).toEqual(DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE);
   });
+
+  it('preserves recent request anomaly operational filters', () => {
+    expect(
+      normalizeAccountsWorkspaceUiState({ operationalFilter: 'recent_failures' }).operationalFilter
+    ).toBe('recent_failures');
+  });
 });

@@ -202,6 +202,28 @@ describe('accountsWorkspaceUrlState', () => {
     ).toBe('unconfirmed');
   });
 
+  it('round-trips recent request anomaly operational filters', () => {
+    const search = writeAccountsWorkspaceUrlSearch(
+      '',
+      {
+        ...DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE,
+        view: 'accounts',
+        healthMode: 'local',
+        account: null,
+        detailTab: 'overview',
+        editor: null,
+        editorProvider: '',
+        operationalFilter: 'recent_server_overloaded_502',
+      },
+      DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE
+    );
+
+    expect(search).toBe('?operation=recent_server_overloaded_502');
+    expect(
+      readAccountsWorkspaceUrlState(search, DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE).operationalFilter
+    ).toBe('recent_server_overloaded_502');
+  });
+
   it('reads layoutMode from search params and falls back safely on invalid values', () => {
     expect(
       readAccountsWorkspaceUrlState('?layout=grid', DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE).layoutMode

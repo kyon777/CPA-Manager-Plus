@@ -1,6 +1,7 @@
 import type { DetailTab, AccountsView } from './accountsPagePresentation';
 import type { AccountsWorkspaceUiState } from './accountsWorkspaceUiState';
 import { ACCOUNT_STATUS_FILTERS } from './accountRows';
+import { ACCOUNT_RECENT_REQUEST_OPERATIONAL_FILTERS } from './accountRecentRequestAnomaly';
 import type { CredentialHealthInspectionMode } from '@/features/monitoring/model/credentialInspectionSnapshot';
 
 export type AccountsOAuthEditor = 'excluded' | 'alias';
@@ -33,6 +34,7 @@ const OPERATIONAL_FILTER_SET: ReadonlySet<AccountsWorkspaceUiState['operationalF
   'cooldown',
   'automation',
   'recovered',
+  ...ACCOUNT_RECENT_REQUEST_OPERATIONAL_FILTERS,
 ]);
 const SORT_KEY_SET: ReadonlySet<AccountsWorkspaceUiState['accountSort']['key']> = new Set([
   'default',
