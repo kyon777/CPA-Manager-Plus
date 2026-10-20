@@ -2,7 +2,7 @@
 
 ## Goal
 
-Increase CPAM automatic Codex credential recovery from one serial worker to twelve concurrent workers, while limiting CPA Core auth-file mutation traffic to eight concurrent write flows.
+Increase CPAM automatic Codex credential recovery from one serial worker to eighty concurrent workers, while limiting CPA Core auth-file mutation traffic to eight concurrent write flows.
 
 ## Scope
 
@@ -12,20 +12,20 @@ Increase CPAM automatic Codex credential recovery from one serial worker to twel
 
 ## Current Behavior
 
-The live app configures twelve token-recovery workers, but `Service.Start` gives automatic-task claim permission only to worker zero. Automatic recovery is therefore serial even though manual current-page recovery can use all twelve workers. CPA auth-file write concurrency defaults to four because the live app does not override it.
+Before this change, the live app configured twelve token-recovery workers, but `Service.Start` gave automatic-task claim permission only to worker zero. Automatic recovery was therefore serial even though manual current-page recovery could use all twelve workers. CPA auth-file write concurrency defaulted to four.
 
 ## Approved Design
 
-1. All twelve workers are eligible to claim automatic tasks when automatic update is enabled.
+1. All eighty workers are eligible to claim automatic tasks when automatic update is enabled.
 2. The durable repository claim remains the authority for atomic claims; each task is still claimed once only.
 3. Manual tasks retain queue priority because `ClaimNextEligible` selects queued manual tasks before automatic tasks.
 4. A per-file mutation coordinator remains in place across initial read and final merge/upload/verify, preventing two workers from changing one physical credential file concurrently.
-5. The live app explicitly sets `WriteConcurrency: 8`. Token acquisition may run at up to twelve concurrent tasks; only the final CPA file mutation phase is bounded to eight.
+5. The live app configures an eighty-worker Token Acquisition pool. Token acquisition may run at up to eighty concurrent tasks; the final CPA file mutation phase is hard-capped at eight.
 6. The automatic one-shot marker remains unchanged: completed or automatic-failed tasks are not re-enqueued automatically; manual retry remains available.
 
 ## Validation
 
-- Add a test proving twelve queued automatic recoveries reach twelve concurrent acquisition calls.
+- Add a test proving eighty queued automatic recoveries reach eighty concurrent acquisition calls.
 - Update the existing write-gate test to prove eight concurrent CPA auth-file write flows are admitted and a ninth is blocked.
 - Run package tests and the manager-server test suite/build before deployment.
 

@@ -217,8 +217,9 @@ func (r *repository) ClaimNextEligible(ctx context.Context, allowAutomatic bool)
 	var status string
 	err = tx.QueryRowContext(ctx, `select id, status from token_recovery_tasks
 		where status = ? or (? and status = ?)
-		order by created_at_ms asc, id asc limit 1`,
-		model.TokenRecoveryStatusManualQueued, allowAutomatic, model.TokenRecoveryStatusAutoQueued).Scan(&id, &status)
+		order by case when status = ? then 0 else 1 end, created_at_ms asc, id asc limit 1`,
+		model.TokenRecoveryStatusManualQueued, allowAutomatic, model.TokenRecoveryStatusAutoQueued,
+		model.TokenRecoveryStatusManualQueued).Scan(&id, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.TokenRecoveryTask{}, false, nil
 	}

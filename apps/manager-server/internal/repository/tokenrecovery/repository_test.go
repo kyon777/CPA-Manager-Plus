@@ -240,6 +240,27 @@ func TestClaimNextEligibleLeavesAutomaticTaskQueuedWhenAutomaticProcessingIsOff(
 	}
 }
 
+func TestClaimNextEligiblePrioritizesManualTaskOverOlderAutomaticTask(t *testing.T) {
+	repo := newTestRepository(t)
+	automatic, err := repo.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
+		FileName: "automatic.json", AuthIndex: "1", AccountEmail: "automatic@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	manual, err := repo.RequestManual(context.Background(), model.TokenRecoveryTarget{
+		FileName: "manual.json", AuthIndex: "2", AccountEmail: "manual@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("RequestManual() error = %v", err)
+	}
+
+	claimed, ok, err := repo.ClaimNextEligible(context.Background(), true)
+	if err != nil || !ok || claimed.ID != manual.ID || claimed.Status != model.TokenRecoveryStatusManualRunning {
+		t.Fatalf("ClaimNextEligible(true) = %#v, %t, %v; automatic=%#v manual=%#v", claimed, ok, err, automatic, manual)
+	}
+}
+
 func TestRequestManualTakesOverPausedAutomaticQueue(t *testing.T) {
 	repo := newTestRepository(t)
 	target := model.TokenRecoveryTarget{

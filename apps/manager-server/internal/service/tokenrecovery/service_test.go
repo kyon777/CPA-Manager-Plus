@@ -371,7 +371,7 @@ func TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency(t *testing.T
 }
 
 func TestServiceRunsAutomaticRecoveriesWithConfiguredWorkerConcurrency(t *testing.T) {
-	const workerCount = RecommendedTokenAcquisitionWorkerCount
+	const workerCount = 80
 	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-auto-concurrency.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -879,12 +879,13 @@ func TestRecoveryFailureClassifiesCPAAuthFileOperationStages(t *testing.T) {
 }
 
 func TestRecommendedTokenAcquisitionWorkerCount(t *testing.T) {
-	if got, want := RecommendedTokenAcquisitionWorkerCount, 12; got != want {
+	if got, want := RecommendedTokenAcquisitionWorkerCount, 80; got != want {
 		t.Fatalf("RecommendedTokenAcquisitionWorkerCount = %d, want %d", got, want)
 	}
 }
 func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *testing.T) {
-	const workers = 8
+	const workers = 12
+	const writeConcurrency = 8
 	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-write-limit.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -903,6 +904,7 @@ func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *t
 		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
 		IdlePollInterval:    time.Millisecond,
 		WorkerCount:         workers,
+		WriteConcurrency:    workers,
 	})
 
 	taskIDs := make([]int64, 0, workers)
@@ -923,10 +925,10 @@ func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *t
 	}
 	acquirer.releaseAll()
 
-	files.waitForUploads(t, 4)
+	files.waitForUploads(t, writeConcurrency)
 	select {
 	case <-files.entered:
-		t.Fatal("a fifth CPA auth-file write started before one of the first four completed")
+		t.Fatal("a ninth CPA auth-file write started before one of the first eight completed")
 	case <-time.After(120 * time.Millisecond):
 	}
 	files.releaseAll()

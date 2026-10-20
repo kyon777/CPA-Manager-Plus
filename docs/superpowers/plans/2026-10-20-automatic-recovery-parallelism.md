@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Run automatic token recovery with all twelve configured workers and cap concurrent CPA auth-file write flows at eight.
+**Goal:** Run automatic token recovery with all eighty configured workers and cap concurrent CPA auth-file write flows at eight.
 
-**Architecture:** `tokenrecovery.Service.Start` will grant automatic claim eligibility to every configured worker rather than worker zero only. The existing atomic SQLite claim keeps a task single-owned and retains manual-task priority. `app.NewContext` will explicitly configure the existing write gate at eight, so acquisition remains twelve-way but final CPA file mutation is bounded.
+**Architecture:** `tokenrecovery.Service.Start` grants automatic claim eligibility to every configured worker rather than worker zero only. The existing atomic SQLite claim keeps a task single-owned and retains manual-task priority. The service configures an eighty-worker acquisition pool and a hard eight-slot CPA auth-file write gate.
 
 **Tech Stack:** Go, SQLite durable task repository, Go `testing`, CPAM manager-server.
 
@@ -13,9 +13,7 @@
 ## File Structure
 
 - Modify: `apps/manager-server/internal/service/tokenrecovery/service.go` — allow every worker to claim automatic tasks and retain the runtime automatic-enable gate.
-- Modify: `apps/manager-server/internal/service/tokenrecovery/service_test.go` — add automatic twelve-worker acquisition regression coverage and change the write-gate assertion from four to eight.
-- Modify: `apps/manager-server/internal/app/context.go` — explicitly configure the production CPA auth-file write cap as eight.
-- Modify: `apps/manager-server/internal/app/app_test.go` only if needed to assert production wiring; otherwise no unrelated test changes.
+- Modify: `apps/manager-server/internal/service/tokenrecovery/service_test.go` — add automatic eighty-worker acquisition regression coverage and change the write-gate assertion from four to eight.
 
 ### Task 1: Prove automatic tasks can use the configured worker pool
 
@@ -24,7 +22,7 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Add a test adjacent to `TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency` that queues twelve automatic targets before `Start`, uses `newBlockingRecoveryAcquirer(12)`, then requires all twelve acquisitions to enter concurrently:
+Add a test adjacent to `TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency` that queues eighty automatic targets before `Start`, uses `newBlockingRecoveryAcquirer(80)`, then requires all eighty acquisitions to enter concurrently:
 
 ```go
 func TestServiceRunsAutomaticRecoveriesWithConfiguredWorkerConcurrency(t *testing.T) {
@@ -45,7 +43,7 @@ Set-Location apps/manager-server
 go test ./internal/service/tokenrecovery -run '^TestServiceRunsAutomaticRecoveriesWithConfiguredWorkerConcurrency$' -count=1
 ```
 
-Expected: fail because only worker zero claims automatic tasks and the acquirer never observes twelve entries.
+Expected: fail because the pre-change worker ceiling is forty and the acquirer cannot observe eighty entries.
 
 - [ ] **Step 3: Implement the minimal worker claim change**
 
@@ -63,7 +61,7 @@ Update the adjacent comment to state that every worker can claim automatic work 
 
 Run the same command from Step 2.
 
-Expected: PASS; the test observes exactly twelve concurrent automatic acquisitions.
+Expected: PASS; the test observes exactly eighty concurrent automatic acquisitions.
 
 - [ ] **Step 5: Commit**
 
@@ -75,7 +73,7 @@ git commit -m "feat: parallelize automatic token recovery"
 ### Task 2: Raise the production CPA write gate to eight
 
 **Files:**
-- Modify: `apps/manager-server/internal/app/context.go`
+- Modify: `apps/manager-server/internal/service/tokenrecovery/service.go`
 - Modify: `apps/manager-server/internal/service/tokenrecovery/service_test.go`
 
 - [ ] **Step 1: Write the failing write-gate test expectation**
@@ -104,15 +102,17 @@ go test ./internal/service/tokenrecovery -run '^TestServiceLimitsConcurrentCPAAu
 
 Expected: fail while the service default write gate remains four or production wiring has not been set explicitly.
 
-- [ ] **Step 3: Implement production write-cap wiring**
+- [ ] **Step 3: Implement the hard write-cap**
 
-In `app/context.go`, add this exact option in the live `tokenrecoverysvc.NewWithOptions` call:
+In `internal/service/tokenrecovery/service.go`, make the write cap independent from the acquisition worker cap:
 
 ```go
-WriteConcurrency: 8,
+maxWorkerCount          = 80
+defaultWriteConcurrency = 8
+maxWriteConcurrency     = defaultWriteConcurrency
 ```
 
-No change is made to CPA Core, `cli-proxy-api`, task repository SQL, JSON merge behavior, or automatic task terminal-state rules.
+No change is made to CPA Core, `cli-proxy-api`, task repository SQL, JSON merge behavior, or automatic task terminal-state rules. The production context continues to use the service default, which is now a hard maximum of eight write flows.
 
 - [ ] **Step 4: Run the focused test and verify GREEN**
 
@@ -123,7 +123,7 @@ Expected: PASS; eight writes enter, the ninth remains blocked, then all tasks fi
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add apps/manager-server/internal/app/context.go apps/manager-server/internal/service/tokenrecovery/service_test.go
+git add apps/manager-server/internal/service/tokenrecovery/service.go apps/manager-server/internal/service/tokenrecovery/service_test.go
 git commit -m "perf: raise token recovery write concurrency to eight"
 ```
 

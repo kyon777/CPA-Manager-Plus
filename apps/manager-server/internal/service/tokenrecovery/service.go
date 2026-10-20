@@ -20,11 +20,11 @@ import (
 const (
 	defaultIdlePollInterval                = 500 * time.Millisecond
 	defaultWorkerCount                     = 1
-	maxWorkerCount                         = 40
-	defaultWriteConcurrency                = 4
-	maxWriteConcurrency                    = maxWorkerCount
+	maxWorkerCount                         = 80
+	defaultWriteConcurrency                = 8
+	maxWriteConcurrency                    = defaultWriteConcurrency
 	DefaultCPAAuthFileOperationTimeout     = 4 * time.Minute
-	RecommendedTokenAcquisitionWorkerCount = 12
+	RecommendedTokenAcquisitionWorkerCount = 80
 )
 
 var (
