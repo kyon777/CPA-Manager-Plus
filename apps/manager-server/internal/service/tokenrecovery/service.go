@@ -224,11 +224,10 @@ func (s *Service) Start(ctx context.Context) {
 			_, _ = s.tasks.FailRunningTokenRecoveriesOnStartup(ctx)
 		}
 		for worker := 0; worker < s.workerCount; worker++ {
-			// Every worker may claim manual recovery. Only worker zero may claim an
-			// automatic task when no manual task is waiting, preserving the former
-			// single-worker background behavior while giving the current-page
-			// operator action the configured number of bounded slots.
-			go s.run(ctx, worker == 0)
+			// Every worker may claim manual or automatic recovery. The repository
+			// atomically assigns each task and keeps manual work ahead of automatic
+			// work, while the runtime switch still gates automatic task claims.
+			go s.run(ctx, true)
 		}
 	})
 }

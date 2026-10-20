@@ -370,6 +370,55 @@ func TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency(t *testing.T
 	}
 }
 
+func TestServiceRunsAutomaticRecoveriesWithConfiguredWorkerConcurrency(t *testing.T) {
+	const workerCount = RecommendedTokenAcquisitionWorkerCount
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-auto-concurrency.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	authFiles := &concurrentRecoveryAuthFiles{rawByFile: map[string][]byte{}}
+	acquirer := newBlockingRecoveryAcquirer(workerCount)
+	service := NewWithOptions(Options{
+		Tasks:               st,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:           authFiles,
+		Acquirer:            acquirer,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+		IdlePollInterval:    time.Millisecond,
+		WorkerCount:         workerCount,
+	})
+
+	taskIDs := make([]int64, 0, workerCount)
+	for index := 0; index < workerCount; index++ {
+		email := fmt.Sprintf("automatic-%02d@example.com", index)
+		task, signalErr := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+			FileName:     fmt.Sprintf("automatic-%02d.json", index),
+			AuthIndex:    fmt.Sprintf("auth-%02d", index),
+			AccountEmail: email,
+			Provider:     "codex",
+			ObservedAtMS: time.Now().UnixMilli(),
+		})
+		if signalErr != nil {
+			t.Fatalf("queue automatic task %d: %v", index, signalErr)
+		}
+		taskIDs = append(taskIDs, task.ID)
+	}
+
+	service.Start(ctx)
+	acquirer.waitForEntries(t, workerCount)
+	if got := acquirer.maxConcurrent(); got != workerCount {
+		t.Fatalf("maximum simultaneous automatic acquisitions = %d, want %d", got, workerCount)
+	}
+	acquirer.releaseAll()
+	for _, taskID := range taskIDs {
+		waitForTaskStatus(t, ctx, service, taskID, model.TokenRecoveryStatusSucceeded)
+	}
+}
+
 type recoveryCore struct {
 	server  *httptest.Server
 	mu      sync.Mutex
