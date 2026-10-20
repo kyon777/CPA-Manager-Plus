@@ -428,3 +428,27 @@ quota, history, or billing/price data.
   future upstream merges retain the endpoint, frontend API contract,
   `applyServerErrorPriorityUpdates`, `useServerErrorPriorityUpdates`, page
   wiring, and their tests.
+
+## 2026-10-20: Recent nine-request anomaly filters
+
+This customization is CPAM-only. It must never modify, restart, rebuild, or
+reconfigure CPA Core / `cli-proxy-api`, credential JSON, request routing,
+scheduling, `usage_events`, billing, quota collection, or priority demotion.
+
+- The authenticated CPAM `account-recent-index` endpoint accepts an optional
+  `recent_limit` only from **1** through **9**. Omission remains exactly one
+  safe request record for normal global recent-request sorting.
+- Credential-list operational filters `recent_server_overloaded_502` and
+  `recent_failures` request nine safe indexed request records globally and
+  apply display-only matching locally with a threshold of two.
+- The strict overload filter requires all three facts: `failed=true`, HTTP
+  `502`, and the complete safe diagnostic token `server_is_overloaded` in
+  `header_error_code` or `fail_summary`. Generic 502, EOF, proxy 407,
+  500/503/429, and prose-only matches are excluded.
+- This path reads only CPAM SQLite evidence. It must not invoke CPA Core,
+  trigger `account-history` catch-up, mutate credentials, refresh quota or
+  Credits, alter billing/price data, or enqueue priority work.
+- Preserve 1,000-target batching, bounded concurrency, AbortController
+  cancellation, and coverage gating. A partial, failed, stale, or compact
+  one-record index must never be interpreted as a completed empty anomaly
+  result; the UI must show the dedicated loading/error state instead.

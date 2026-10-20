@@ -199,6 +199,10 @@ type AccountHistoryRequestForTest = {
   catch_up?: boolean;
 };
 
+type AccountRecentIndexRequestForTest = AccountHistoryRequestForTest & {
+  recent_limit?: number;
+};
+
 type AccountRecentIndexResponseForTest = {
   generated_at_ms: number;
   items: Array<{
@@ -548,7 +552,7 @@ const { mocks } = vi.hoisted(() => {
         async (
           _base: string,
           _managementKey: string | undefined,
-          _request: AccountHistoryRequestForTest,
+          _request: AccountRecentIndexRequestForTest,
           _signal?: AbortSignal
         ): Promise<AccountRecentIndexResponseForTest> => ({
           generated_at_ms: 1,
@@ -4698,6 +4702,167 @@ describe('AccountsPage replacement flows', () => {
     expect(statusSelect.props.options).toEqual(
       expect.arrayContaining([{ value: 'unconfirmed', label: 'accounts.metric_unconfirmed' }])
     );
+  });
+
+  it('filters the global compact index by two recent failures or overloaded 502 responses', async () => {
+    const overloaded = makeCodexFile('overloaded.json', 'overloaded', 'overloaded@example.com');
+    const generic502 = makeCodexFile('generic-502.json', 'generic-502', 'generic-502@example.com');
+    const otherFailures = makeCodexFile('other-failures.json', 'other-failures', 'other-failures@example.com');
+    const healthy = makeCodexFile('healthy.json', 'healthy', 'healthy@example.com');
+    mocks.files = [overloaded, generic502, otherFailures, healthy];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+
+    const requestsByRowKey = new Map([
+      [
+        getAuthFileSelectionKey(overloaded),
+        [
+          {
+            timestamp_ms: 9_000,
+            failed: true,
+            fail_status_code: 502,
+            header_error_code: 'server_is_overloaded',
+          },
+          {
+            timestamp_ms: 8_000,
+            failed: true,
+            fail_status_code: 502,
+            fail_summary: 'code=server_is_overloaded',
+          },
+        ],
+      ],
+      [
+        getAuthFileSelectionKey(generic502),
+        [
+          { timestamp_ms: 9_000, failed: true, fail_status_code: 502 },
+          { timestamp_ms: 8_000, failed: true, fail_status_code: 502, fail_summary: 'proxy EOF' },
+        ],
+      ],
+      [
+        getAuthFileSelectionKey(otherFailures),
+        [
+          { timestamp_ms: 9_000, failed: true, fail_status_code: 400 },
+          { timestamp_ms: 8_000, failed: true, fail_status_code: 429 },
+        ],
+      ],
+      [getAuthFileSelectionKey(healthy), [{ timestamp_ms: 9_000, failed: false }]],
+    ]);
+    mocks.getAccountRecentIndex.mockImplementation(
+      async (_base, _managementKey, request: AccountRecentIndexRequestForTest) => ({
+        generated_at_ms: 9_000,
+        items: request.accounts.map((target) => ({
+          row_key: String(target.row_key),
+          recent_requests: requestsByRowKey.get(String(target.row_key)) ?? [],
+          sync_status: 'ready',
+        })),
+      })
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const findOperationalSelect = () => {
+      const select = renderer.root
+        .findAllByType(Select)
+        .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+      if (!select) throw new Error('Accounts operational filter not found');
+      return select;
+    };
+
+    expect(findOperationalSelect().props.options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: 'recent_server_overloaded_502' }),
+        expect.objectContaining({ value: 'recent_failures' }),
+      ])
+    );
+    expect(
+      (mocks.getAccountRecentIndex.mock.calls[0]?.[2] as AccountRecentIndexRequestForTest)
+        .recent_limit
+    ).toBeUndefined();
+
+    await act(async () => {
+      findOperationalSelect().props.onChange('recent_server_overloaded_502');
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    const latestRecentIndexRequest = mocks.getAccountRecentIndex.mock.calls[
+      mocks.getAccountRecentIndex.mock.calls.length - 1
+    ]?.[2] as AccountRecentIndexRequestForTest;
+    expect(latestRecentIndexRequest.recent_limit).toBe(9);
+    expect(renderer.root.findAllByProps({ 'data-account-card': getAuthFileSelectionKey(overloaded) })).toHaveLength(
+      1
+    );
+    expect(
+      renderer.root.findAllByProps({ 'data-account-card': getAuthFileSelectionKey(generic502) })
+    ).toHaveLength(0);
+    expect(
+      renderer.root.findAllByProps({ 'data-account-card': getAuthFileSelectionKey(otherFailures) })
+    ).toHaveLength(0);
+
+    await act(async () => {
+      findOperationalSelect().props.onChange('recent_failures');
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findAllByProps({ 'data-account-card': getAuthFileSelectionKey(overloaded) })).toHaveLength(
+      1
+    );
+    expect(renderer.root.findAllByProps({ 'data-account-card': getAuthFileSelectionKey(generic502) })).toHaveLength(
+      1
+    );
+    expect(
+      renderer.root.findAllByProps({ 'data-account-card': getAuthFileSelectionKey(otherFailures) })
+    ).toHaveLength(1);
+    expect(renderer.root.findAllByProps({ 'data-account-card': getAuthFileSelectionKey(healthy) })).toHaveLength(0);
+  });
+
+  it('shows explicit loading and error states while a recent-request anomaly filter is unresolved', async () => {
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    let rejectRecentIndex: ((reason?: unknown) => void) | null = null;
+    mocks.getAccountRecentIndex.mockImplementation(
+      async (_base, _managementKey, request: AccountRecentIndexRequestForTest) => {
+        if (request.recent_limit !== 9) {
+          return { generated_at_ms: 1, items: [] };
+        }
+        return new Promise<AccountRecentIndexResponseForTest>((_resolve, reject) => {
+          rejectRecentIndex = reject;
+        });
+      }
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const operationalSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+    if (!operationalSelect) throw new Error('Accounts operational filter not found');
+
+    await act(async () => {
+      operationalSelect.props.onChange('recent_failures');
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findAllByProps({ 'data-account-recent-index-loading': 'true' })).toHaveLength(1);
+    expect(rejectRecentIndex).not.toBeNull();
+
+    await act(async () => {
+      rejectRecentIndex?.(new Error('offline'));
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findAllByProps({ 'data-account-recent-index-error': 'true' })).toHaveLength(1);
   });
 
   it('uses the global compact request index before loading problem-filter history details', async () => {

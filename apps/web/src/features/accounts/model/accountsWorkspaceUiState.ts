@@ -99,7 +99,7 @@ export const normalizeAccountsWorkspaceUiState = (value: unknown): AccountsWorks
     quotaBandFilter: QUOTA_BANDS.has(String(value.quotaBandFilter))
       ? (String(value.quotaBandFilter) as AccountQuotaBand)
       : 'all',
-    operationalFilter: OPERATIONAL_FILTERS.has(String(value.operationalFilter))
+    operationalFilter: OPERATIONAL_FILTERS.has(String(value.operationalFilter) as AccountOperationalFilter)
       ? (String(value.operationalFilter) as AccountOperationalFilter)
       : 'all',
     accountSort: { key: sortKey, direction: sortDirection },

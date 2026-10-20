@@ -303,6 +303,12 @@ import {
   type AccountsWorkspaceUiState,
 } from '@/features/accounts/model/accountsWorkspaceUiState';
 import {
+  buildAccountRecentIndexRequest,
+  getAccountRecentIndexLimitForOperationalFilter,
+  isAccountRecentRequestOperationalFilter,
+  matchesAccountRecentRequestAnomaly,
+} from '@/features/accounts/model/accountRecentRequestAnomaly';
+import {
   readAccountsWorkspaceUrlState,
   writeAccountsWorkspaceUrlSearch,
 } from '@/features/accounts/model/accountsWorkspaceUrlState';
@@ -452,6 +458,17 @@ const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
 const ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES = new Set(['pro', 'ultra', 'ultra-lite']);
 
 type AccountQuotaRefreshMode = 'summary' | 'detail';
+
+type AccountRecentAnomalyIndexCoverage = {
+  scopeKey: string;
+  recentLimit: number;
+  itemCount: number;
+};
+
+type AccountRecentAnomalyIndexLoadError = {
+  loadKey: string;
+  reason: 'incomplete' | 'request-failed' | 'unavailable';
+};
 
 const getAccountQuotaRefreshKey = (row: AccountRow): string =>
   `${row.provider}:${getQuotaCredentialStoreKey(row.raw)}`;
@@ -1513,6 +1530,12 @@ export function AccountsPage() {
     (operationalFilter === 'cooldown' || operationalFilter === 'automation')
       ? 'all'
       : operationalFilter;
+  const accountRecentAnomalyIndexRequiredLimit = getAccountRecentIndexLimitForOperationalFilter(
+    effectiveOperationalFilter
+  );
+  const operationalFilterNeedsRecentRequestIndex = isAccountRecentRequestOperationalFilter(
+    effectiveOperationalFilter
+  );
   const [search, setSearch] = useState(() => initialWorkspaceUrlState.current.search);
   const [accountSort, setAccountSort] = useState<AccountRowSort>(
     () => initialWorkspaceUrlState.current.accountSort
@@ -1563,6 +1586,26 @@ export function AccountsPage() {
   const [accountRecentIndexByRowKey, setAccountRecentIndexByRowKey] = useState<
     Map<string, MonitoringAccountRecentIndexItem>
   >(() => new Map());
+  const [accountRecentAnomalyIndexByRowKey, setAccountRecentAnomalyIndexByRowKey] = useState<
+    Map<string, MonitoringAccountRecentIndexItem>
+  >(() => new Map());
+  const accountRecentAnomalyIndexCoverageRef = useRef<AccountRecentAnomalyIndexCoverage | null>(null);
+  const accountRecentAnomalyIndexErrorRef = useRef<AccountRecentAnomalyIndexLoadError | null>(null);
+  const accountRecentAnomalyIndexLoadingRef = useRef(false);
+  const [, refreshAccountRecentAnomalyIndexState] = useState(0);
+  const setAccountRecentAnomalyIndexLoadState = useCallback(
+    (next: {
+      coverage: AccountRecentAnomalyIndexCoverage | null;
+      error: AccountRecentAnomalyIndexLoadError | null;
+      loading: boolean;
+    }) => {
+      accountRecentAnomalyIndexCoverageRef.current = next.coverage;
+      accountRecentAnomalyIndexErrorRef.current = next.error;
+      accountRecentAnomalyIndexLoadingRef.current = next.loading;
+      refreshAccountRecentAnomalyIndexState((revision) => revision + 1);
+    },
+    []
+  );
   const [accountHistoryLoading, setAccountHistoryLoading] = useState(false);
   const [accountHistoryErrorsByRowKey, setAccountHistoryErrorsByRowKey] = useState<
     Map<string, string>
@@ -1737,6 +1780,7 @@ export function AccountsPage() {
   const accountHistoryAutoAbortRef = useRef<AbortController | null>(null);
   const accountHistoryTargetAbortRef = useRef<AbortController | null>(null);
   const accountRecentIndexAbortRef = useRef<AbortController | null>(null);
+  const accountRecentAnomalyIndexAbortRef = useRef<AbortController | null>(null);
   const accountHistoryRequestVersionsRef = useRef<Map<string, symbol>>(new Map());
   const accountHistoryPendingRequestsRef = useRef<Set<symbol>>(new Set());
   const accountHistoryLoadedRowKeysRef = useRef<Set<string>>(new Set());
@@ -1746,6 +1790,7 @@ export function AccountsPage() {
   const accountHistoryAutoLoadKeyRef = useRef<string | null>(null);
   const accountHistoryAutoRequestContextKeyRef = useRef<string | null>(null);
   const accountRecentIndexAutoLoadKeyRef = useRef<string | null>(null);
+  const accountRecentAnomalyIndexAutoLoadKeyRef = useRef<string | null>(null);
   const accountWindowUsageReqIdRef = useRef(0);
   const accountWindowUsageAbortRef = useRef<AbortController | null>(null);
   const accountWindowUsageAutoLoadKeyRef = useRef<string | null>(null);
@@ -2309,6 +2354,8 @@ export function AccountsPage() {
     accountHistoryTargetAbortRef.current = null;
     accountRecentIndexAbortRef.current?.abort();
     accountRecentIndexAbortRef.current = null;
+    accountRecentAnomalyIndexAbortRef.current?.abort();
+    accountRecentAnomalyIndexAbortRef.current = null;
     accountHistoryRefreshRequestIdRef.current += 1;
     accountHistoryRefreshPromiseRef.current = null;
     accountHistoryRequestVersionsRef.current.clear();
@@ -2320,6 +2367,7 @@ export function AccountsPage() {
     accountHistoryAutoLoadKeyRef.current = null;
     accountHistoryAutoRequestContextKeyRef.current = null;
     accountRecentIndexAutoLoadKeyRef.current = null;
+    accountRecentAnomalyIndexAutoLoadKeyRef.current = null;
     accountActionCandidatesReqIdRef.current += 1;
     accountActionCandidatesLoadedRef.current = false;
     quotaCooldownsLoadedRef.current = false;
@@ -2344,6 +2392,10 @@ export function AccountsPage() {
     setHeaderSnapshotLoadedKey('');
     setAccountHistoryByRowKey((current) => (current.size === 0 ? current : new Map()));
     setAccountRecentIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
+    setAccountRecentAnomalyIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
+    accountRecentAnomalyIndexCoverageRef.current = null;
+    accountRecentAnomalyIndexErrorRef.current = null;
+    accountRecentAnomalyIndexLoadingRef.current = false;
     setAccountHistoryLoading(false);
     setAccountHistoryErrorsByRowKey((current) => (current.size === 0 ? current : new Map()));
     setHistoryRefreshing(false);
@@ -2379,6 +2431,7 @@ export function AccountsPage() {
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryTargetAbortRef.current?.abort();
       accountRecentIndexAbortRef.current?.abort();
+      accountRecentAnomalyIndexAbortRef.current?.abort();
       accountWindowUsageAbortRef.current?.abort();
     },
     []
@@ -4290,6 +4343,53 @@ export function AccountsPage() {
       freshAccountInspectionBySelectionKey,
     ]
   );
+  const accountRecentAnomalyIndexTargets = useMemo(
+    () =>
+      operationalFilterNeedsRecentRequestIndex ? buildAccountHistoryTargetEntries(rows) : [],
+    [operationalFilterNeedsRecentRequestIndex, rows]
+  );
+  const accountRecentAnomalyIndexContextKey = useMemo(
+    () => {
+      if (!operationalFilterNeedsRecentRequestIndex) return '';
+      return JSON.stringify({
+        checking: featureAvailability.checking,
+        connectionFingerprint,
+        managerServiceBase: featureAvailability.managerServiceBase,
+        managementKey,
+        managerConnectionFingerprint,
+        requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
+        targets: accountRecentAnomalyIndexTargets.map((entry) => entry.target),
+      });
+    },
+    [
+      accountRecentAnomalyIndexTargets,
+      connectionFingerprint,
+      featureAvailability.checking,
+      featureAvailability.managerServiceBase,
+      featureAvailability.requestMonitoringAvailable,
+      managerConnectionFingerprint,
+      managementKey,
+      operationalFilterNeedsRecentRequestIndex,
+    ]
+  );
+  const accountRecentAnomalyIndexScopeKey = `${accountRecentAnomalyIndexContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
+  const accountRecentAnomalyIndexAutoLoadKey = `${accountRecentAnomalyIndexScopeKey}\u0000${accountRecentAnomalyIndexRequiredLimit}`;
+  const accountRecentAnomalyIndexCoverage = accountRecentAnomalyIndexCoverageRef.current;
+  const accountRecentAnomalyIndexError = accountRecentAnomalyIndexErrorRef.current;
+  const accountRecentAnomalyIndexLoading = accountRecentAnomalyIndexLoadingRef.current;
+  const accountRecentAnomalyIndexCoverageComplete =
+    accountRecentAnomalyIndexTargets.length === 0 ||
+    (accountRecentAnomalyIndexCoverage?.scopeKey === accountRecentAnomalyIndexScopeKey &&
+      accountRecentAnomalyIndexCoverage.recentLimit >= accountRecentAnomalyIndexRequiredLimit &&
+      accountRecentAnomalyIndexCoverage.itemCount === accountRecentAnomalyIndexTargets.length);
+  const accountRecentAnomalyIndexErrorForCurrentLoad =
+    accountRecentAnomalyIndexError?.loadKey === accountRecentAnomalyIndexAutoLoadKey
+      ? accountRecentAnomalyIndexError
+      : null;
+  const recentAnomalyFilterPending =
+    operationalFilterNeedsRecentRequestIndex &&
+    (!accountRecentAnomalyIndexCoverageComplete || accountRecentAnomalyIndexLoading) &&
+    !accountRecentAnomalyIndexErrorForCurrentLoad;
   const proxyFilterEnabledRows = useMemo(
     () =>
       rows.filter(
@@ -4613,6 +4713,12 @@ export function AccountsPage() {
     ]
   );
   const filteredRows = useMemo(() => {
+    if (
+      recentAnomalyFilterPending ||
+      (operationalFilterNeedsRecentRequestIndex && accountRecentAnomalyIndexErrorForCurrentLoad)
+    ) {
+      return [];
+    }
     const operationalRows = baseFilteredRows.filter((row) => {
       if (effectiveOperationalFilter === 'all') return true;
       if (effectiveOperationalFilter === 'reauth') {
@@ -4637,6 +4743,12 @@ export function AccountsPage() {
           (codexStatus?.needsReauth === true && requestCredentialEvidence?.direction !== 'positive')
         );
       }
+      if (isAccountRecentRequestOperationalFilter(effectiveOperationalFilter)) {
+        return matchesAccountRecentRequestAnomaly(
+          effectiveOperationalFilter,
+          accountRecentAnomalyIndexByRowKey.get(row.selectionKey)?.recent_requests
+        );
+      }
       if (effectiveOperationalFilter === 'cooldown') {
         return (quotaCooldownsByRowKey.get(row.selectionKey)?.length ?? 0) > 0;
       }
@@ -4650,12 +4762,16 @@ export function AccountsPage() {
     });
     return sortAccountRows(operationalRows, accountSort, requestEvidenceBySelectionKey);
   }, [
+    accountRecentAnomalyIndexByRowKey,
+    accountRecentAnomalyIndexErrorForCurrentLoad,
     accountSort,
     actionCandidatesByRowKey,
     baseFilteredRows,
     codexStatusBySelectionKey,
     effectiveOperationalFilter,
+    operationalFilterNeedsRecentRequestIndex,
     quotaCooldownsByRowKey,
+    recentAnomalyFilterPending,
     recommendationBySelectionKey,
     requestEvidenceBySelectionKey,
   ]);
@@ -6465,6 +6581,158 @@ export function AccountsPage() {
     accountRecentIndexAutoLoadKey,
     activeView,
     loadAccountRecentIndex,
+  ]);
+
+  const loadAccountRecentAnomalyIndex = useCallback(async (): Promise<void> => {
+    const managerServiceBase = featureAvailability.managerServiceBase;
+    accountRecentAnomalyIndexAbortRef.current?.abort();
+    accountRecentAnomalyIndexAbortRef.current = null;
+
+    if (
+      featureAvailability.checking ||
+      !featureAvailability.requestMonitoringAvailable ||
+      !managerServiceBase ||
+      !managementKey ||
+      accountRecentAnomalyIndexTargets.length === 0
+    ) {
+      setAccountRecentAnomalyIndexByRowKey((current) =>
+        current.size === 0 ? current : new Map()
+      );
+      setAccountRecentAnomalyIndexLoadState({
+        coverage:
+          accountRecentAnomalyIndexTargets.length === 0
+            ? {
+                scopeKey: accountRecentAnomalyIndexScopeKey,
+                recentLimit: accountRecentAnomalyIndexRequiredLimit,
+                itemCount: 0,
+              }
+            : null,
+        loading: false,
+        error:
+          !featureAvailability.checking && accountRecentAnomalyIndexTargets.length > 0
+            ? { loadKey: accountRecentAnomalyIndexAutoLoadKey, reason: 'unavailable' }
+            : null,
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    accountRecentAnomalyIndexAbortRef.current = controller;
+    setAccountRecentAnomalyIndexLoadState({
+      coverage: null,
+      error: null,
+      loading: true,
+    });
+    try {
+      const batches: AccountHistoryTargetEntry[][] = [];
+      for (let index = 0; index < accountRecentAnomalyIndexTargets.length; index += 1000) {
+        batches.push(accountRecentAnomalyIndexTargets.slice(index, index + 1000));
+      }
+      const responses = await mapWithConcurrency(
+        batches,
+        MAX_CONCURRENT_ACCOUNT_HISTORY_REQUESTS,
+        (batch) =>
+          monitoringAnalyticsApi.getAccountRecentIndex(
+            managerServiceBase,
+            managementKey,
+            buildAccountRecentIndexRequest(
+              batch.map((entry) => entry.target),
+              effectiveOperationalFilter
+            ),
+            controller.signal
+          )
+      );
+      if (
+        controller.signal.aborted ||
+        accountRecentAnomalyIndexAbortRef.current !== controller
+      ) {
+        return;
+      }
+      const next = new Map<string, MonitoringAccountRecentIndexItem>();
+      responses.forEach((response) => {
+        response.items.forEach((item) => {
+          if (item.row_key) next.set(item.row_key, item);
+        });
+      });
+      setAccountRecentAnomalyIndexByRowKey(next);
+      if (next.size !== accountRecentAnomalyIndexTargets.length) {
+        setAccountRecentAnomalyIndexLoadState({
+          coverage: null,
+          loading: false,
+          error: {
+            loadKey: accountRecentAnomalyIndexAutoLoadKey,
+            reason: 'incomplete',
+          },
+        });
+        return;
+      }
+      setAccountRecentAnomalyIndexLoadState({
+        coverage: {
+          scopeKey: accountRecentAnomalyIndexScopeKey,
+          recentLimit: accountRecentAnomalyIndexRequiredLimit,
+          itemCount: next.size,
+        },
+        error: null,
+        loading: false,
+      });
+    } catch {
+      if (
+        controller.signal.aborted ||
+        accountRecentAnomalyIndexAbortRef.current !== controller
+      ) {
+        return;
+      }
+      setAccountRecentAnomalyIndexLoadState({
+        coverage: null,
+        loading: false,
+        error: {
+          loadKey: accountRecentAnomalyIndexAutoLoadKey,
+          reason: 'request-failed',
+        },
+      });
+    } finally {
+      if (accountRecentAnomalyIndexAbortRef.current === controller) {
+        accountRecentAnomalyIndexAbortRef.current = null;
+        if (accountRecentAnomalyIndexLoadingRef.current) {
+          setAccountRecentAnomalyIndexLoadState({
+            coverage: accountRecentAnomalyIndexCoverageRef.current,
+            error: accountRecentAnomalyIndexErrorRef.current,
+            loading: false,
+          });
+        }
+      }
+    }
+  }, [
+    accountRecentAnomalyIndexAutoLoadKey,
+    accountRecentAnomalyIndexRequiredLimit,
+    accountRecentAnomalyIndexScopeKey,
+    accountRecentAnomalyIndexTargets,
+    effectiveOperationalFilter,
+    featureAvailability.checking,
+    featureAvailability.managerServiceBase,
+    featureAvailability.requestMonitoringAvailable,
+    managementKey,
+    setAccountRecentAnomalyIndexLoadState,
+  ]);
+
+  useEffect(() => {
+    if (activeView !== 'accounts' || !operationalFilterNeedsRecentRequestIndex) {
+      accountRecentAnomalyIndexAutoLoadKeyRef.current = null;
+      accountRecentAnomalyIndexAbortRef.current?.abort();
+      accountRecentAnomalyIndexAbortRef.current = null;
+      accountRecentAnomalyIndexLoadingRef.current = false;
+      return;
+    }
+    if (accountRecentAnomalyIndexAutoLoadKeyRef.current === accountRecentAnomalyIndexAutoLoadKey) {
+      return;
+    }
+    accountRecentAnomalyIndexAutoLoadKeyRef.current = accountRecentAnomalyIndexAutoLoadKey;
+    void loadAccountRecentAnomalyIndex();
+  }, [
+    accountRecentAnomalyIndexAutoLoadKey,
+    activeView,
+    loadAccountRecentAnomalyIndex,
+    operationalFilterNeedsRecentRequestIndex,
   ]);
 
   const loadAccountHistory = useCallback(
@@ -8386,6 +8654,14 @@ export function AccountsPage() {
                 ]
               : []),
             { value: 'recovered', label: t('accounts.operational_recovered') },
+            {
+              value: 'recent_server_overloaded_502',
+              label: t('accounts.operational_recent_server_overloaded_502'),
+            },
+            {
+              value: 'recent_failures',
+              label: t('accounts.operational_recent_failures'),
+            },
           ]}
           onChange={(value) => setOperationalFilter(value as AccountOperationalFilter)}
           ariaLabel={t('accounts.operational_filter')}
@@ -10993,6 +11269,16 @@ export function AccountsPage() {
       {initialLoading ? (
         <div className={styles.loadingPanel}>
           <LoadingSpinner />
+        </div>
+      ) : recentAnomalyFilterPending ? (
+        <div className={styles.loadingPanel} data-account-recent-index-loading="true">
+          <LoadingSpinner />
+          <span>{t('accounts.recent_request_anomaly_index_loading')}</span>
+        </div>
+      ) : accountRecentAnomalyIndexErrorForCurrentLoad &&
+        operationalFilterNeedsRecentRequestIndex ? (
+        <div className={styles.errorBox} data-account-recent-index-error="true">
+          {t('accounts.recent_request_anomaly_index_error')}
         </div>
       ) : hasLoaded ? (
         renderAccountCards()
