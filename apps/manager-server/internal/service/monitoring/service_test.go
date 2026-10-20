@@ -2352,6 +2352,94 @@ func TestAccountRecentIndexReadsOnlyOneRequestPerCredential(t *testing.T) {
 	}
 }
 
+func TestResolveAccountRecentIndexLimit(t *testing.T) {
+	cases := []struct {
+		name  string
+		value *int
+		want  int
+		valid bool
+	}{
+		{name: "omitted defaults to one", value: nil, want: 1, valid: true},
+		{name: "nine is accepted", value: intPointer(9), want: 9, valid: true},
+		{name: "zero is rejected", value: intPointer(0), valid: false},
+		{name: "ten is rejected", value: intPointer(10), valid: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveAccountRecentIndexLimit(tc.value)
+			if tc.valid && (err != nil || got != tc.want) {
+				t.Fatalf("ResolveAccountRecentIndexLimit(%v) = %d, %v", tc.value, got, err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatalf("ResolveAccountRecentIndexLimit(%v) succeeded", tc.value)
+			}
+		})
+	}
+}
+
+func TestAccountRecentIndexReturnsRequestedSafeRecentDepth(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	const baseMS = int64(1_700_000_300_000)
+	events := make([]usage.Event, 0, 10)
+	for index := 1; index <= 10; index++ {
+		event := monitoringEvent(
+			fmt.Sprintf("recent-index-depth-%d", index),
+			baseMS+int64(index),
+			"gpt-a",
+			"auth-a",
+			"source-a",
+			index%2 == 0,
+			1,
+			1,
+			0,
+			0,
+			2,
+			nil,
+		)
+		event.AuthFileSnapshot = "recent-depth.json"
+		event.AuthProviderSnapshot = "codex"
+		event.AccountSnapshot = "depth@example.com"
+		event.FailSummary = "safe-summary"
+		event.FailBody = "private-body"
+		event.RawJSON = "private-json"
+		events = append(events, event)
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert recent-depth events: %v", err)
+	}
+
+	response, err := New(db).AccountRecentIndex(ctx, AccountRecentIndexRequest{
+		Accounts: []AccountHistoryTarget{{
+			RowKey:               "row-depth",
+			AuthFileSnapshot:     "recent-depth.json",
+			AuthIndex:            "auth-a",
+			AuthProviderSnapshot: "codex",
+			AccountSnapshot:      "depth@example.com",
+		}},
+		RecentLimit: intPointer(9),
+	})
+	if err != nil {
+		t.Fatalf("account recent index: %v", err)
+	}
+	if len(response.Items) != 1 || len(response.Items[0].RecentRequests) != 9 {
+		t.Fatalf("recent index response = %#v, want nine requests", response)
+	}
+	for index, item := range response.Items[0].RecentRequests {
+		wantTimestamp := baseMS + int64(10-index)
+		if item.TimestampMS != wantTimestamp {
+			t.Fatalf("recent_requests[%d].timestamp_ms = %d, want %d", index, item.TimestampMS, wantTimestamp)
+		}
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if strings.Contains(string(encoded), "private-body") || strings.Contains(string(encoded), "private-json") {
+		t.Fatalf("recent index exposed private response fields: %s", encoded)
+	}
+}
+
 func TestAccountHistorySeparatesSharedAccountAndStructuredIdentityOverridesLegacyKey(t *testing.T) {
 	db := newMonitoringTestStore(t)
 	ctx := context.Background()
@@ -4761,6 +4849,8 @@ func monitoringEvent(
 		CreatedAtMS:     timestampMS,
 	}
 }
+
+func intPointer(value int) *int { return &value }
 
 func historyTestKey(authFileSnapshot, authIndex, provider, accountSnapshot string) string {
 	key, valid := usageidentity.AccountKey(usageidentity.Fields{

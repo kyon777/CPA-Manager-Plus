@@ -236,6 +236,9 @@ func validateAccountRecentIndexRequest(req monitoringsvc.AccountRecentIndexReque
 			return errors.New("auth_provider_snapshot is required for file account targets")
 		}
 	}
+	if _, err := monitoringsvc.ResolveAccountRecentIndexLimit(req.RecentLimit); err != nil {
+		return err
+	}
 	return nil
 }
 

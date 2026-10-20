@@ -21,20 +21,22 @@ import (
 )
 
 const (
-	defaultEventsLimit         = 100
-	defaultDrilldownLimit      = 20
-	defaultHeaderSnapshotDays  = 30
-	defaultHeaderSnapshotLimit = 1000
-	maxEventsLimit             = 50000
-	maxDrilldownLimit          = 100
-	maxHeaderSnapshotDays      = 365
-	maxHeaderSnapshotLimit     = 5000
-	maxAccountHistoryTargets   = 200
-	maxAccountRecentIndexItems = 1000
-	maxAccountWindowUsageItems = 400
-	accountHistoryCatchUpLimit = 5000
-	accountRecentRequestLimit  = 10
-	recentWindowMS             = 30 * 60 * 1000
+	defaultEventsLimit             = 100
+	defaultDrilldownLimit          = 20
+	defaultHeaderSnapshotDays      = 30
+	defaultHeaderSnapshotLimit     = 1000
+	maxEventsLimit                 = 50000
+	maxDrilldownLimit              = 100
+	maxHeaderSnapshotDays          = 365
+	maxHeaderSnapshotLimit         = 5000
+	maxAccountHistoryTargets       = 200
+	maxAccountRecentIndexItems     = 1000
+	defaultAccountRecentIndexLimit = 1
+	maxAccountRecentIndexLimit     = 9
+	maxAccountWindowUsageItems     = 400
+	accountHistoryCatchUpLimit     = 5000
+	accountRecentRequestLimit      = 10
+	recentWindowMS                 = 30 * 60 * 1000
 	// analyticsPrefetchConcurrency limits background analytics reads. The
 	// foreground summary/task path may hold one additional SQLite connection.
 	analyticsPrefetchConcurrency = 2
@@ -261,7 +263,21 @@ type AccountHistoryRequest struct {
 // row by its most recent request without running the pricing/rollup work that
 // AccountHistory performs for detail cards.
 type AccountRecentIndexRequest struct {
-	Accounts []AccountHistoryTarget `json:"accounts"`
+	Accounts    []AccountHistoryTarget `json:"accounts"`
+	RecentLimit *int                   `json:"recent_limit,omitempty"`
+}
+
+// ResolveAccountRecentIndexLimit keeps the global list-sort path compact by
+// default while allowing an explicitly bounded safe request window for list
+// filters that need more than the latest request.
+func ResolveAccountRecentIndexLimit(value *int) (int, error) {
+	if value == nil {
+		return defaultAccountRecentIndexLimit, nil
+	}
+	if *value < 1 || *value > maxAccountRecentIndexLimit {
+		return 0, fmt.Errorf("recent_limit must be between 1 and %d", maxAccountRecentIndexLimit)
+	}
+	return *value, nil
 }
 
 type AccountRecentIndexResponse struct {
@@ -1794,6 +1810,10 @@ func (s *Service) AccountRecentIndex(ctx context.Context, req AccountRecentIndex
 	if len(req.Accounts) > maxAccountRecentIndexItems {
 		return AccountRecentIndexResponse{}, fmt.Errorf("accounts must be less than or equal to %d", maxAccountRecentIndexItems)
 	}
+	recentLimit, err := ResolveAccountRecentIndexLimit(req.RecentLimit)
+	if err != nil {
+		return AccountRecentIndexResponse{}, err
+	}
 	latestRequestTargets := make([]store.LatestAccountRequestQuery, 0, len(req.Accounts))
 	for index, account := range req.Accounts {
 		if !AccountHistoryTargetHasRequiredProvider(account) {
@@ -1803,10 +1823,11 @@ func (s *Service) AccountRecentIndex(ctx context.Context, req AccountRecentIndex
 			latestRequestTargets = append(latestRequestTargets, latestAccountRequestQuery(index, account))
 		}
 	}
-	// The grid-wide index only needs the latest record to preserve global sort
-	// semantics. The visible page keeps the richer ten-request history through
-	// AccountHistory below.
-	recentRequests, err := s.store.RecentAccountRequests(ctx, latestRequestTargets, 1)
+	// The grid-wide index defaults to one record to preserve compact global
+	// sort semantics. Callers may explicitly request at most nine safe records
+	// for an anomaly filter; the visible page still owns its richer ten-request
+	// history through AccountHistory below.
+	recentRequests, err := s.store.RecentAccountRequests(ctx, latestRequestTargets, recentLimit)
 	if err != nil {
 		return AccountRecentIndexResponse{}, err
 	}

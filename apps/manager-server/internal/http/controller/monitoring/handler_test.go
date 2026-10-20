@@ -198,6 +198,19 @@ func TestValidateAccountHistoryRequestTreatsRowKeysAsOpaque(t *testing.T) {
 	}
 }
 
+func TestValidateAccountRecentIndexRequestRejectsOutOfRangeRecentLimit(t *testing.T) {
+	base := monitoringsvc.AccountRecentIndexRequest{Accounts: []monitoringsvc.AccountHistoryTarget{{
+		RowKey: "row-1", AuthFileSnapshot: "credential.json", AuthProviderSnapshot: "codex",
+	}}}
+	for _, limit := range []int{0, 10} {
+		req := base
+		req.RecentLimit = &limit
+		if err := validateAccountRecentIndexRequest(req); err == nil {
+			t.Fatalf("recent_limit=%d was accepted", limit)
+		}
+	}
+}
+
 func executeAuthorizedMonitoringRequest(t *testing.T, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	st := newHandlerTestStore(t)
