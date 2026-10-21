@@ -86,6 +86,25 @@ absent**, never as a newly deleted credential.
    as a failed deletion. Other skipped and failed outcomes remain visible,
    are not pruned, and retain their existing diagnostic detail.
 
+### C. Banned credential physical-delete concurrency
+
+1. Raise the CPAM batch-delete default and hard ceiling from four to **eight**
+   independent physical CPA auth-file delete jobs. The application wiring
+   supplies no explicit override today, so changing this bounded service
+   default makes every current-page banned-delete request use up to eight
+   workers automatically.
+2. The batch continues to fetch the CPA inventory exactly once and verifies
+   every target before any delete worker is released. A shared source JSON is
+   one physical job, not multiple parallel deletes.
+3. Keep the existing per-physical-file mutation locks unchanged. Different
+   source files may delete in parallel; the same file, and any concurrent
+   CPAM recovery/proxy/upload mutation for that file, remains serialized.
+   If another mutation already holds one of the batch's source locks, the
+   batch waits before its one inventory snapshot rather than racing a write.
+4. Limit remains `min(8, verified physical jobs)`, with the existing maximum
+   of 100 submitted logical targets. No new operator setting is required and
+   no CPA Core change is involved.
+
 ## Data Flow
 
 ```text
@@ -99,9 +118,10 @@ absent**, never as a newly deleted credential.
 
 删除当前页已封禁账号
   -> POST auth-files/delete-account-banned-batch
-  -> Manager locks sources and fetches fresh CPA auth-file inventory
+  -> Manager locks sources and fetches fresh CPA auth-file inventory once
   -> response.deleted: deletion was confirmed
   -> response.skipped[code=credential_not_found]: source absent before delete
+  -> up to 8 independent verified physical deletes run concurrently
   -> union both physical source names for local-cache/result pruning
   -> report deleted and already-absent counts separately
 ```
@@ -119,6 +139,9 @@ absent**, never as a newly deleted credential.
   state, priority, billing, usage SQLite, or scheduler behavior.
 - Do not turn every skipped deletion into a prune. Only the backend's exact
   `credential_not_found` signal has the required fresh-inventory meaning.
+- Do not weaken the existing mutation coordinator in pursuit of concurrency.
+  The eight-worker cap applies only after the entire set of physical source
+  locks is safely held.
 
 ## Result Summary Semantics
 
@@ -144,4 +167,8 @@ absent**, never as a newly deleted credential.
 4. Lifecycle coverage proves a `credential_not_found` response removes the
    stale card(s), updates the persisted inspection snapshot and parent list
    cache, and renders an explicit already-absent count.
-5. Existing current-page recovery and confirmed-delete tests remain green.
+5. Service coverage proves the default reaches exactly eight simultaneous
+   independent delete calls when at least eight verified physical jobs exist,
+   while a configured lower test cap still bounds the worker count and one
+   shared physical source remains one job.
+6. Existing current-page recovery and confirmed-delete tests remain green.
