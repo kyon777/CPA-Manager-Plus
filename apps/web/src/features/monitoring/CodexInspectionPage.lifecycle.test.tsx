@@ -777,7 +777,7 @@ describe('CodexInspectionPage connection lifecycle', () => {
     expect(onAuthFilesDeleted).toHaveBeenCalledWith(['codex.json']);
     expect(renderer.root.findAllByType('article')).toHaveLength(0);
     expect(mocks.showNotification).toHaveBeenLastCalledWith(
-      'accounts.batch_delete_banned_result',
+      'accounts.inspection_page_delete_result',
       'success'
     );
     act(() => renderer.unmount());

@@ -1483,7 +1483,7 @@ export function CodexInspectionPage({
         const firstReason = [...failed, ...retainedSkipped]
           .map((item) => item.message?.trim() || item.code?.trim() || '')
           .find(Boolean);
-        const summary = t('accounts.batch_delete_banned_result', {
+        const summary = t('accounts.inspection_page_delete_result', {
           deleted: deleteResult.deleted,
           absent: deleteResult.alreadyAbsent,
           skipped: deleteResult.skipped,

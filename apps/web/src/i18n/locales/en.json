@@ -1523,7 +1523,7 @@
     "batch_delete_banned_title": "Delete {{count}} banned credential(s)",
     "batch_delete_banned_summary": "This page contains {{rows}} banned credential(s) backed by {{files}} credential file(s).",
     "batch_delete_banned_warning": "Only credentials reported with account_banned are included. Deletion is irreversible and performed by file.",
-    "batch_delete_banned_result": "Deleted {{deleted}} account(s), CPA already absent {{absent}}, skipped {{skipped}}, failed {{failed}}",
+    "batch_delete_banned_result": "Deleted {{deleted}} account(s), skipped {{skipped}}, failed {{failed}}",
     "batch_recovery_page": "Update current-page credentials ({{count}})",
     "recovery_auto_attempted": "Auto-updated once",
     "recovery_auto_processing": "Automatic update in progress",

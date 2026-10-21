@@ -9779,7 +9779,6 @@ export function AccountsPage() {
           .find(Boolean);
         const summary = t('accounts.batch_delete_banned_result', {
           deleted: response.deleted?.length ?? 0,
-          absent: 0,
           skipped: skipped.length,
           failed: failed.length,
         });

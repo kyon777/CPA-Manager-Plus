@@ -1527,7 +1527,7 @@
     "batch_delete_banned_title": "Удалить заблокированные учётные данные: {{count}}",
     "batch_delete_banned_summary": "На странице найдено заблокированных учётных данных: {{rows}}, файлов: {{files}}.",
     "batch_delete_banned_warning": "Включены только записи с кодом ошибки account_banned. Удаление выполняется по файлам и необратимо.",
-    "batch_delete_banned_result": "Удалено: {{deleted}}, уже отсутствует в CPA: {{absent}}, пропущено: {{skipped}}, ошибок: {{failed}}",
+    "batch_delete_banned_result": "Удалено: {{deleted}}, пропущено: {{skipped}}, ошибок: {{failed}}",
     "batch_recovery_page": "Обновить учётные данные текущей страницы ({{count}})",
     "recovery_auto_attempted": "Автообновлено один раз",
     "recovery_auto_processing": "Автоматическое обновление выполняется",

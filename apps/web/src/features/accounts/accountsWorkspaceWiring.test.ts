@@ -284,7 +284,6 @@ describe('accounts workspace wiring', () => {
     expect(String(accounts.batch_delete_banned_summary)).toContain('{{rows}}');
     expect(String(accounts.batch_delete_banned_summary)).toContain('{{files}}');
     expect(String(accounts.batch_delete_banned_result)).toContain('{{deleted}}');
-    expect(String(accounts.batch_delete_banned_result)).toContain('{{absent}}');
     expect(String(accounts.batch_delete_banned_result)).toContain('{{skipped}}');
     expect(String(accounts.batch_delete_banned_result)).toContain('{{failed}}');
   });
