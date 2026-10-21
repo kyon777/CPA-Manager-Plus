@@ -42,9 +42,16 @@ export type InspectionPageDeleteOperationDetail = {
 export type InspectionPageDeleteOperationResult = {
   requested: number;
   deleted: number;
+  alreadyAbsent: number;
   skipped: number;
   failed: number;
   details: readonly InspectionPageDeleteOperationDetail[];
+};
+
+export type InspectionPageDeleteReconciliation = {
+  physicalNames: readonly string[];
+  alreadyAbsent: number;
+  result: InspectionPageDeleteOperationResult;
 };
 
 export type InspectionPageDeleteOperation = {
@@ -187,12 +194,47 @@ const toDeleteDetail = (
   code: normalizedText(item.code) || normalizedText(item.message) || 'unknown_error',
 });
 
+const physicalNameOf = (item: { fileName: string; physicalName?: string }): string =>
+  normalizedText(item.physicalName) || normalizedText(item.fileName);
+
+const uniquePhysicalNames = (
+  items: readonly { fileName: string; physicalName?: string }[]
+): string[] => {
+  const names = new Set<string>();
+  items.forEach((item) => {
+    const physicalName = physicalNameOf(item);
+    if (physicalName) names.add(physicalName);
+  });
+  return Array.from(names);
+};
+
+export const reconcileInspectionPageDeleteResponse = (
+  response: AccountBannedAuthFileDeleteResponse
+): InspectionPageDeleteReconciliation => {
+  const alreadyAbsentItems = response.skipped.filter(
+    (item) => normalizedText(item.code) === 'credential_not_found'
+  );
+  const retainedSkippedItems = response.skipped.filter(
+    (item) => normalizedText(item.code) !== 'credential_not_found'
+  );
+  const alreadyAbsent = alreadyAbsentItems.length;
+
+  return {
+    physicalNames: uniquePhysicalNames([...response.deleted, ...alreadyAbsentItems]),
+    alreadyAbsent,
+    result: {
+      requested: response.requested,
+      deleted: response.deleted.length,
+      alreadyAbsent,
+      skipped: retainedSkippedItems.length,
+      failed: response.failed.length,
+      details: [...response.failed, ...retainedSkippedItems]
+        .slice(0, maxDeleteDetails)
+        .map(toDeleteDetail),
+    },
+  };
+};
+
 export const toInspectionPageDeleteOperationResult = (
   response: AccountBannedAuthFileDeleteResponse
-): InspectionPageDeleteOperationResult => ({
-  requested: response.requested,
-  deleted: response.deleted.length,
-  skipped: response.skipped.length,
-  failed: response.failed.length,
-  details: [...response.failed, ...response.skipped].slice(0, maxDeleteDetails).map(toDeleteDetail),
-});
+): InspectionPageDeleteOperationResult => reconcileInspectionPageDeleteResponse(response).result;

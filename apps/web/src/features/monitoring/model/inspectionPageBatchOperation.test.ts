@@ -6,6 +6,7 @@ import type {
 } from '@/services/api/usageService';
 import {
   buildPendingInspectionPageRecoveryOperation,
+  reconcileInspectionPageDeleteResponse,
   selectPostInspectionManualSuccessKeys,
   summarizeInspectionPageRecoveryOperation,
   toInspectionPageDeleteOperationResult,
@@ -111,6 +112,7 @@ describe('inspection page batch operation model', () => {
     expect(toInspectionPageDeleteOperationResult(response)).toEqual({
       requested: 4,
       deleted: 1,
+      alreadyAbsent: 0,
       skipped: 1,
       failed: 1,
       details: [
@@ -158,5 +160,48 @@ describe('inspection page batch operation model', () => {
     ]);
 
     expect(selectPostInspectionManualSuccessKeys(1_000, items)).toEqual(['fresh']);
+  });
+
+  it('reconciles only CPA-absent delete outcomes out of the inspection source set', () => {
+    const response: AccountBannedAuthFileDeleteResponse = {
+      requested: 4,
+      deleted: [
+        {
+          clientKey: 'deleted',
+          fileName: 'deleted-fallback.json',
+          physicalName: 'deleted.json',
+        },
+      ],
+      skipped: [
+        {
+          clientKey: 'missing',
+          fileName: 'missing-fallback.json',
+          physicalName: 'missing.json',
+          code: 'credential_not_found',
+        },
+        {
+          clientKey: 'kept',
+          fileName: 'kept.json',
+          code: 'shared_file_incomplete',
+        },
+      ],
+      failed: [{ clientKey: 'failed', fileName: 'failed.json', code: 'delete_failed' }],
+    };
+
+    const reconciliation = reconcileInspectionPageDeleteResponse(response);
+
+    expect(reconciliation.physicalNames).toEqual(['deleted.json', 'missing.json']);
+    expect(reconciliation.alreadyAbsent).toBe(1);
+    expect(reconciliation.result).toMatchObject({
+      requested: 4,
+      deleted: 1,
+      alreadyAbsent: 1,
+      skipped: 1,
+      failed: 1,
+    });
+    expect(reconciliation.result.details).toEqual([
+      { fileName: 'failed.json', code: 'delete_failed' },
+      { fileName: 'kept.json', code: 'shared_file_incomplete' },
+    ]);
   });
 });
