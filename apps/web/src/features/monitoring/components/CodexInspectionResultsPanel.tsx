@@ -246,6 +246,7 @@ export function CodexInspectionResultsPanel({
     if (!pageBannedDeleteOperation.result) return null;
     return t('accounts.inspection_page_delete_result', {
       deleted: pageBannedDeleteOperation.result.deleted,
+      absent: pageBannedDeleteOperation.result.alreadyAbsent,
       skipped: pageBannedDeleteOperation.result.skipped,
       failed: pageBannedDeleteOperation.result.failed,
     });

@@ -17,6 +17,7 @@ import {
   resolveCodexInspectionAutoActionPlan,
   loadCodexInspectionConfigurableSettings,
   removeCodexInspectionFiles,
+  removeCodexInspectionResultKeys,
   saveCodexInspectionLastRun,
   saveCodexInspectionConfigurableSettings,
   toReauthDeleteExecutionItem,
@@ -88,8 +89,9 @@ import {
 import {
   buildPendingInspectionPageRecoveryOperation,
   idleInspectionPageDeleteOperation,
+  reconcileInspectionPageDeleteResponse,
+  selectPostInspectionManualSuccessKeys,
   summarizeInspectionPageRecoveryOperation,
-  toInspectionPageDeleteOperationResult,
   type InspectionPageDeleteOperation,
   type InspectionPageDeletePhase,
   type InspectionPageRecoveryOperation,
@@ -1214,6 +1216,38 @@ export function CodexInspectionPage({
     fetchMetadata: false,
     lookupRecoveryTasks: true,
   });
+  useEffect(() => {
+    if (
+      !result ||
+      result.finishedAt <= 0 ||
+      !connectionFingerprint ||
+      resultConnectionFingerprint !== connectionFingerprint
+    ) {
+      return;
+    }
+
+    const completedRecoveryKeys = selectPostInspectionManualSuccessKeys(
+      result.finishedAt,
+      pageRuntimeItemsByClientKey
+    );
+    if (completedRecoveryKeys.length === 0) return;
+
+    setResult((previous) => {
+      if (
+        !previous ||
+        previous.finishedAt !== result.finishedAt ||
+        activeConnectionFingerprintRef.current !== connectionFingerprint
+      ) {
+        return previous;
+      }
+      return removeCodexInspectionResultKeys(previous, completedRecoveryKeys);
+    });
+  }, [
+    connectionFingerprint,
+    pageRuntimeItemsByClientKey,
+    result,
+    resultConnectionFingerprint,
+  ]);
   const pageRecoveryTargets = useMemo(
     () =>
       actionFilter === 'reauth'
@@ -1428,38 +1462,36 @@ export function CodexInspectionPage({
         ) {
           return;
         }
-        const deletedPhysicalNames = Array.from(
-          new Set(
-            (response.deleted ?? [])
-              .map((item) => item.physicalName?.trim() || item.fileName.trim())
-              .filter(Boolean)
-          )
-        );
-        if (deletedPhysicalNames.length > 0) {
-          const deletedSet = new Set(deletedPhysicalNames);
+        const reconciliation = reconcileInspectionPageDeleteResponse(response);
+        const reconciledPhysicalNames = [...reconciliation.physicalNames];
+        if (reconciledPhysicalNames.length > 0) {
+          const deletedSet = new Set(reconciledPhysicalNames);
           setCurrentAuthFiles((previous) =>
             previous.filter((file) => !deletedSet.has(file.name.trim()))
           );
           setResult((previous) =>
-            previous ? removeCodexInspectionFiles(previous, deletedPhysicalNames) : previous
+            previous ? removeCodexInspectionFiles(previous, reconciledPhysicalNames) : previous
           );
-          onAuthFilesDeleted?.(deletedPhysicalNames);
+          onAuthFilesDeleted?.(reconciledPhysicalNames);
         }
-        const deleteResult = toInspectionPageDeleteOperationResult(response);
+        const deleteResult = reconciliation.result;
         setPageBannedDeleteOperationState('completed', deleteResult);
-        const skipped = response.skipped ?? [];
+        const retainedSkipped = (response.skipped ?? []).filter(
+          (item) => item.code?.trim() !== 'credential_not_found'
+        );
         const failed = response.failed ?? [];
-        const firstReason = [...failed, ...skipped]
+        const firstReason = [...failed, ...retainedSkipped]
           .map((item) => item.message?.trim() || item.code?.trim() || '')
           .find(Boolean);
         const summary = t('accounts.batch_delete_banned_result', {
-          deleted: response.deleted?.length ?? 0,
-          skipped: skipped.length,
-          failed: failed.length,
+          deleted: deleteResult.deleted,
+          absent: deleteResult.alreadyAbsent,
+          skipped: deleteResult.skipped,
+          failed: deleteResult.failed,
         });
         showNotification(
           firstReason ? `${summary}: ${firstReason}` : summary,
-          failed.length > 0 ? 'error' : skipped.length > 0 ? 'warning' : 'success'
+          failed.length > 0 ? 'error' : retainedSkipped.length > 0 ? 'warning' : 'success'
         );
       } catch (error) {
         if (

@@ -234,6 +234,7 @@ describe('CodexInspectionResultsPanel', () => {
         result: {
           requested: 2,
           deleted: 1,
+          alreadyAbsent: 0,
           skipped: 0,
           failed: 1,
           details: [{ fileName: 'failed.json', code: 'cpa_timeout' }],

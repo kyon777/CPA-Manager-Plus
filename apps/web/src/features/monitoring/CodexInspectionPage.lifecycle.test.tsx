@@ -412,6 +412,71 @@ describe('CodexInspectionPage connection lifecycle', () => {
     act(() => renderer.unmount());
   });
 
+  it('removes only the inspection row whose manual recovery completed after the inspection', async () => {
+    mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
+    const currentFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
+    const state = reauthLastRun(currentFingerprint);
+    const sibling = {
+      ...state.result.results[0],
+      key: 'codex.json::auth-2',
+      runtimeId: 'runtime-2',
+      displayAccount: 'sibling@example.com',
+      accountSnapshot: 'sibling@example.com',
+      authIndex: 'auth-2',
+    };
+    mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
+      connectionFingerprint === currentFingerprint
+        ? {
+            ...state,
+            result: {
+              ...state.result,
+              results: [state.result.results[0], sibling],
+              summary: {
+                ...state.result.summary,
+                probeSetCount: 2,
+                sampledCount: 2,
+                reauthCount: 2,
+              },
+            },
+          }
+        : null
+    );
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [
+        {
+          clientKey: 'codex.json::auth-1',
+          task: {
+            id: 7,
+            fileName: 'codex.json',
+            authIndex: 'auth-1',
+            accountEmail: 'account@example.com',
+            provider: 'codex',
+            status: 'succeeded',
+            mode: 'manual',
+            completedAtMs: state.result.finishedAt + 1,
+          },
+        },
+      ],
+    });
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(renderer.root.findAllByType('article')).toHaveLength(1);
+    expect(textContent(renderer.root.findByType('article'))).toContain('sibling@example.com');
+    act(() => renderer.unmount());
+  });
+
   it('locks page-level banned deletion from the first confirmation until a result is available', async () => {
     mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
     const currentFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
@@ -649,6 +714,72 @@ describe('CodexInspectionPage connection lifecycle', () => {
     expect(onAuthFilesDeleted).toHaveBeenCalledWith(['codex.json']);
     expect(onCredentialsChanged).not.toHaveBeenCalled();
     expect(renderer.root.findAllByType('article')).toHaveLength(0);
+    act(() => renderer.unmount());
+  });
+
+  it('reconciles CPA-absent banned credential sources out of the local inspection', async () => {
+    mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
+    const currentFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
+    mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
+      connectionFingerprint === currentFingerprint ? reauthLastRun(connectionFingerprint) : null
+    );
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({
+      items: [
+        {
+          clientKey: 'codex.json::auth-1',
+          task: {
+            id: 7,
+            fileName: 'codex.json',
+            authIndex: 'auth-1',
+            accountEmail: 'account@example.com',
+            provider: 'codex',
+            status: 'auto_failed_manual_only',
+            mode: 'auto',
+            lastErrorCode: 'account_banned',
+          },
+        },
+      ],
+    });
+    mocks.deleteAccountBannedAuthFilesBatch.mockResolvedValue({
+      requested: 1,
+      deleted: [],
+      skipped: [
+        {
+          clientKey: 'codex.json::auth-1',
+          fileName: 'codex.json',
+          physicalName: 'codex.json',
+          code: 'credential_not_found',
+        },
+      ],
+      failed: [],
+    });
+    const onAuthFilesDeleted = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage onAuthFilesDeleted={onAuthFilesDeleted} />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      renderer.root.findByProps({ 'data-inspection-page-banned-delete': true }).props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onAuthFilesDeleted).toHaveBeenCalledWith(['codex.json']);
+    expect(renderer.root.findAllByType('article')).toHaveLength(0);
+    expect(mocks.showNotification).toHaveBeenLastCalledWith(
+      'accounts.batch_delete_banned_result',
+      'success'
+    );
     act(() => renderer.unmount());
   });
 
