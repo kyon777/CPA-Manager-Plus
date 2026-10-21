@@ -6,6 +6,7 @@ import type {
 } from '@/services/api/usageService';
 import {
   buildPendingInspectionPageRecoveryOperation,
+  selectPostInspectionManualSuccessKeys,
   summarizeInspectionPageRecoveryOperation,
   toInspectionPageDeleteOperationResult,
 } from './inspectionPageBatchOperation';
@@ -117,5 +118,45 @@ describe('inspection page batch operation model', () => {
         { fileName: 'shared.json', code: 'shared_file_incomplete' },
       ],
     });
+  });
+
+  it('selects only manual recoveries that completed after the inspection finished', () => {
+    const items = new Map<string, CredentialRuntimeMetadataItem>([
+      [
+        'fresh',
+        {
+          ...metadata('fresh', 'succeeded'),
+          recoveryTask: {
+            ...metadata('fresh', 'succeeded').recoveryTask!,
+            mode: 'manual',
+            completedAtMs: 1_001,
+          },
+        },
+      ],
+      [
+        'stale',
+        {
+          ...metadata('stale', 'succeeded'),
+          recoveryTask: {
+            ...metadata('stale', 'succeeded').recoveryTask!,
+            mode: 'manual',
+            completedAtMs: 1_000,
+          },
+        },
+      ],
+      [
+        'auto',
+        {
+          ...metadata('auto', 'succeeded'),
+          recoveryTask: {
+            ...metadata('auto', 'succeeded').recoveryTask!,
+            mode: 'auto',
+            completedAtMs: 1_002,
+          },
+        },
+      ],
+    ]);
+
+    expect(selectPostInspectionManualSuccessKeys(1_000, items)).toEqual(['fresh']);
   });
 });

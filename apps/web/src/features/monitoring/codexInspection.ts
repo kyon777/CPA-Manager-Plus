@@ -1101,17 +1101,8 @@ export const getProbeFailureMessage = (result: CodexInspectionResultItem) =>
     body: null,
   });
 
-export const removeCodexInspectionFiles = (
-  previousResult: CodexInspectionRunResult,
-  physicalNames: readonly string[]
-): CodexInspectionRunResult => {
-  const removed = new Set(
-    physicalNames.map((name) => name.trim()).filter(Boolean)
-  );
-  if (removed.size === 0) return previousResult;
-  const files = previousResult.files.filter((file) => !removed.has(String(file.name ?? '').trim()));
-  const results = previousResult.results.filter((item) => !removed.has(item.fileName.trim()));
-  const sampledAccounts = results.map((item) => ({
+const toInspectionAccounts = (results: readonly CodexInspectionResultItem[]): CodexInspectionAccount[] =>
+  results.map((item) => ({
     key: item.key,
     fileName: item.fileName,
     displayAccount: item.displayAccount,
@@ -1125,10 +1116,43 @@ export const removeCodexInspectionFiles = (
     state: item.state,
     raw: item.raw,
   }));
+
+export const removeCodexInspectionFiles = (
+  previousResult: CodexInspectionRunResult,
+  physicalNames: readonly string[]
+): CodexInspectionRunResult => {
+  const removed = new Set(
+    physicalNames.map((name) => name.trim()).filter(Boolean)
+  );
+  if (removed.size === 0) return previousResult;
+  const files = previousResult.files.filter((file) => !removed.has(String(file.name ?? '').trim()));
+  const results = previousResult.results.filter((item) => !removed.has(item.fileName.trim()));
   return {
     ...previousResult,
     files,
     results,
-    summary: buildSummary(files, sampledAccounts, results, previousResult.settings),
+    summary: buildSummary(files, toInspectionAccounts(results), results, previousResult.settings),
+  };
+};
+
+export const removeCodexInspectionResultKeys = (
+  previousResult: CodexInspectionRunResult,
+  accountKeys: readonly string[]
+): CodexInspectionRunResult => {
+  const removed = new Set(accountKeys.map((key) => key.trim()).filter(Boolean));
+  if (removed.size === 0) return previousResult;
+
+  const results = previousResult.results.filter((item) => !removed.has(item.key.trim()));
+  if (results.length === previousResult.results.length) return previousResult;
+
+  return {
+    ...previousResult,
+    results,
+    summary: buildSummary(
+      previousResult.files,
+      toInspectionAccounts(results),
+      results,
+      previousResult.settings
+    ),
   };
 };

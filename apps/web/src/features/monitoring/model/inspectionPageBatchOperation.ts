@@ -155,6 +155,31 @@ export const buildPendingInspectionPageRecoveryOperation = (
   };
 };
 
+export const selectPostInspectionManualSuccessKeys = (
+  inspectionFinishedAtMs: number,
+  itemsByClientKey: ReadonlyMap<string, CredentialRuntimeMetadataItem>
+): string[] => {
+  if (!Number.isFinite(inspectionFinishedAtMs)) return [];
+
+  const keys: string[] = [];
+  itemsByClientKey.forEach((item, clientKey) => {
+    const task = item.recoveryTask;
+    const completedAtMs = task?.completedAtMs;
+    if (
+      task?.mode !== 'manual' ||
+      task.status !== 'succeeded' ||
+      !Number.isFinite(completedAtMs) ||
+      (completedAtMs ?? 0) <= inspectionFinishedAtMs
+    ) {
+      return;
+    }
+
+    const normalizedClientKey = normalizedText(clientKey);
+    if (normalizedClientKey) keys.push(normalizedClientKey);
+  });
+  return keys;
+};
+
 const toDeleteDetail = (
   item: { fileName: string; code?: string; message?: string }
 ): InspectionPageDeleteOperationDetail => ({

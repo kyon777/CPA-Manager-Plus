@@ -25,6 +25,7 @@ import {
   resolveCodexInspectionAutoActionPlan,
   resolveCodexInspectionAutoActionItems,
   removeCodexInspectionFiles,
+  removeCodexInspectionResultKeys,
   saveCodexInspectionLastRun,
   toReauthDeleteExecutionItem,
   type CodexInspectionAction,
@@ -6919,5 +6920,41 @@ describe('Codex inspection last-run cache', () => {
     expect(next.results.map((item) => item.fileName)).toEqual(['keep.json']);
     expect(next.summary).toMatchObject({ totalFiles: 1, enabledCount: 1, deleteCount: 0, reauthCount: 1 });
     expect(next.finishedAt).toBe(base.finishedAt);
+  });
+
+  it('prunes only the recovered account key while preserving its physical source and sibling account', () => {
+    const base = createRunResult();
+    const recovered = createResultItem('reauth', {
+      fileName: 'shared.json',
+      key: 'shared.json::auth-a',
+      authIndex: 'auth-a',
+    });
+    const sibling = createResultItem('reauth', {
+      fileName: 'shared.json',
+      key: 'shared.json::auth-b',
+      authIndex: 'auth-b',
+    });
+
+    const next = removeCodexInspectionResultKeys(
+      {
+        ...base,
+        files: [{ name: 'shared.json', type: 'codex' } as AuthFileItem],
+        results: [recovered, sibling],
+        summary: {
+          ...base.summary,
+          totalFiles: 1,
+          probeSetCount: 2,
+          sampledCount: 2,
+          deleteCount: 0,
+          reauthCount: 2,
+          keepCount: 0,
+        },
+      },
+      ['shared.json::auth-a']
+    );
+
+    expect(next.files.map((file) => file.name)).toEqual(['shared.json']);
+    expect(next.results.map((item) => item.key)).toEqual(['shared.json::auth-b']);
+    expect(next.summary).toMatchObject({ totalFiles: 1, reauthCount: 1, sampledCount: 1 });
   });
 });
