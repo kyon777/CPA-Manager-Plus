@@ -322,7 +322,8 @@ func TestServiceStoresRedactedTokenAcquisitionTransportFailure(t *testing.T) {
 	}
 }
 func TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency(t *testing.T) {
-	const workerCount = 40
+	const workerCount = 80
+	const acquisitionConcurrency = 40
 	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-concurrency.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -360,9 +361,10 @@ func TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency(t *testing.T
 	}
 
 	service.Start(ctx)
-	acquirer.waitForEntries(t, workerCount)
-	if got := acquirer.maxConcurrent(); got != workerCount {
-		t.Fatalf("maximum simultaneous acquisitions = %d, want %d", got, workerCount)
+	acquirer.waitForEntries(t, acquisitionConcurrency)
+	acquirer.assertNoAdditionalEntry(t, 300*time.Millisecond)
+	if got := acquirer.maxConcurrent(); got != acquisitionConcurrency {
+		t.Fatalf("maximum simultaneous acquisitions = %d, want %d", got, acquisitionConcurrency)
 	}
 	acquirer.releaseAll()
 	for _, taskID := range taskIDs {
@@ -371,7 +373,7 @@ func TestServiceRunsManualRecoveriesWithConfiguredWorkerConcurrency(t *testing.T
 }
 
 func TestServiceRunsAutomaticRecoveriesWithConfiguredWorkerConcurrency(t *testing.T) {
-	const workerCount = 80
+	const workerCount = 40
 	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-auto-concurrency.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -521,6 +523,15 @@ func (a *blockingRecoveryAcquirer) waitForEntries(t *testing.T, count int) {
 		case <-timeout.C:
 			t.Fatalf("only %d/%d recovery acquisitions entered", index, count)
 		}
+	}
+}
+
+func (a *blockingRecoveryAcquirer) assertNoAdditionalEntry(t *testing.T, duration time.Duration) {
+	t.Helper()
+	select {
+	case <-a.entered:
+		t.Fatal("an acquisition entered beyond the configured external capacity")
+	case <-time.After(duration):
 	}
 }
 
@@ -832,6 +843,15 @@ func TestRecoveryFailureClassifiesTokenAcquisitionTransport(t *testing.T) {
 	}
 }
 
+func TestRecoveryFailureClassifiesTokenAcquisitionTimeout(t *testing.T) {
+	if got, want := recoveryFailureCode(tokenacquisition.ErrTimedOut), "token_acquisition_timeout"; got != want {
+		t.Fatalf("recoveryFailureCode() = %q, want %q", got, want)
+	}
+	if got, want := recoveryFailureMessage(tokenacquisition.ErrTimedOut), "Token Acquisition 请求超时：外部接口或代理校验繁忙，请稍后手动重试"; got != want {
+		t.Fatalf("recoveryFailureMessage() = %q, want %q", got, want)
+	}
+}
+
 func TestRecoveryFailureClassifiesCPAAuthFileOperationStages(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -883,6 +903,13 @@ func TestRecommendedTokenAcquisitionWorkerCount(t *testing.T) {
 		t.Fatalf("RecommendedTokenAcquisitionWorkerCount = %d, want %d", got, want)
 	}
 }
+
+func TestDefaultAcquisitionConcurrency(t *testing.T) {
+	if got, want := defaultAcquisitionConcurrency, 40; got != want {
+		t.Fatalf("defaultAcquisitionConcurrency = %d, want %d", got, want)
+	}
+}
+
 func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *testing.T) {
 	const workers = 12
 	const writeConcurrency = 8

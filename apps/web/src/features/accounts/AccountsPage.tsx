@@ -9799,21 +9799,6 @@ export function AccountsPage() {
   const confirmDeletePageAccountBannedCredentials = useCallback(() => {
     if (pageAccountBannedDeleteTargets.length === 0) return;
     const targets = [...pageAccountBannedDeleteTargets];
-    const openSecondConfirmation = () => {
-      showConfirmation({
-        title: t('auth_files.delete_many_second_title'),
-        message: t('auth_files.delete_many_second_confirm', {
-          count: targets.length,
-          scope: t('auth_files.delete_scope_selected'),
-        }),
-        confirmText: t('auth_files.delete_second_action'),
-        cancelText: t('common.cancel'),
-        variant: 'danger',
-        onConfirm: () => {
-          void deletePageAccountBannedCredentials(targets);
-        },
-      });
-    };
     showConfirmation({
       title: t('accounts.batch_delete_banned_title', { count: targets.length }),
       message: (
@@ -9836,7 +9821,19 @@ export function AccountsPage() {
       confirmText: t('common.delete'),
       cancelText: t('common.cancel'),
       variant: 'danger',
-      onConfirm: openSecondConfirmation,
+      secondConfirmation: {
+        title: t('auth_files.delete_many_second_title'),
+        message: t('auth_files.delete_many_second_confirm', {
+          count: targets.length,
+          scope: t('auth_files.delete_scope_selected'),
+        }),
+        confirmText: t('auth_files.delete_second_action'),
+        cancelText: t('common.cancel'),
+        variant: 'danger',
+      },
+      onConfirm: () => {
+        void deletePageAccountBannedCredentials(targets);
+      },
     });
   }, [
     deletePageAccountBannedCredentials,

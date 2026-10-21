@@ -120,7 +120,10 @@ type Client struct {
 func New(cfg Config) *Client {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		// Acquire owns the end-to-end deadline. A shorter client-wide deadline
+		// would otherwise terminate a successful remote job while it is still
+		// being created or polled.
+		httpClient = &http.Client{}
 	}
 	pollInterval := cfg.PollInterval
 	if pollInterval <= 0 {

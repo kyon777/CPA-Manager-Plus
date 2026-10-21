@@ -11,6 +11,16 @@ import (
 	"time"
 )
 
+func TestNewDefaultHTTPClientLeavesDeadlineToAcquireContext(t *testing.T) {
+	client := New(Config{})
+	if got := client.httpClient.Timeout; got != 0 {
+		t.Fatalf("default HTTP client timeout = %s, want no competing deadline", got)
+	}
+	if got, want := client.timeout, defaultTimeout; got != want {
+		t.Fatalf("acquisition timeout = %s, want %s", got, want)
+	}
+}
+
 func TestAcquirePostsHTTPProxyAndPollsUntilDone(t *testing.T) {
 	var postCount atomic.Int32
 	var pollCount atomic.Int32

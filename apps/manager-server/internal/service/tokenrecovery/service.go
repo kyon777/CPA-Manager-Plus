@@ -21,6 +21,8 @@ const (
 	defaultIdlePollInterval                = 500 * time.Millisecond
 	defaultWorkerCount                     = 1
 	maxWorkerCount                         = 80
+	defaultAcquisitionConcurrency          = 40
+	maxAcquisitionConcurrency              = defaultAcquisitionConcurrency
 	defaultWriteConcurrency                = 8
 	maxWriteConcurrency                    = defaultWriteConcurrency
 	DefaultCPAAuthFileOperationTimeout     = 4 * time.Minute
@@ -92,8 +94,12 @@ type Options struct {
 	// WorkerCount bounds concurrent external token acquisition. The live app
 	// supplies RecommendedTokenAcquisitionWorkerCount while the operator may
 	// still queue a full current page immediately; callers without an explicit
-	// setting retain the historical single-worker behavior.
+	// setting retain the historical single-worker behavior. Active external
+	// acquisitions are separately bounded by AcquisitionConcurrency.
 	WorkerCount int
+	// AcquisitionConcurrency bounds active Token Acquisition calls. Zero uses
+	// the upstream service's 40-job capacity; a larger request is clamped.
+	AcquisitionConcurrency int
 	// AutomaticEnabled is re-evaluated before every claim. A nil callback keeps
 	// the historical raw-service behavior (automatic work enabled); the live
 	// application supplies the persisted policy callback.
@@ -111,6 +117,7 @@ type Service struct {
 	mutationCoordinator *cpaauthfiles.MutationCoordinator
 	idlePollInterval    time.Duration
 	workerCount         int
+	acquisitionGate     chan struct{}
 	writeGate           chan struct{}
 	automaticEnabled    func(context.Context) bool
 	wake                chan struct{}
@@ -186,6 +193,13 @@ func NewWithOptions(options Options) *Service {
 	if workerCount > maxWorkerCount {
 		workerCount = maxWorkerCount
 	}
+	acquisitionConcurrency := options.AcquisitionConcurrency
+	if acquisitionConcurrency <= 0 {
+		acquisitionConcurrency = defaultAcquisitionConcurrency
+	}
+	if acquisitionConcurrency > maxAcquisitionConcurrency {
+		acquisitionConcurrency = maxAcquisitionConcurrency
+	}
 	writeConcurrency := options.WriteConcurrency
 	if writeConcurrency <= 0 {
 		writeConcurrency = defaultWriteConcurrency
@@ -201,6 +215,7 @@ func NewWithOptions(options Options) *Service {
 		mutationCoordinator: coordinator,
 		idlePollInterval:    idlePollInterval,
 		workerCount:         workerCount,
+		acquisitionGate:     make(chan struct{}, acquisitionConcurrency),
 		writeGate:           make(chan struct{}, writeConcurrency),
 		automaticEnabled:    options.AutomaticEnabled,
 		wake:                make(chan struct{}, workerCount),
@@ -321,10 +336,14 @@ func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) err
 	if err != nil {
 		return err
 	}
+	if err := s.acquireAcquisitionSlot(ctx); err != nil {
+		return err
+	}
 	acquired, err := s.acquirer.Acquire(ctx, tokenacquisition.Request{
 		Email:     credential.Email,
 		HTTPProxy: credential.HTTPProxy,
 	})
+	s.releaseAcquisitionSlot()
 	if err != nil {
 		return err
 	}
@@ -465,6 +484,25 @@ func (s *Service) acquireWriteSlot(ctx context.Context) error {
 	}
 }
 
+func (s *Service) acquireAcquisitionSlot(ctx context.Context) error {
+	if s == nil || s.acquisitionGate == nil {
+		return nil
+	}
+	select {
+	case s.acquisitionGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) releaseAcquisitionSlot() {
+	if s == nil || s.acquisitionGate == nil {
+		return
+	}
+	<-s.acquisitionGate
+}
+
 func (s *Service) releaseWriteSlot() {
 	if s == nil || s.writeGate == nil {
 		return
@@ -584,6 +622,8 @@ func recoveryFailureMessage(err error) string {
 		return reason
 	}
 	switch {
+	case errors.Is(err, tokenacquisition.ErrTimedOut):
+		return "Token Acquisition 请求超时：外部接口或代理校验繁忙，请稍后手动重试"
 	case errors.Is(err, tokenacquisition.ErrTransportFailed):
 		return "Token Acquisition 网络请求失败：服务或链路暂时不可用，请稍后手动重试"
 	case errors.Is(err, tokenacquisition.ErrRequestFailed):

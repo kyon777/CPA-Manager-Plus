@@ -10215,17 +10215,20 @@ describe('AccountsPage replacement flows', () => {
       button.props.onClick();
     });
 
-    const firstConfirmation = mocks.showConfirmation.mock.calls[0]?.[0] as {
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as {
       onConfirm: () => void;
+      secondConfirmation?: {
+        confirmText?: string;
+        variant?: string;
+      };
     };
-    await act(async () => {
-      firstConfirmation.onConfirm();
+    expect(mocks.showConfirmation).toHaveBeenCalledTimes(1);
+    expect(confirmation.secondConfirmation).toMatchObject({
+      confirmText: 'auth_files.delete_second_action',
+      variant: 'danger',
     });
-    const secondConfirmation = mocks.showConfirmation.mock.calls[1]?.[0] as {
-      onConfirm: () => void;
-    };
     await act(async () => {
-      secondConfirmation.onConfirm();
+      confirmation.onConfirm();
       await Promise.resolve();
     });
 
