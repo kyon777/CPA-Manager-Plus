@@ -16,7 +16,7 @@ import (
 
 const (
 	MaxTargets     = 100
-	MaxConcurrency = 4
+	MaxConcurrency = 8
 )
 
 var (

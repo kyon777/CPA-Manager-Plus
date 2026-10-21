@@ -159,6 +159,80 @@ func TestServiceBoundsIndependentPhysicalDeletesWhileUsingOneInventoryFetch(t *t
 	}
 }
 
+func TestServiceDefaultsToEightIndependentPhysicalDeletes(t *testing.T) {
+	files := make([]cpaauthfiles.File, 0, 8)
+	tasks := make(map[string]model.TokenRecoveryTask, 8)
+	targets := make([]Target, 0, 8)
+	for index := 0; index < 8; index++ {
+		name := fmt.Sprintf("default-concurrency-%d.json", index)
+		authIndex := fmt.Sprintf("%d", index+1)
+		email := fmt.Sprintf("default-concurrency-%d@example.com", index)
+		runtimeID := fmt.Sprintf("default-runtime-%d", index)
+		files = append(files, cpaauthfiles.File{
+			ID: runtimeID, Name: name, AuthIndex: authIndex, Provider: "codex", AccountSnapshot: email,
+		})
+		tasks[name+":"+authIndex] = model.TokenRecoveryTask{
+			Status: model.TokenRecoveryStatusManualFailedManualOnly, LastErrorCode: "account_banned",
+		}
+		targets = append(targets, Target{
+			ClientKey: name, FileName: name, AuthIndex: authIndex, AccountEmail: email,
+			Provider: "codex", RuntimeID: runtimeID,
+		})
+	}
+	client := newBlockingAuthFilesClient(files)
+	service := NewWithOptions(Options{
+		SetupResolver:       configuredSetupResolver{},
+		Recovery:            fakeRecoveryLookup{tasks: tasks},
+		AuthFiles:           client,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+	})
+
+	done := make(chan struct {
+		result Result
+		err    error
+	}, 1)
+	go func() {
+		result, err := service.Delete(context.Background(), targets)
+		done <- struct {
+			result Result
+			err    error
+		}{result, err}
+	}()
+
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(client.release) })
+	}
+	defer release()
+
+	for started := 0; started < 8; started++ {
+		select {
+		case <-client.started:
+		case <-time.After(time.Second):
+			t.Fatalf("started deletes = %d, want default concurrency 8", started)
+		}
+	}
+	if active, maximum := client.activeCounts(); active != 8 || maximum != 8 {
+		t.Fatalf("active=%d maximum=%d, want default concurrency 8", active, maximum)
+	}
+
+	release()
+	select {
+	case completed := <-done:
+		if completed.err != nil {
+			t.Fatalf("Delete() error = %v", completed.err)
+		}
+		if len(completed.result.Deleted) != 8 || len(completed.result.Failed) != 0 {
+			t.Fatalf("result = %#v", completed.result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Delete() did not complete after releasing all delete workers")
+	}
+	if client.fetchCalls != 1 {
+		t.Fatalf("Fetch() calls = %d, want one inventory fetch", client.fetchCalls)
+	}
+}
+
 func TestServiceFallsBackToPhysicalSourceAfterPluginVirtualConflict(t *testing.T) {
 	var getCalls int
 	deletedSelectors := make([]string, 0, 2)
