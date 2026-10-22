@@ -107,12 +107,55 @@ const recoveryTaskSignature = (
       ].join('\u001f')
     : '';
 
+const runtimeMetadataItemSignature = (
+  item: CredentialRuntimeMetadataItem | undefined
+): string =>
+  item
+    ? [
+        item.clientKey,
+        item.proxyUrl ?? '',
+        recoveryTaskSignature(item.recoveryTask),
+        item.errorCode ?? '',
+      ].join('\u001f')
+    : '';
+
 const itemSignature = (items: readonly CredentialRuntimeMetadataItem[]): string =>
-  items
-    .map((item) =>
-      [item.clientKey, item.proxyUrl ?? '', recoveryTaskSignature(item.recoveryTask)].join('\u001f')
-    )
-    .join('\u001e');
+  items.map(runtimeMetadataItemSignature).join('\u001e');
+
+const sameRuntimeMetadataItems = (
+  current: ReadonlyMap<string, CredentialRuntimeMetadataItem>,
+  next: ReadonlyMap<string, CredentialRuntimeMetadataItem>
+): boolean => {
+  if (current.size !== next.size) return false;
+  for (const [clientKey, nextItem] of next) {
+    const currentItem = current.get(clientKey);
+    if (!currentItem || runtimeMetadataItemSignature(currentItem) !== runtimeMetadataItemSignature(nextItem)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const retainVisibleItems = (
+  current: ReadonlyMap<string, CredentialRuntimeMetadataItem>,
+  targets: readonly CredentialRuntimeMetadataTarget[],
+  seededItems: ReadonlyMap<string, CredentialRuntimeMetadataItem>
+): Map<string, CredentialRuntimeMetadataItem> => {
+  const next = new Map<string, CredentialRuntimeMetadataItem>();
+  for (const target of targets) {
+    const clientKey = target.clientKey.trim();
+    if (!clientKey) continue;
+    const existing = current.get(clientKey);
+    const seeded = seededItems.get(clientKey);
+    if (!existing && !seeded) continue;
+    next.set(clientKey, {
+      ...(existing ?? { clientKey }),
+      ...(seeded ?? {}),
+      clientKey,
+    });
+  }
+  return next;
+};
 
 const toRecoveryLookupTargets = (
   targets: readonly CredentialRuntimeMetadataTarget[]
@@ -198,6 +241,7 @@ export const useCredentialRuntimeMetadata = ({
   targetsRef.current = normalizedTargets;
 
   const replaceItems = useCallback((next: ReadonlyMap<string, CredentialRuntimeMetadataItem>) => {
+    if (sameRuntimeMetadataItems(itemsRef.current, next)) return;
     itemsRef.current = next;
     setItemsByClientKey(next);
   }, []);
@@ -277,7 +321,15 @@ export const useCredentialRuntimeMetadata = ({
       return;
     }
 
-    replaceItems(seededItemsByClientKey);
+    // The normal paged list asks only for compact recovery-task rows. A
+    // parent seed refresh may omit a still-visible row while that lookup is
+    // in flight, so retain the current visible task instead of briefly
+    // clearing its badge. Raw metadata callers keep replacement semantics.
+    replaceItems(
+      recoveryLookupEnabled
+        ? retainVisibleItems(itemsRef.current, targetsRef.current, seededItemsByClientKey)
+        : seededItemsByClientKey
+    );
     if (!metadataFetchEnabled) {
       setLoading(false);
       setError('');
@@ -294,6 +346,7 @@ export const useCredentialRuntimeMetadata = ({
     loadMetadata,
     metadataFetchEnabled,
     replaceItems,
+    recoveryLookupEnabled,
     scopeSignature,
     seededItemSignature,
     seededItemsByClientKey,

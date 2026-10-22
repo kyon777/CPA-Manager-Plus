@@ -3858,7 +3858,7 @@ describe('AccountsPage replacement flows', () => {
     expect(visibleRows[0]).not.toContain(expiredFile.name);
   });
 
-  it('polls passive Header evidence only while the accounts view is visible', async () => {
+  it('polls passive Header evidence without reloading history while the accounts view is visible', async () => {
     vi.useFakeTimers();
     let visibilityState: DocumentVisibilityState = 'visible';
     const documentEvents = new EventTarget();
@@ -3885,7 +3885,7 @@ describe('AccountsPage replacement flows', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
 
     visibilityState = 'hidden';
     await act(async () => {
@@ -3895,7 +3895,7 @@ describe('AccountsPage replacement flows', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
 
     visibilityState = 'visible';
     await act(async () => {
@@ -3903,10 +3903,10 @@ describe('AccountsPage replacement flows', () => {
       await Promise.resolve();
     });
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(3);
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
   });
 
-  it('does not restart an in-flight current-page history load on passive refresh', async () => {
+  it('does not restart or reload current-page history on passive refresh', async () => {
     vi.useFakeTimers();
     mocks.files = Array.from({ length: 401 }, (_, index) =>
       makeCodexFile(
@@ -3956,7 +3956,7 @@ describe('AccountsPage replacement flows', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
   });
 
   it('loads detailed history only for the visible problem account page', async () => {
@@ -18981,8 +18981,7 @@ describe('AccountsPage replacement flows', () => {
       expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(2);
     });
 
-    it('clears stale exact usage and forecast data when a live list usage request fails silently', async () => {
-      vi.useFakeTimers();
+    it('retains matching exact usage and forecast data when a replacement list usage request fails', async () => {
       const file = makeCodexFile('codex-fail-clear.json', 'auth-fail-clear', 'fail-clear@example.com');
       mocks.files = [file];
       mocks.panelFeatureAvailability = {
@@ -19048,17 +19047,15 @@ describe('AccountsPage replacement flows', () => {
       const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
       expect(readText(card)).toContain('$0.50');
 
-      mocks.showNotification.mockClear();
-
+      const batchRefreshButton = findButtonByText(renderer, 'accounts.refresh_quota');
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000);
+        await batchRefreshButton.props.onClick();
       });
       await flushPromises();
 
       expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(2);
       const cardAfterFailure = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
-      expect(readText(cardAfterFailure)).not.toContain('$0.50');
-      expect(mocks.showNotification).not.toHaveBeenCalled();
+      expect(readText(cardAfterFailure)).toContain('$0.50');
     });
 
     it('provides keyboard accessibility for Grid card shortcuts and includes footer detail button', async () => {

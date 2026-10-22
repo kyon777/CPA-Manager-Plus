@@ -1800,6 +1800,8 @@ export function AccountsPage() {
   const listWindowUsageReqIdRef = useRef(0);
   const listWindowUsageAbortRef = useRef<AbortController | null>(null);
   const listWindowUsageAutoLoadKeyRef = useRef<string | null>(null);
+  const listWindowUsageQueryContextRef = useRef(listWindowUsageQueryContext);
+  listWindowUsageQueryContextRef.current = listWindowUsageQueryContext;
   const quotaRefreshBatchRef = useRef<{
     connectionFingerprint: string;
     generation: number;
@@ -7596,7 +7598,14 @@ export function AccountsPage() {
       );
     } catch {
       if (isCurrentRequest()) {
-        setListWindowUsageByKey((current) => (current.size === 0 ? current : new Map()));
+        const previousContext = listWindowUsageQueryContextRef.current;
+        const previousDataMatchesCurrentPage =
+          previousContext !== null &&
+          previousContext.pageKeys.length === currentPageKeys.length &&
+          previousContext.pageKeys.every((key, index) => key === currentPageKeys[index]);
+        if (!previousDataMatchesCurrentPage) {
+          setListWindowUsageByKey((current) => (current.size === 0 ? current : new Map()));
+        }
       }
       // 失败静默降级，不阻塞列表显示
     } finally {

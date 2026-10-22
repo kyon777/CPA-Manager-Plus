@@ -223,6 +223,45 @@ describe('useCredentialRuntimeMetadata', () => {
     );
   });
 
+  it('keeps visible recovery state when a changed list seed omits it before lookup settles', async () => {
+    const lookup = deferred<TokenRecoveryBatchResponse>();
+    const completedTask = {
+      id: 11,
+      status: 'succeeded' as const,
+      fileName: 'a.json',
+      provider: 'codex' as const,
+      mode: 'auto' as const,
+    };
+    mocks.queryTokenRecoveryBatch.mockReturnValue(lookup.promise);
+
+    await act(async () => {
+      renderer = create(
+        <Harness
+          targets={[TARGET_A]}
+          seedItems={[{ clientKey: 'row-a', recoveryTask: completedTask }]}
+          fetchMetadata={false}
+          lookupRecoveryTasks
+        />
+      );
+      await flush();
+    });
+    expect(latest?.itemsByClientKey.get('row-a')?.recoveryTask?.status).toBe('succeeded');
+
+    await act(async () => {
+      renderer?.update(
+        <Harness
+          targets={[TARGET_A]}
+          seedItems={[]}
+          fetchMetadata={false}
+          lookupRecoveryTasks
+        />
+      );
+      await flush();
+    });
+
+    expect(latest?.itemsByClientKey.get('row-a')?.recoveryTask?.status).toBe('succeeded');
+  });
+
   it('does not let an older empty recovery lookup erase a newer pending task', async () => {
     vi.useFakeTimers();
     const initialLookup = deferred<TokenRecoveryBatchResponse>();
