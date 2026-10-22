@@ -8,7 +8,7 @@ import styles from './AccountLatestRequest.module.scss';
 
 type AccountLatestRequestProps = {
   latestRequest?: MonitoringAccountLatestRequest | null;
-  recentRequests?: MonitoringAccountLatestRequest[];
+  recentRequests?: readonly MonitoringAccountLatestRequest[];
   loading?: boolean;
   unavailable?: boolean;
   locale?: string;

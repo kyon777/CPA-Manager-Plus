@@ -473,12 +473,10 @@ Token Acquisition behavior, proxy replacement, inspection scheduling,
   browser AbortController cancellation into an expensive 500/timeout. A truly
   unavailable projection (not cancellation) retains the existing raw fallback
   behavior and calculation semantics.
-- The normal 60-second passive Header/inspection refresh may refresh those
-  small evidence sources only. It must not automatically refetch global recent
-  index, current-page detailed history, or current-page window usage. Explicit
-  workspace/quota refreshes still advance their separate revisions and obtain
-  fresh evidence. This preserves the user's global recent-request ordering and
-  current-page history/cost display without periodic render/I/O fan-out.
+- The original passive Header/inspection-only cadence is superseded **only** by
+  the explicitly scoped 2026-10-22 live-refresh contract below. Do not restore
+  a full-inventory history/window polling fan-out; keep Header/inspection
+  refresh independent from the current-page streams.
 - Server-error priority-demotion UI updates must retain the strict existing
   `(fileName, authIndex, provider, priorityBefore)` guard, but merge a batch
   through one normalized credential-key index in `O(files + updates)` rather
@@ -496,3 +494,35 @@ Token Acquisition behavior, proxy replacement, inspection scheduling,
   mismatched old-page evidence. Stale/aborted requests remain unable to commit
   results. This is display-cache behavior only and never writes or recalculates
   accounting data.
+
+## 2026-10-22: Live visible-page request refresh without UI fan-out
+
+This customization is CPAM-only. It must never alter CPA Core,
+`cli-proxy-api`, request routing, credential files, Credits, billing/price
+calculation, `usage_events` writes, inspection scheduling, or priority
+demotion execution.
+
+- Keep the full CPA auth-file inventory and browser-side global filtering.
+  For **only the current visible page** (normally at most 50 rows), poll the
+  read-only Manager `account-recent-index` endpoint every **10 seconds** with
+  `recent_limit: 9`. Its result drives the card's latest-request timestamp,
+  nine request bars, and failure tooltip data. Do not replace this with a
+  full-inventory history request.
+- Poll current-page `account-history` and `account-window-usage` every
+  **60 seconds**. History continues to provide request/token/cost/success-rate
+  totals; window usage continues to provide the existing quota-window cost and
+  totals. These are display-only SQLite reads and must never issue a CPA quota
+  probe or mutate accounting.
+- The global compact `account-recent-index` remains the source for full-list
+  `recent` sorting. Refresh it every **30 seconds only while the active sort
+  key is `recent`**; retain the initial index load and explicit workspace
+  refresh behavior for compatibility. Recent-nine anomaly filters keep their
+  independent complete-global coverage path and must not be downgraded to the
+  current-page overlay.
+- All three streams are visibility-gated and context-aware single-flight.
+  A timer tick must not abort/restart an identical slow current-page request;
+  cancel only when page/connection/target context changes. Header snapshot
+  refreshes must not alter the list-window request identity merely because
+  mutable Header timestamps or percentages changed. This prevents the
+  `account-window-usage` cancel/restart storm and preserves responsive list
+  controls under high traffic.

@@ -1,4 +1,12 @@
-import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type {
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -63,9 +71,7 @@ import {
   type QuotaRefreshResult,
   type QuotaSetter,
 } from '@/components/quota';
-import {
-  getScopedQuotaState,
-} from '@/components/quota/quotaConfigs';
+import { getScopedQuotaState } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
@@ -452,11 +458,32 @@ const renderAccountDetailTrigger = ({
 const MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER = 1;
 const MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS = 3;
 const MAX_CONCURRENT_ACCOUNT_HISTORY_REQUESTS = 2;
+const VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS = 10_000;
+const GLOBAL_ACCOUNT_RECENT_INDEX_REFRESH_MS = 30_000;
+const PAGE_ACCOUNT_HISTORY_REFRESH_MS = 60_000;
 const PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS = 60_000;
 const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u0000';
 const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
 const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
 const ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES = new Set(['pro', 'ultra', 'ultra-lite']);
+
+const hasEquivalentRecentIndexItem = (
+  left: MonitoringAccountRecentIndexItem | undefined,
+  right: MonitoringAccountRecentIndexItem
+): boolean =>
+  left !== undefined &&
+  left.sync_status === right.sync_status &&
+  JSON.stringify(left.latest_request ?? null) === JSON.stringify(right.latest_request ?? null) &&
+  JSON.stringify(left.recent_requests ?? []) === JSON.stringify(right.recent_requests ?? []);
+
+const hasEquivalentRecentIndexMap = (
+  current: ReadonlyMap<string, MonitoringAccountRecentIndexItem>,
+  next: ReadonlyMap<string, MonitoringAccountRecentIndexItem>
+): boolean =>
+  current.size === next.size &&
+  Array.from(next).every(([rowKey, item]) =>
+    hasEquivalentRecentIndexItem(current.get(rowKey), item)
+  );
 
 type AccountQuotaRefreshMode = 'summary' | 'detail';
 
@@ -1503,6 +1530,8 @@ export function AccountsPage() {
   const [accountHistoryRefreshRevision, setAccountHistoryRefreshRevision] = useState(0);
   const [accountHistoryAutoRefreshRevision, setAccountHistoryAutoRefreshRevision] = useState(0);
   const [recentIndexRefreshRevision, setRecentIndexRefreshRevision] = useState(0);
+  const [visibleRecentIndexRefreshRevision, setVisibleRecentIndexRefreshRevision] = useState(0);
+  const [globalRecentIndexRefreshRevision, setGlobalRecentIndexRefreshRevision] = useState(0);
   const [accountQuotaRefreshRevision, setAccountQuotaRefreshRevision] = useState(0);
   const [listWindowUsageRefreshRevision, setListWindowUsageRefreshRevision] = useState(0);
   const [suppressedInspectionResultKeys, setSuppressedInspectionResultKeys] = useState<Set<string>>(
@@ -1588,6 +1617,9 @@ export function AccountsPage() {
     Map<string, MonitoringAccountHistoryItem>
   >(() => new Map());
   const [accountRecentIndexByRowKey, setAccountRecentIndexByRowKey] = useState<
+    Map<string, MonitoringAccountRecentIndexItem>
+  >(() => new Map());
+  const [visibleAccountRecentIndexByRowKey, setVisibleAccountRecentIndexByRowKey] = useState<
     Map<string, MonitoringAccountRecentIndexItem>
   >(() => new Map());
   const [accountRecentAnomalyIndexByRowKey, setAccountRecentAnomalyIndexByRowKey] = useState<
@@ -1784,6 +1816,7 @@ export function AccountsPage() {
   const accountHistoryAutoAbortRef = useRef<AbortController | null>(null);
   const accountHistoryTargetAbortRef = useRef<AbortController | null>(null);
   const accountRecentIndexAbortRef = useRef<AbortController | null>(null);
+  const visibleAccountRecentIndexAbortRef = useRef<AbortController | null>(null);
   const accountRecentAnomalyIndexAbortRef = useRef<AbortController | null>(null);
   const accountHistoryRequestVersionsRef = useRef<Map<string, symbol>>(new Map());
   const accountHistoryPendingRequestsRef = useRef<Set<symbol>>(new Set());
@@ -1794,6 +1827,12 @@ export function AccountsPage() {
   const accountHistoryAutoLoadKeyRef = useRef<string | null>(null);
   const accountHistoryAutoRequestContextKeyRef = useRef<string | null>(null);
   const accountRecentIndexAutoLoadKeyRef = useRef<string | null>(null);
+  const accountRecentIndexRequestContextKeyRef = useRef<string | null>(null);
+  const accountRecentIndexPendingRefreshRef = useRef(false);
+  const visibleAccountRecentIndexAutoLoadKeyRef = useRef<string | null>(null);
+  const visibleAccountRecentIndexRequestContextKeyRef = useRef<string | null>(null);
+  const visibleAccountRecentIndexPendingRefreshRef = useRef(false);
+  const accountHistoryAutoPendingRefreshRef = useRef(false);
   const accountRecentAnomalyIndexAutoLoadKeyRef = useRef<string | null>(null);
   const accountWindowUsageReqIdRef = useRef(0);
   const accountWindowUsageAbortRef = useRef<AbortController | null>(null);
@@ -1801,6 +1840,8 @@ export function AccountsPage() {
   const listWindowUsageReqIdRef = useRef(0);
   const listWindowUsageAbortRef = useRef<AbortController | null>(null);
   const listWindowUsageAutoLoadKeyRef = useRef<string | null>(null);
+  const listWindowUsageRequestContextKeyRef = useRef<string | null>(null);
+  const listWindowUsagePendingRefreshRef = useRef(false);
   const listWindowUsageQueryContextRef = useRef(listWindowUsageQueryContext);
   listWindowUsageQueryContextRef.current = listWindowUsageQueryContext;
   const quotaRefreshBatchRef = useRef<{
@@ -2360,6 +2401,11 @@ export function AccountsPage() {
     accountHistoryTargetAbortRef.current = null;
     accountRecentIndexAbortRef.current?.abort();
     accountRecentIndexAbortRef.current = null;
+    accountRecentIndexRequestContextKeyRef.current = null;
+    accountRecentIndexPendingRefreshRef.current = false;
+    visibleAccountRecentIndexAbortRef.current?.abort();
+    visibleAccountRecentIndexAbortRef.current = null;
+    visibleAccountRecentIndexPendingRefreshRef.current = false;
     accountRecentAnomalyIndexAbortRef.current?.abort();
     accountRecentAnomalyIndexAbortRef.current = null;
     accountHistoryRefreshRequestIdRef.current += 1;
@@ -2372,7 +2418,11 @@ export function AccountsPage() {
     accountHistoryTargetRequestRowKeysRef.current = new Set();
     accountHistoryAutoLoadKeyRef.current = null;
     accountHistoryAutoRequestContextKeyRef.current = null;
+    accountHistoryAutoPendingRefreshRef.current = false;
     accountRecentIndexAutoLoadKeyRef.current = null;
+    accountRecentIndexRequestContextKeyRef.current = null;
+    visibleAccountRecentIndexAutoLoadKeyRef.current = null;
+    visibleAccountRecentIndexRequestContextKeyRef.current = null;
     accountRecentAnomalyIndexAutoLoadKeyRef.current = null;
     accountActionCandidatesReqIdRef.current += 1;
     accountActionCandidatesLoadedRef.current = false;
@@ -2386,6 +2436,12 @@ export function AccountsPage() {
     accountWindowUsageReqIdRef.current += 1;
     accountWindowUsageAbortRef.current?.abort();
     accountWindowUsageAbortRef.current = null;
+    listWindowUsageReqIdRef.current += 1;
+    listWindowUsageAbortRef.current?.abort();
+    listWindowUsageAbortRef.current = null;
+    listWindowUsageAutoLoadKeyRef.current = null;
+    listWindowUsageRequestContextKeyRef.current = null;
+    listWindowUsagePendingRefreshRef.current = false;
     accountActionCandidatesRef.current = [];
     accountWindowUsageAutoLoadKeyRef.current = null;
     usageValuesRequestIdRef.current += 1;
@@ -2398,6 +2454,7 @@ export function AccountsPage() {
     setHeaderSnapshotLoadedKey('');
     setAccountHistoryByRowKey((current) => (current.size === 0 ? current : new Map()));
     setAccountRecentIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
+    setVisibleAccountRecentIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
     setAccountRecentAnomalyIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
     accountRecentAnomalyIndexCoverageRef.current = null;
     accountRecentAnomalyIndexErrorRef.current = null;
@@ -2408,6 +2465,7 @@ export function AccountsPage() {
     setQuotaSnapshotWindowsByRowKey((current) => (current.size === 0 ? current : new Map()));
     setAccountWindowUsageByKey((current) => (current.size === 0 ? current : new Map()));
     setListWindowUsageByKey((current) => (current.size === 0 ? current : new Map()));
+    setListWindowUsageQueryContext(null);
     setAccountWindowUsageQueryContext(null);
     setAccountWindowUsageError('');
     setUsageRows([]);
@@ -2437,8 +2495,10 @@ export function AccountsPage() {
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryTargetAbortRef.current?.abort();
       accountRecentIndexAbortRef.current?.abort();
+      visibleAccountRecentIndexAbortRef.current?.abort();
       accountRecentAnomalyIndexAbortRef.current?.abort();
       accountWindowUsageAbortRef.current?.abort();
+      listWindowUsageAbortRef.current?.abort();
     },
     []
   );
@@ -3924,6 +3984,28 @@ export function AccountsPage() {
     });
     return evidenceMap;
   }, [accountHistoryByRowKey, accountRecentIndexByRowKey]);
+  // The 10s compact page stream is intentionally not folded into the global
+  // evidence map. Folding it in would force all 5,000+ rows through metrics,
+  // filtering and sorting on every tick. Cards consume this small overlay
+  // directly, while global logic remains driven by the cheaper 30s index.
+  const getVisibleAccountRequestEvidence = useCallback(
+    (selectionKey: string): AccountRequestEvidenceInput | undefined => {
+      const visibleIndex = visibleAccountRecentIndexByRowKey.get(selectionKey);
+      const hasVisibleRequestData =
+        Boolean(visibleIndex?.latest_request) ||
+        (visibleIndex?.recent_requests?.length ?? 0) > 0 ||
+        visibleIndex?.sync_status === 'ready' ||
+        visibleIndex?.sync_status === 'empty';
+      if (visibleIndex && hasVisibleRequestData) {
+        return {
+          latestRequest: visibleIndex.latest_request ?? null,
+          recentRequests: visibleIndex.recent_requests ?? [],
+        };
+      }
+      return requestEvidenceBySelectionKey.get(selectionKey);
+    },
+    [requestEvidenceBySelectionKey, visibleAccountRecentIndexByRowKey]
+  );
   const headerSnapshotLookup = useMemo(
     () => buildUsageHeaderSnapshotLookup(headerSnapshots),
     [headerSnapshots]
@@ -4351,8 +4433,7 @@ export function AccountsPage() {
     ]
   );
   const accountRecentAnomalyIndexTargets = useMemo(
-    () =>
-      operationalFilterNeedsRecentRequestIndex ? buildAccountHistoryTargetEntries(rows) : [],
+    () => (operationalFilterNeedsRecentRequestIndex ? buildAccountHistoryTargetEntries(rows) : []),
     [operationalFilterNeedsRecentRequestIndex, rows]
   );
   const accountRecentAnomalyIndexContextKey = useMemo(
@@ -4660,9 +4741,13 @@ export function AccountsPage() {
         fullInventory: true,
         total: rows.filter((row) => !row.disabled).length,
       });
-    },
-    [actionCandidatesByRowKey, quotaCooldownsByRowKey, requestEvidenceBySelectionKey, rows, statusFilter]
-  );
+  }, [
+    actionCandidatesByRowKey,
+    quotaCooldownsByRowKey,
+    requestEvidenceBySelectionKey,
+    rows,
+    statusFilter,
+  ]);
   const providerOptions = useMemo(() => getProviderOptions(rows), [rows]);
   const planOptions = useMemo(() => getPlanOptions(rows, t), [rows, t]);
   const planFilterValue = useMemo(
@@ -4863,6 +4948,10 @@ export function AccountsPage() {
     () => buildAccountHistoryTargetEntries(accountHistoryRows),
     [accountHistoryRows]
   );
+  const visibleAccountRecentIndexTargets = useMemo(
+    () => buildAccountHistoryTargetEntries(pageRows),
+    [pageRows]
+  );
   const accountRecentIndexAutoContextKey = useMemo(
     () =>
       JSON.stringify({
@@ -4905,7 +4994,29 @@ export function AccountsPage() {
       managementKey,
     ]
   );
-  const accountRecentIndexAutoLoadKey = `${accountRecentIndexAutoContextKey}\u0000${recentIndexRefreshRevision}`;
+  const visibleAccountRecentIndexAutoContextKey = useMemo(
+    () =>
+      JSON.stringify({
+        checking: featureAvailability.checking,
+        connectionFingerprint,
+        managerServiceBase: featureAvailability.managerServiceBase,
+        managementKey,
+        managerConnectionFingerprint,
+        requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
+        targets: visibleAccountRecentIndexTargets.map((entry) => entry.target),
+      }),
+    [
+      connectionFingerprint,
+      featureAvailability.checking,
+      featureAvailability.managerServiceBase,
+      featureAvailability.requestMonitoringAvailable,
+      managementKey,
+      managerConnectionFingerprint,
+      visibleAccountRecentIndexTargets,
+    ]
+  );
+  const accountRecentIndexAutoLoadKey = `${accountRecentIndexAutoContextKey}\u0000${recentIndexRefreshRevision}\u0000${globalRecentIndexRefreshRevision}`;
+  const visibleAccountRecentIndexAutoLoadKey = `${visibleAccountRecentIndexAutoContextKey}\u0000${visibleRecentIndexRefreshRevision}`;
   const accountHistoryAutoLoadKey = `${accountHistoryAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
   useEffect(() => {
     const currentRowKeys = new Set(rows.map((row) => row.selectionKey));
@@ -5391,7 +5502,12 @@ export function AccountsPage() {
       filterAccountWindowUsageByTargetRanges(listWindowUsageTargets, listWindowUsageByKey),
     [listWindowUsageByKey, listWindowUsageTargets]
   );
-  const listWindowUsageDefinitionsSignature = useMemo(() => {
+  // Header snapshots carry mutable timestamps/percentages. They must not be
+  // part of the automatic window-usage request identity or every Header poll
+  // will abort and restart a slow SQLite aggregation. Keep only the stable
+  // page/window identity; fresh target ranges are sampled on the next 60s
+  // window-usage tick (or an explicit quota refresh).
+  const listWindowUsageTargetIdentitySignature = useMemo(() => {
     const payload = pageRows.map((row) => {
       const definitions = listQuotaWindowsByRowKey.get(row.selectionKey) ?? [];
       return {
@@ -5401,36 +5517,6 @@ export function AccountsPage() {
           providerWindowId: def.providerWindowId,
           windowMode: def.windowMode,
           modelScope: def.modelScope,
-          boundaryAccuracy: def.boundaryAccuracy,
-          cycleStartMs: def.cycleStartMs,
-          cycleEndMs: def.cycleEndMs,
-          durationSeconds: def.durationSeconds,
-          stale: def.stale,
-          availability: def.availability,
-          currentCycle: def.currentCycle
-            ? {
-                id: def.currentCycle.id,
-                activationId: def.currentCycle.activationId,
-                state: def.currentCycle.state,
-                actualStartMs: def.currentCycle.actualStartMs,
-                actualEndMs: def.currentCycle.actualEndMs,
-                scheduledStartMs: def.currentCycle.scheduledStartMs,
-                scheduledEndMs: def.currentCycle.scheduledEndMs,
-                boundaryAccuracy: def.currentCycle.boundaryAccuracy,
-              }
-            : null,
-          previousCycle: def.previousCycle
-            ? {
-                id: def.previousCycle.id,
-                activationId: def.previousCycle.activationId,
-                state: def.previousCycle.state,
-                actualStartMs: def.previousCycle.actualStartMs,
-                actualEndMs: def.previousCycle.actualEndMs,
-                scheduledStartMs: def.previousCycle.scheduledStartMs,
-                scheduledEndMs: def.previousCycle.scheduledEndMs,
-                boundaryAccuracy: def.previousCycle.boundaryAccuracy,
-              }
-            : null,
         })),
       };
     });
@@ -5443,12 +5529,12 @@ export function AccountsPage() {
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         pageKeys: pageRows.map((r) => r.selectionKey),
-        definitionsSignature: listWindowUsageDefinitionsSignature,
+        targetIdentitySignature: listWindowUsageTargetIdentitySignature,
       }),
     [
       featureAvailability.checking,
       featureAvailability.requestMonitoringAvailable,
-      listWindowUsageDefinitionsSignature,
+      listWindowUsageTargetIdentitySignature,
       managerConnectionFingerprint,
       pageRows,
     ]
@@ -6518,8 +6604,17 @@ export function AccountsPage() {
 
   const loadAccountRecentIndex = useCallback(async (): Promise<void> => {
     const managerServiceBase = featureAvailability.managerServiceBase;
+    if (
+      accountRecentIndexAbortRef.current &&
+      accountRecentIndexRequestContextKeyRef.current === accountRecentIndexAutoContextKey
+    ) {
+      accountRecentIndexPendingRefreshRef.current = true;
+      return;
+    }
     accountRecentIndexAbortRef.current?.abort();
     accountRecentIndexAbortRef.current = null;
+    accountRecentIndexRequestContextKeyRef.current = null;
+    accountRecentIndexPendingRefreshRef.current = false;
 
     if (
       featureAvailability.checking ||
@@ -6534,6 +6629,7 @@ export function AccountsPage() {
 
     const controller = new AbortController();
     accountRecentIndexAbortRef.current = controller;
+    accountRecentIndexRequestContextKeyRef.current = accountRecentIndexAutoContextKey;
     try {
       const batches: AccountHistoryTargetEntry[][] = [];
       for (let index = 0; index < accountRecentIndexTargets.length; index += 1000) {
@@ -6557,13 +6653,27 @@ export function AccountsPage() {
           if (item.row_key) next.set(item.row_key, item);
         });
       });
-      setAccountRecentIndexByRowKey(next);
+      // The global index can reorder thousands of rows. Keep it interruptible
+      // so typing, scrolling and toolbar clicks win over a 30s sort refresh.
+      startTransition(() => {
+        setAccountRecentIndexByRowKey((current) =>
+          hasEquivalentRecentIndexMap(current, next) ? current : next
+        );
+      });
     } catch {
       // Keep the previous compact index during a transient SQLite timeout. The
       // detailed request remains independently refreshable from the drawer.
     } finally {
       if (accountRecentIndexAbortRef.current === controller) {
+        const shouldScheduleFollowUp =
+          accountRecentIndexPendingRefreshRef.current &&
+          accountRecentIndexRequestContextKeyRef.current === accountRecentIndexAutoContextKey;
         accountRecentIndexAbortRef.current = null;
+        accountRecentIndexRequestContextKeyRef.current = null;
+        accountRecentIndexPendingRefreshRef.current = false;
+        if (shouldScheduleFollowUp) {
+          setGlobalRecentIndexRefreshRevision((current) => current + 1);
+        }
       }
     }
   }, [
@@ -6572,6 +6682,7 @@ export function AccountsPage() {
     featureAvailability.managerServiceBase,
     featureAvailability.requestMonitoringAvailable,
     managementKey,
+    accountRecentIndexAutoContextKey,
   ]);
 
   useEffect(() => {
@@ -6579,16 +6690,116 @@ export function AccountsPage() {
       accountRecentIndexAutoLoadKeyRef.current = null;
       accountRecentIndexAbortRef.current?.abort();
       accountRecentIndexAbortRef.current = null;
+      accountRecentIndexRequestContextKeyRef.current = null;
+      accountRecentIndexPendingRefreshRef.current = false;
       return;
     }
     if (accountRecentIndexAutoLoadKeyRef.current === accountRecentIndexAutoLoadKey) return;
     accountRecentIndexAutoLoadKeyRef.current = accountRecentIndexAutoLoadKey;
     void loadAccountRecentIndex();
+  }, [accountRecentIndexAutoLoadKey, activeView, loadAccountRecentIndex]);
+
+  const loadVisibleAccountRecentIndex = useCallback(async (): Promise<void> => {
+    const managerServiceBase = featureAvailability.managerServiceBase;
+    if (
+      visibleAccountRecentIndexAbortRef.current &&
+      visibleAccountRecentIndexRequestContextKeyRef.current ===
+        visibleAccountRecentIndexAutoContextKey
+    ) {
+      visibleAccountRecentIndexPendingRefreshRef.current = true;
+      return;
+    }
+    visibleAccountRecentIndexAbortRef.current?.abort();
+    visibleAccountRecentIndexAbortRef.current = null;
+    visibleAccountRecentIndexRequestContextKeyRef.current = null;
+    visibleAccountRecentIndexPendingRefreshRef.current = false;
+
+    if (
+      featureAvailability.checking ||
+      !featureAvailability.requestMonitoringAvailable ||
+      !managerServiceBase ||
+      !managementKey ||
+      visibleAccountRecentIndexTargets.length === 0
+    ) {
+      setVisibleAccountRecentIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
+      return;
+    }
+
+    const controller = new AbortController();
+    visibleAccountRecentIndexAbortRef.current = controller;
+    visibleAccountRecentIndexRequestContextKeyRef.current = visibleAccountRecentIndexAutoContextKey;
+    try {
+      const batches: AccountHistoryTargetEntry[][] = [];
+      for (let index = 0; index < visibleAccountRecentIndexTargets.length; index += 1000) {
+        batches.push(visibleAccountRecentIndexTargets.slice(index, index + 1000));
+      }
+      const responses = await mapWithConcurrency(
+        batches,
+        MAX_CONCURRENT_ACCOUNT_HISTORY_REQUESTS,
+        (batch) =>
+          monitoringAnalyticsApi.getAccountRecentIndex(
+            managerServiceBase,
+            managementKey,
+            {
+              accounts: batch.map((entry) => entry.target),
+              recent_limit: 9,
+            },
+            controller.signal
+          )
+      );
+      if (controller.signal.aborted || visibleAccountRecentIndexAbortRef.current !== controller) {
+        return;
+      }
+      const next = new Map<string, MonitoringAccountRecentIndexItem>();
+      responses.forEach((response) => {
+        response.items.forEach((item) => {
+          if (item.row_key) next.set(item.row_key, item);
+        });
+      });
+      setVisibleAccountRecentIndexByRowKey((current) =>
+        hasEquivalentRecentIndexMap(current, next) ? current : next
+      );
+    } catch {
+      // Preserve the last current-page bars during a transient monitoring
+      // timeout. The next 10s tick can retry without blocking the list.
+    } finally {
+      if (visibleAccountRecentIndexAbortRef.current === controller) {
+        const shouldScheduleFollowUp =
+          visibleAccountRecentIndexPendingRefreshRef.current &&
+          visibleAccountRecentIndexRequestContextKeyRef.current ===
+            visibleAccountRecentIndexAutoContextKey;
+        visibleAccountRecentIndexAbortRef.current = null;
+        visibleAccountRecentIndexRequestContextKeyRef.current = null;
+        visibleAccountRecentIndexPendingRefreshRef.current = false;
+        if (shouldScheduleFollowUp) {
+          setVisibleRecentIndexRefreshRevision((current) => current + 1);
+        }
+      }
+    }
   }, [
-    accountRecentIndexAutoLoadKey,
-    activeView,
-    loadAccountRecentIndex,
+    featureAvailability.checking,
+    featureAvailability.managerServiceBase,
+    featureAvailability.requestMonitoringAvailable,
+    managementKey,
+    visibleAccountRecentIndexAutoContextKey,
+    visibleAccountRecentIndexTargets,
   ]);
+
+  useEffect(() => {
+    if (activeView !== 'accounts') {
+      visibleAccountRecentIndexAutoLoadKeyRef.current = null;
+      visibleAccountRecentIndexAbortRef.current?.abort();
+      visibleAccountRecentIndexAbortRef.current = null;
+      visibleAccountRecentIndexRequestContextKeyRef.current = null;
+      visibleAccountRecentIndexPendingRefreshRef.current = false;
+      return;
+    }
+    if (visibleAccountRecentIndexAutoLoadKeyRef.current === visibleAccountRecentIndexAutoLoadKey) {
+      return;
+    }
+    visibleAccountRecentIndexAutoLoadKeyRef.current = visibleAccountRecentIndexAutoLoadKey;
+    void loadVisibleAccountRecentIndex();
+  }, [activeView, loadVisibleAccountRecentIndex, visibleAccountRecentIndexAutoLoadKey]);
 
   const loadAccountRecentAnomalyIndex = useCallback(async (): Promise<void> => {
     const managerServiceBase = featureAvailability.managerServiceBase;
@@ -6602,9 +6813,7 @@ export function AccountsPage() {
       !managementKey ||
       accountRecentAnomalyIndexTargets.length === 0
     ) {
-      setAccountRecentAnomalyIndexByRowKey((current) =>
-        current.size === 0 ? current : new Map()
-      );
+      setAccountRecentAnomalyIndexByRowKey((current) => (current.size === 0 ? current : new Map()));
       setAccountRecentAnomalyIndexLoadState({
         coverage:
           accountRecentAnomalyIndexTargets.length === 0
@@ -6760,12 +6969,14 @@ export function AccountsPage() {
         controllerRef.current &&
         accountHistoryAutoRequestContextKeyRef.current === accountHistoryAutoContextKey
       ) {
+        accountHistoryAutoPendingRefreshRef.current = true;
         return outcomes;
       }
       controllerRef.current?.abort();
       controllerRef.current = null;
       if (!mergeResult) {
         accountHistoryAutoRequestContextKeyRef.current = null;
+        accountHistoryAutoPendingRefreshRef.current = false;
         const cacheScope = [
           connectionFingerprint,
           managerConnectionFingerprint,
@@ -6926,12 +7137,20 @@ export function AccountsPage() {
         return outcomes;
       } finally {
         if (controllerRef.current === controller) {
+          const shouldScheduleFollowUp =
+            !mergeResult &&
+            accountHistoryAutoPendingRefreshRef.current &&
+            accountHistoryAutoRequestContextKeyRef.current === accountHistoryAutoContextKey;
           controllerRef.current = null;
           if (mergeResult) {
             accountHistoryTargetRequestRowKeysRef.current = new Set();
           }
           if (!mergeResult) {
             accountHistoryAutoRequestContextKeyRef.current = null;
+            accountHistoryAutoPendingRefreshRef.current = false;
+            if (shouldScheduleFollowUp) {
+              setAccountHistoryAutoRefreshRevision((current) => current + 1);
+            }
           }
         }
         accountHistoryPendingRequestsRef.current.delete(requestToken);
@@ -6957,6 +7176,7 @@ export function AccountsPage() {
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryAutoAbortRef.current = null;
       accountHistoryAutoRequestContextKeyRef.current = null;
+      accountHistoryAutoPendingRefreshRef.current = false;
       return;
     }
     if (accountHistoryAutoLoadKeyRef.current === accountHistoryAutoLoadKey) return;
@@ -7543,9 +7763,19 @@ export function AccountsPage() {
   ]);
 
   const loadListWindowUsage = useCallback(async () => {
+    if (
+      listWindowUsageAbortRef.current &&
+      listWindowUsageRequestContextKeyRef.current === listWindowUsageAutoContextKey
+    ) {
+      listWindowUsagePendingRefreshRef.current = true;
+      return;
+    }
     const requestId = listWindowUsageReqIdRef.current + 1;
     listWindowUsageReqIdRef.current = requestId;
     listWindowUsageAbortRef.current?.abort();
+    listWindowUsageAbortRef.current = null;
+    listWindowUsageRequestContextKeyRef.current = null;
+    listWindowUsagePendingRefreshRef.current = false;
 
     if (
       featureAvailability.checking ||
@@ -7577,6 +7807,7 @@ export function AccountsPage() {
 
     const controller = new AbortController();
     listWindowUsageAbortRef.current = controller;
+    listWindowUsageRequestContextKeyRef.current = listWindowUsageAutoContextKey;
     const isCurrentRequest = () =>
       listWindowUsageReqIdRef.current === requestId && !controller.signal.aborted;
 
@@ -7612,7 +7843,15 @@ export function AccountsPage() {
     } finally {
       if (listWindowUsageReqIdRef.current === requestId) {
         if (listWindowUsageAbortRef.current === controller) {
+          const shouldScheduleFollowUp =
+            listWindowUsagePendingRefreshRef.current &&
+            listWindowUsageRequestContextKeyRef.current === listWindowUsageAutoContextKey;
           listWindowUsageAbortRef.current = null;
+          listWindowUsageRequestContextKeyRef.current = null;
+          listWindowUsagePendingRefreshRef.current = false;
+          if (shouldScheduleFollowUp) {
+            setListWindowUsageRefreshRevision((current) => current + 1);
+          }
         }
       }
     }
@@ -7624,6 +7863,7 @@ export function AccountsPage() {
     managementKey,
     managerStorageAvailable,
     pageRows,
+    listWindowUsageAutoContextKey,
   ]);
 
   useEffect(() => {
@@ -7631,12 +7871,45 @@ export function AccountsPage() {
       listWindowUsageAutoLoadKeyRef.current = null;
       listWindowUsageAbortRef.current?.abort();
       listWindowUsageAbortRef.current = null;
+      listWindowUsageRequestContextKeyRef.current = null;
+      listWindowUsagePendingRefreshRef.current = false;
       return;
     }
     if (listWindowUsageAutoLoadKeyRef.current === listWindowUsageAutoLoadKey) return;
     listWindowUsageAutoLoadKeyRef.current = listWindowUsageAutoLoadKey;
     void loadListWindowUsage();
   }, [activeView, listWindowUsageAutoLoadKey, loadListWindowUsage]);
+
+  // Keep current-page data live in three independent streams. The compact
+  // request stream is the only 10s work; heavy history and window accounting
+  // stay at 60s and never trigger an inventory reload.
+  useInterval(
+    () => {
+      setVisibleRecentIndexRefreshRevision((current) => current + 1);
+    },
+    activeView === 'accounts' && documentVisible && pageRows.length > 0
+      ? VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS
+      : null
+  );
+
+  useInterval(
+    () => {
+      setAccountHistoryAutoRefreshRevision((current) => current + 1);
+      setListWindowUsageRefreshRevision((current) => current + 1);
+    },
+    activeView === 'accounts' && documentVisible && pageRows.length > 0
+      ? PAGE_ACCOUNT_HISTORY_REFRESH_MS
+      : null
+  );
+
+  useInterval(
+    () => {
+      setGlobalRecentIndexRefreshRevision((current) => current + 1);
+    },
+    activeView === 'accounts' && documentVisible && accountSort.key === 'recent' && rows.length > 0
+      ? GLOBAL_ACCOUNT_RECENT_INDEX_REFRESH_MS
+      : null
+  );
 
   const canResetCodexQuota = useCallback(
     (row: AccountRow) => {
@@ -9014,7 +9287,9 @@ export function AccountsPage() {
               })}
             >
               {!batchBannedDeleteSubmitting ? <IconTrash2 size={15} /> : null}
-              {t('accounts.batch_delete_banned_page', { count: pageAccountBannedDeleteTargets.length })}
+              {t('accounts.batch_delete_banned_page', {
+                count: pageAccountBannedDeleteTargets.length,
+              })}
             </Button>
           ) : null}
           {!hasSelection && !isSelectionMode ? (
@@ -9611,13 +9886,14 @@ export function AccountsPage() {
     );
     const quotaCooldown = quotaCooldownsByRowKey.get(row.selectionKey)?.[0] ?? null;
     const codexStatus = codexStatusBySelectionKey.get(row.selectionKey) ?? null;
+    const visibleRequestEvidence = getVisibleAccountRequestEvidence(row.selectionKey);
     const item = buildAccountListItem(row, {
       t,
       recommendation,
       quotaCooldown,
       codexStatus,
       quotaWindows,
-      requestEvidence: requestEvidenceBySelectionKey.get(row.selectionKey),
+      requestEvidence: visibleRequestEvidence,
     });
     const displayCodexQuota =
       row.provider === CODEX_CONFIG.type ? getDisplayCodexQuota(row.raw) : undefined;
@@ -9665,14 +9941,8 @@ export function AccountsPage() {
       )
     );
     const accountHistoryError = accountHistoryErrorsByRowKey.get(row.selectionKey) ?? '';
-    const requestEvidence = resolveAccountRequestHealthEvidence(
-      requestEvidenceBySelectionKey.get(row.selectionKey)
-    );
-    const overviewRecentStatus = buildOverviewRecentStatus(
-      row,
-      null,
-      requestEvidence
-    );
+    const requestEvidence = resolveAccountRequestHealthEvidence(visibleRequestEvidence);
+    const overviewRecentStatus = buildOverviewRecentStatus(row, null, requestEvidence);
     const recentStatusData = statusBarDataFromRecentRequests(overviewRecentStatus.recentRequests);
     const hasRecentRequests = recentStatusData.totalSuccess + recentStatusData.totalFailure > 0;
 
@@ -9695,6 +9965,7 @@ export function AccountsPage() {
       quotaWindowTitle,
       healthTitle,
       accountHistoryError,
+      visibleRequestEvidence,
       overviewRecentStatus,
       recentStatusData,
       hasRecentRequests,
@@ -9849,12 +10120,7 @@ export function AccountsPage() {
         void deletePageAccountBannedCredentials(targets);
       },
     });
-  }, [
-    deletePageAccountBannedCredentials,
-    pageAccountBannedDeleteTargets,
-    showConfirmation,
-    t,
-  ]);
+  }, [deletePageAccountBannedCredentials, pageAccountBannedDeleteTargets, showConfirmation, t]);
 
   useEffect(() => {
     handledRuntimeRecoveryCompletionsRef.current.clear();
@@ -10338,7 +10604,9 @@ export function AccountsPage() {
                         data-account-note-input={row.selectionKey}
                         className={styles.accountGridCardNoteInput}
                         value={editingNoteState.value}
-                        placeholder={t('accounts.note_placeholder_empty', { defaultValue: '备注' })}
+                          placeholder={t('accounts.note_placeholder_empty', {
+                            defaultValue: '备注',
+                          })}
                         aria-label={t('accounts.note_edit', { defaultValue: '编辑备注' })}
                         disabled={inlineNoteSaving}
                         onClick={(e) => e.stopPropagation()}
@@ -10571,14 +10839,12 @@ export function AccountsPage() {
                               )
                             )}
                       </div>
-                    ) : (
-                      ctx.codexCreditsBalance ? (
+                    ) : ctx.codexCreditsBalance ? (
                         renderCodexCreditsBalance(row, ctx.codexCreditsBalance)
                       ) : (
                         <span className={styles.quotaEmptyState} data-account-quota-empty="true">
                           {ctx.quotaEmptyLabel}
                         </span>
-                      )
                     )}
                   </div>
 
@@ -10813,10 +11079,18 @@ export function AccountsPage() {
 
                   <div className={styles.accountCardLatestRequest}>
                     <AccountLatestRequest
-                      latestRequest={ctx.accountHistory?.latest_request}
-                      recentRequests={ctx.accountHistory?.recent_requests}
-                      loading={accountHistoryLoading && !ctx.accountHistory}
-                      unavailable={Boolean(ctx.accountHistoryError) && !ctx.accountHistory}
+                        latestRequest={ctx.visibleRequestEvidence?.latestRequest}
+                        recentRequests={ctx.visibleRequestEvidence?.recentRequests ?? undefined}
+                        loading={
+                          accountHistoryLoading &&
+                          !ctx.visibleRequestEvidence &&
+                          !ctx.accountHistory
+                        }
+                        unavailable={
+                          Boolean(ctx.accountHistoryError) &&
+                          !ctx.visibleRequestEvidence &&
+                          !ctx.accountHistory
+                        }
                       locale={i18n.language}
                       onCopy={copyTextWithNotification}
                     />
@@ -10855,14 +11129,12 @@ export function AccountsPage() {
                                 : undefined
                             )
                           )
-                        ) : (
-                          ctx.codexCreditsBalance ? (
+                            ) : ctx.codexCreditsBalance ? (
                             renderCodexCreditsBalance(row, ctx.codexCreditsBalance)
                           ) : (
                             <span className={styles.quotaEmptyState} data-account-quota-empty="true">
                               {ctx.quotaEmptyLabel}
                             </span>
-                          )
                         )}
                       </span>
                       ),

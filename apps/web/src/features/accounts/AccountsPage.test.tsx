@@ -59,10 +59,7 @@ import {
   listAccountCredentialMutationMarkers,
   recordAccountCredentialMutationMarker,
 } from './model/accountCredentialMutationMarker';
-import {
-  CODEX_RATE_LIMIT_RESET_CREDITS_URL,
-  type CodexQuotaData,
-} from '@/utils/quota';
+import { CODEX_RATE_LIMIT_RESET_CREDITS_URL, type CodexQuotaData } from '@/utils/quota';
 import { buildKimiQuotaRows } from '@/utils/quota/builders';
 import type {
   CredentialInspectionSnapshot,
@@ -75,7 +72,11 @@ import { AccountOverviewTab } from './components/accountDetail/AccountOverviewTa
 import { AccountQuotaTab } from './components/accountDetail/AccountQuotaTab';
 import { QuotaWindowCard } from './components/QuotaWindowCard';
 import { IconChartLine, IconRefreshCw, IconTrendingUp } from '@/components/ui/icons';
-import { formatQuotaResetTimestamp, formatQuotaResetDisplay, formatQuotaResetRelative } from './model/accountsPagePresentation';
+import {
+  formatQuotaResetTimestamp,
+  formatQuotaResetDisplay,
+  formatQuotaResetRelative,
+} from './model/accountsPagePresentation';
 import { buildAccountQuotaDisplayWindow } from './model/accountQuotaDisplayWindows';
 import type { AccountQuotaDisplayWindow } from './model/accountQuotaDisplayWindows';
 import {
@@ -563,7 +564,8 @@ const { mocks } = vi.hoisted(() => {
         async (
           _base: string,
           _managementKey: string | undefined,
-          _request: AccountWindowUsageRequestForTest
+          _request: AccountWindowUsageRequestForTest,
+          _signal?: AbortSignal
         ): Promise<AccountWindowUsageResponseForTest> => ({
           generated_at_ms: 1,
           items: [],
@@ -3858,7 +3860,7 @@ describe('AccountsPage replacement flows', () => {
     expect(visibleRows[0]).not.toContain(expiredFile.name);
   });
 
-  it('polls passive Header evidence without reloading history while the accounts view is visible', async () => {
+  it('refreshes visible request evidence every 10 seconds and page history every 60 seconds', async () => {
     vi.useFakeTimers();
     let visibilityState: DocumentVisibilityState = 'visible';
     const documentEvents = new EventTarget();
@@ -3880,12 +3882,26 @@ describe('AccountsPage replacement flows', () => {
     await flushPromises();
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
     expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(2);
+    expect(
+      mocks.getAccountRecentIndex.mock.calls
+        .map((call) => call[2] as AccountRecentIndexRequestForTest)
+        .some((request) => request.recent_limit === 9)
+    ).toBe(true);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(10_000);
     });
+    await flushPromises();
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+    await flushPromises();
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(7);
 
     visibilityState = 'hidden';
     await act(async () => {
@@ -3895,7 +3911,8 @@ describe('AccountsPage replacement flows', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(7);
 
     visibilityState = 'visible';
     await act(async () => {
@@ -3903,12 +3920,13 @@ describe('AccountsPage replacement flows', () => {
       await Promise.resolve();
     });
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(3);
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(7);
   });
 
-  it('does not restart or reload current-page history on passive refresh', async () => {
+  it('does not restart an in-flight current-page history request, then refreshes it on the next interval', async () => {
     vi.useFakeTimers();
-    mocks.files = Array.from({ length: 401 }, (_, index) =>
+    mocks.files = Array.from({ length: 11 }, (_, index) =>
       makeCodexFile(
         `credential-${String(index + 1).padStart(3, '0')}.json`,
         `auth-${index + 1}`,
@@ -3950,13 +3968,47 @@ describe('AccountsPage replacement flows', () => {
       await Promise.resolve();
     });
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+  });
 
+  it('polls the full recent index only while the latest-request sort is active', async () => {
+    vi.useFakeTimers();
+    mocks.location = { pathname: '/accounts', search: '?sort=name&direction=asc' };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const globalRecentIndexCallCount = () =>
+      mocks.getAccountRecentIndex.mock.calls.filter(
+        (call) => (call[2] as AccountRecentIndexRequestForTest).recent_limit === undefined
+      ).length;
+
+    expect(globalRecentIndexCallCount()).toBe(1);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(31_000);
     });
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(globalRecentIndexCallCount()).toBe(1);
+
+    await act(async () => {
+      findHostButtonByAriaLabel(
+        renderer,
+        'accounts.sort_label: accounts.sort_name'
+      ).props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.col_recent').props.onClick();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    await flushPromises();
+    expect(globalRecentIndexCallCount()).toBe(2);
   });
 
   it('loads detailed history only for the visible problem account page', async () => {
@@ -4947,9 +4999,18 @@ describe('AccountsPage replacement flows', () => {
     const historyRequests = mocks.getAccountHistory.mock.calls.map(
       (call) => call[2] as AccountHistoryRequestForTest
     );
-    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
-    expect((mocks.getAccountRecentIndex.mock.calls[0]?.[2] as AccountHistoryRequestForTest).accounts)
-      .toHaveLength(201);
+    const recentIndexRequests = mocks.getAccountRecentIndex.mock.calls.map(
+      (call) => call[2] as AccountRecentIndexRequestForTest
+    );
+    const globalRecentIndexRequest = recentIndexRequests.find(
+      (request) => request.recent_limit === undefined
+    );
+    const visibleRecentIndexRequest = recentIndexRequests.find(
+      (request) => request.recent_limit === 9
+    );
+    expect(recentIndexRequests).toHaveLength(2);
+    expect(globalRecentIndexRequest?.accounts).toHaveLength(201);
+    expect(visibleRecentIndexRequest?.accounts).toHaveLength(1);
     expect(historyRequests).toHaveLength(1);
     expect(historyRequests[0]?.accounts).toHaveLength(1);
     expect(historyRequests[0]?.accounts[0]?.row_key).toBe(problemRowKey);
@@ -4983,9 +5044,18 @@ describe('AccountsPage replacement flows', () => {
     );
     expect(historyRequests).toHaveLength(1);
     expect(historyRequests[0]?.accounts).toHaveLength(10);
-    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
-    expect((mocks.getAccountRecentIndex.mock.calls[0]?.[2] as AccountHistoryRequestForTest).accounts)
-      .toHaveLength(601);
+    const recentIndexRequests = mocks.getAccountRecentIndex.mock.calls.map(
+      (call) => call[2] as AccountRecentIndexRequestForTest
+    );
+    const globalRecentIndexRequest = recentIndexRequests.find(
+      (request) => request.recent_limit === undefined
+    );
+    const visibleRecentIndexRequest = recentIndexRequests.find(
+      (request) => request.recent_limit === 9
+    );
+    expect(recentIndexRequests).toHaveLength(2);
+    expect(globalRecentIndexRequest?.accounts).toHaveLength(601);
+    expect(visibleRecentIndexRequest?.accounts).toHaveLength(10);
   });
 
   it('offers and applies the unknown plan filter', async () => {
@@ -8940,7 +9010,9 @@ describe('AccountsPage replacement flows', () => {
     expect(quotaRegion.props['aria-label']).toContain('xai_quota.pay_as_you_go_label');
 
     await act(async () => {
-      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick({ stopPropagation: vi.fn() });
+      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick({
+        stopPropagation: vi.fn(),
+      });
     });
     await flushPromises();
 
@@ -9843,7 +9915,9 @@ describe('AccountsPage replacement flows', () => {
     );
 
     await act(async () => {
-      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick({ stopPropagation: vi.fn() });
+      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick({
+        stopPropagation: vi.fn(),
+      });
     });
 
     const modelQuotaGroup = renderer.root.findByProps({ 'data-quota-window-group': 'model' });
@@ -10077,7 +10151,9 @@ describe('AccountsPage replacement flows', () => {
     mocks.files = [file];
 
     const renderer = await renderAccountsPage();
-    const annotations = renderer.root.findByProps({ 'data-account-list-annotations': selectionKey });
+    const annotations = renderer.root.findByProps({
+      'data-account-list-annotations': selectionKey,
+    });
     const note = renderer.root.findByProps({ 'data-account-list-note': selectionKey });
     const proxy = renderer.root.findByProps({ 'data-account-list-proxy': selectionKey });
 
@@ -10354,7 +10430,8 @@ describe('AccountsPage replacement flows', () => {
         success: 9,
         failed: 1,
         recent_requests: [{ success: 9, failed: 1 }],
-      }];
+        },
+      ];
       mocks.panelFeatureAvailability = {
         checking: false,
         managerServiceBase: 'http://manager.local:18317',
@@ -10726,7 +10803,9 @@ describe('AccountsPage replacement flows', () => {
     expect(cardText).not.toContain('Billing credits');
 
     await act(async () => {
-      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick({ stopPropagation: vi.fn() });
+      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick({
+        stopPropagation: vi.fn(),
+      });
       await Promise.resolve();
     });
     await flushPromises();
@@ -11727,7 +11806,9 @@ describe('AccountsPage replacement flows', () => {
       success_rate: 1, first_seen_ms: 1, last_seen_ms: 2, sync_status: 'ready',
       latest_request: { timestamp_ms: 2, failed: false },
       recent_requests: [{ timestamp_ms: 2, failed: false }],
-    }]));
+        },
+      ])
+    );
 
     const renderer = await renderAccountsPage();
     await flushPromises();
@@ -13112,6 +13193,56 @@ describe('AccountsPage replacement flows', () => {
 
     await flushPromises();
     expect(mocks.getAccountHistory).toHaveBeenCalledTimes(settledHistoryCallCount);
+  });
+
+  it('renders the current-page compact request refresh without waiting for the next history refresh', async () => {
+    vi.useFakeTimers();
+    const file = makeCodexFile('live-recent.json', 'auth-live-recent', 'live-recent@example.com');
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    let visibleRequestRevision = 0;
+    mocks.getAccountRecentIndex.mockImplementation(
+      async (_base, _key, request: AccountRecentIndexRequestForTest) => {
+        if (request.recent_limit !== 9) return { generated_at_ms: 1, items: [] };
+        visibleRequestRevision += 1;
+        const timestampMs = 1_700_000_000_000 + visibleRequestRevision * 10_000;
+        return {
+          generated_at_ms: timestampMs,
+          items: [
+            {
+              row_key: selectionKey,
+              latest_request: { timestamp_ms: timestampMs, failed: false },
+              recent_requests: [{ timestamp_ms: timestampMs, failed: false }],
+              sync_status: 'ready',
+            },
+          ],
+        };
+      }
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const accountRequestTime = () =>
+      findAccountCardByKey(renderer, selectionKey).findByProps({
+        'data-account-request-time': 'true',
+      });
+
+    expect(accountRequestTime().props.dateTime).toBe(new Date(1_700_000_010_000).toISOString());
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    await flushPromises();
+
+    expect(accountRequestTime().props.dateTime).toBe(new Date(1_700_000_020_000).toISOString());
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
   });
 
   it('shows pending history without blocking account rows', async () => {
@@ -17681,10 +17812,9 @@ describe('AccountsPage replacement flows', () => {
         await input.props.onBlur({ currentTarget: { value: '88' } });
       });
 
-      expect(mocks.batchPatchFields).toHaveBeenCalledWith(
-        [getAuthFilePatchTarget(targetFile)],
-        { priority: 88 }
-      );
+      expect(mocks.batchPatchFields).toHaveBeenCalledWith([getAuthFilePatchTarget(targetFile)], {
+        priority: 88,
+      });
       expect(
         renderer.root.findAllByProps({ 'data-account-priority-input': targetSelectionKey }).length
       ).toBe(0);
@@ -18502,7 +18632,8 @@ describe('AccountsPage replacement flows', () => {
           first_seen_ms: 1,
           last_seen_ms: 2,
           sync_status: 'ready',
-        }])
+          },
+        ])
       );
       const file = {
         name: 'antigravity-pro-matrix.json',
@@ -18716,7 +18847,7 @@ describe('AccountsPage replacement flows', () => {
       expect(restoredText).toMatch(/Weekly|7d/);
     });
 
-    it('does not refresh list window usage on passive 60s evidence refresh interval', async () => {
+    it('refreshes visible list window usage every 60 seconds without a full-inventory request', async () => {
       vi.useFakeTimers();
       const file = makeCodexFile('codex-passive.json', 'auth-passive', 'passive@example.com');
       mocks.files = [file];
@@ -18779,7 +18910,7 @@ describe('AccountsPage replacement flows', () => {
       await flushPromises();
 
       expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
-      expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
+      expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(2);
       const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
       expect(readText(card)).toContain('$0.50');
       expect(readText(card)).toContain('50.0K');
@@ -18789,11 +18920,76 @@ describe('AccountsPage replacement flows', () => {
       });
       await flushPromises();
 
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(2);
+      expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(5);
+      const refreshedCard = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
+      expect(readText(refreshedCard)).toContain('$0.80');
+      expect(readText(refreshedCard)).toContain('80.0K');
+    });
+
+    it('does not abort and restart a slow current-page window-usage request on timer ticks', async () => {
+      vi.useFakeTimers();
+      const file = makeCodexFile(
+        'codex-slow-window.json',
+        'auth-slow-window',
+        'slow-window@example.com'
+      );
+      mocks.files = [file];
+      mocks.panelFeatureAvailability = {
+        checking: false,
+        managerServiceBase: 'http://manager.local:18317',
+        requestMonitoringAvailable: true,
+        serverCodexInspectionAvailable: false,
+      };
+      const now = Date.now();
+      mocks.quotaState.codexQuota = {
+        ...buildCredentialScopedQuotaRecord(file, {
+          status: 'success',
+          windows: [
+            {
+              id: 'five-hour',
+              label: 'Five hours',
+              usedPercent: 40,
+              resetLabel: new Date(now + 3 * 3600 * 1000).toISOString(),
+              resetAtMs: now + 3 * 3600 * 1000,
+              resetAccuracy: 'exact',
+              limitWindowSeconds: 5 * 3600,
+              modelScope: CODEX_MAIN_SCOPE,
+            },
+          ],
+        }),
+      };
+      const deferred = createDeferred<AccountWindowUsageResponseForTest>();
+      let requestCount = 0;
+      mocks.getAccountWindowUsage.mockImplementation(() => {
+        requestCount += 1;
+        return requestCount === 1
+          ? deferred.promise
+          : Promise.resolve({ generated_at_ms: Date.now(), items: [] });
+      });
+
+      await renderAccountsPage();
+      await flushPromises();
       expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
-      expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
-      const unchangedCard = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
-      expect(readText(unchangedCard)).toContain('$0.50');
-      expect(readText(unchangedCard)).toContain('50.0K');
+      const firstSignal = mocks.getAccountWindowUsage.mock.calls[0]?.[3] as AbortSignal;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(121_000);
+      });
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+      expect(firstSignal.aborted).toBe(false);
+
+      await act(async () => {
+        deferred.resolve({ generated_at_ms: Date.now(), items: [] });
+        await Promise.resolve();
+      });
+      await flushPromises();
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_001);
+      });
+      await flushPromises();
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(3);
     });
 
     it('refreshes list window usage after single account quota refresh succeeds without opening drawer', async () => {
@@ -19187,7 +19383,10 @@ describe('AccountsPage replacement flows', () => {
       const fileA = makeCodexFile('codex-batch-1.json', 'auth-b-1', 'b1@example.com');
       const fileB = makeCodexFile('codex-batch-2.json', 'auth-b-2', 'b2@example.com');
       mocks.files = [fileA, fileB];
-      mocks.selectedFiles = new Set([getAuthFileSelectionKey(fileA), getAuthFileSelectionKey(fileB)]);
+      mocks.selectedFiles = new Set([
+        getAuthFileSelectionKey(fileA),
+        getAuthFileSelectionKey(fileB),
+      ]);
 
       const summarySpy = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
       const detailSpy = vi.spyOn(CODEX_CONFIG, 'fetchQuota');
@@ -19219,7 +19418,10 @@ describe('AccountsPage replacement flows', () => {
         runtimeOnly: false,
       };
       mocks.files = [fileCodex, fileMeta];
-      mocks.selectedFiles = new Set([getAuthFileSelectionKey(fileCodex), getAuthFileSelectionKey(fileMeta)]);
+      mocks.selectedFiles = new Set([
+        getAuthFileSelectionKey(fileCodex),
+        getAuthFileSelectionKey(fileMeta),
+      ]);
 
       const summarySpy = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
       const metaSpy = vi.spyOn(META_CONFIG, 'fetchQuota').mockResolvedValue(makeMetaQuotaData());
@@ -19319,7 +19521,10 @@ describe('AccountsPage replacement flows', () => {
       const fileA = makeCodexFile('codex-open.json', 'auth-open-1', 'open@example.com');
       const fileB = makeCodexFile('codex-other.json', 'auth-other-1', 'other@example.com');
       mocks.files = [fileA, fileB];
-      mocks.selectedFiles = new Set([getAuthFileSelectionKey(fileA), getAuthFileSelectionKey(fileB)]);
+      mocks.selectedFiles = new Set([
+        getAuthFileSelectionKey(fileA),
+        getAuthFileSelectionKey(fileB),
+      ]);
       mocks.panelFeatureAvailability = {
         checking: false,
         managerServiceBase: 'http://manager.local:18317',
@@ -20033,7 +20238,10 @@ describe('AccountsPage replacement flows', () => {
         statusCode: 200,
         hasStatusCode: true,
         header: {},
-        body: { available_count: 2, credits: [makeResetCredit('fresh-credit-1'), makeResetCredit('fresh-credit-2')] },
+        body: {
+          available_count: 2,
+          credits: [makeResetCredit('fresh-credit-1'), makeResetCredit('fresh-credit-2')],
+        },
         bodyText: '{"available_count":2,"credits":[]}',
       });
       await flushPromises();
@@ -20333,10 +20541,7 @@ describe('AccountsPage replacement flows', () => {
         account: 'ag2@example.com',
       } as AuthFileItem;
       mocks.files = [ag1, ag2];
-      mocks.selectedFiles = new Set([
-        getAuthFileSelectionKey(ag1),
-        getAuthFileSelectionKey(ag2),
-      ]);
+      mocks.selectedFiles = new Set([getAuthFileSelectionKey(ag1), getAuthFileSelectionKey(ag2)]);
 
       const agSpy = vi.spyOn(ANTIGRAVITY_CONFIG, 'fetchQuota')
         .mockResolvedValueOnce({
