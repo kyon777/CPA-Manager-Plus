@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   requestTokenRecoveryManualBatch: vi.fn(),
   deleteAccountBannedAuthFilesBatch: vi.fn(),
   signalTokenRecovery: vi.fn(),
+  verifyCredentialExitIPs: vi.fn(),
   lastCodexReauthProps: null as null | {
     open: boolean;
     requestScope?: { apiBase: string; managementKey: string };
@@ -101,7 +102,7 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
       requestTokenRecoveryManualBatch: mocks.requestTokenRecoveryManualBatch,
       deleteAccountBannedAuthFilesBatch: mocks.deleteAccountBannedAuthFilesBatch,
       signalTokenRecovery: mocks.signalTokenRecovery,
-      signalProxyInspectionFailure: vi.fn(),
+      verifyCredentialExitIPs: mocks.verifyCredentialExitIPs,
     },
   };
 });
@@ -246,6 +247,7 @@ describe('CodexInspectionPage connection lifecycle', () => {
       failed: [],
     });
     mocks.signalTokenRecovery.mockResolvedValue({ task: null });
+    mocks.verifyCredentialExitIPs.mockResolvedValue({ results: [] });
     mocks.lastCodexReauthProps = null;
     mocks.authFilesList.mockResolvedValue({ files: [] });
     const firstFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
@@ -288,6 +290,87 @@ describe('CodexInspectionPage connection lifecycle', () => {
       },
     };
   };
+
+  it('uses a strict credential locator for the direct exit-IP check and only trusts the server proof', async () => {
+    mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
+    const currentFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
+    const state = lastRun(currentFingerprint);
+    const currentProxy = 'http://user:secret@proxy.current.test:8080';
+    mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
+      connectionFingerprint === currentFingerprint
+        ? {
+            ...state,
+            result: {
+              ...state.result,
+              results: [
+                {
+                  ...state.result.results[0],
+                  disabled: false,
+                  action: 'keep',
+                  actionReason: 'no action',
+                  statusCode: 502,
+                  errorKind: 'request_error',
+                  errorDetail: 'api-call failed: 502 {"error":"request failed"}',
+                  error: 'HTTP 502',
+                  raw: {
+                    ...file(false),
+                    proxy_url: 'http://old-user:old-secret@proxy.old.test:8080',
+                  },
+                },
+              ],
+            },
+          }
+        : null
+    );
+    mocks.authFilesList.mockResolvedValue({
+      files: [{ ...file(false), proxy_url: currentProxy }],
+    });
+    mocks.verifyCredentialExitIPs.mockResolvedValue({
+      results: [
+        {
+          clientKey: 'codex.json::auth-1',
+          outcome: 'proxy_failed',
+          reason: 'proxy_connect_timeout',
+        },
+      ],
+    });
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CodexInspectionPage />
+        </MemoryRouter>
+      );
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+
+    expect(mocks.verifyCredentialExitIPs).toHaveBeenCalledWith(
+      'http://manager.local:18317',
+      'cpa-key-a',
+      [
+        {
+          clientKey: 'codex.json::auth-1',
+          fileName: 'codex.json',
+          authIndex: 'auth-1',
+          provider: 'codex',
+          runtimeId: 'runtime-1',
+        },
+      ]
+    );
+    expect(JSON.stringify(mocks.verifyCredentialExitIPs.mock.calls)).not.toContain(currentProxy);
+    const persistedResults = mocks.saveLastRun.mock.calls
+      .map(([input]) => input.result?.results ?? [])
+      .flat();
+    expect(persistedResults).toContainEqual(
+      expect.objectContaining({
+        key: 'codex.json::auth-1',
+        proxySuspect: true,
+        proxyVerificationSource: 'exit_ip',
+      })
+    );
+    act(() => renderer.unmount());
+  });
 
   it('submits only the visible reauth page to Manager manual recovery without a CPA reload', async () => {
     mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';

@@ -41,6 +41,151 @@ func TestProxyReplacementTaskMigrationAddsInconclusiveRecheckCount(t *testing.T)
 	}
 }
 
+func TestProxyExitIPOnlyCleanupClearsOnlyLegacyInferredProxyStateOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy-exit-ip-cleanup.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`create table if not exists cpam_feature_migrations (
+		name text primary key, completed_at_ms integer not null
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create migration fixture: %v", err)
+	}
+	if _, err := db.Exec(`delete from cpam_feature_migrations where name = 'proxy_exit_ip_only_v1'`); err != nil {
+		_ = db.Close()
+		t.Fatalf("reset migration fixture: %v", err)
+	}
+	if _, err := db.Exec(`insert into usage_events (
+		event_hash, timestamp_ms, timestamp, model, input_tokens, created_at_ms
+	) values ('proxy-cleanup-usage-sentinel', 1, '1', 'gpt-test', 123, 1)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed usage sentinel: %v", err)
+	}
+	run, err := db.Exec(`insert into codex_inspection_runs (
+		trigger_type, status, started_at_ms, settings_json, created_at_ms, updated_at_ms
+	) values ('manual', 'completed', 1, '{}', 1, 1)`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("seed inspection run: %v", err)
+	}
+	runID, err := run.LastInsertId()
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("inspection run id: %v", err)
+	}
+	if _, err := db.Exec(`insert into codex_inspection_results (
+		run_id, account_key, file_name, display_account, action,
+		is_quota, auto_recover_eligible, error, proxy_suspect, created_at_ms
+	) values (?, 'legacy-row', 'legacy.json', 'legacy@example.com', 'keep', 0, 0, '', 1, 1)`, runID); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed inferred inspection result: %v", err)
+	}
+	for _, state := range []struct {
+		fingerprint string
+		status      string
+		reason      string
+	}{
+		{"legacy-timeout", "suspect", "transport_timeout"},
+		{"legacy-502", "suspect", "transport_502_request_failed"},
+		{"pending", "pending_verification", "transport_unknown"},
+		{"direct", "suspect", "proxy_connect_timeout"},
+		{"unknown", "suspect", "operator_marked"},
+	} {
+		if _, err := db.Exec(`insert into proxy_pool_state (
+			proxy_fingerprint, status, last_failure_at_ms, last_failure_reason, updated_at_ms
+		) values (?, ?, 1, ?, 1)`, state.fingerprint, state.status, state.reason); err != nil {
+			_ = db.Close()
+			t.Fatalf("seed proxy pool state %q: %v", state.fingerprint, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("open cleanup sqlite: %v", err)
+	}
+	defer db.Close()
+	var suspect int
+	if err := db.QueryRow(`select proxy_suspect from codex_inspection_results where account_key = 'legacy-row'`).Scan(&suspect); err != nil {
+		t.Fatalf("read cleaned inspection result: %v", err)
+	}
+	if suspect != 0 {
+		t.Fatalf("legacy inferred result proxy_suspect=%d, want 0", suspect)
+	}
+	type poolStateSnapshot struct {
+		status        string
+		failureAtMS   int64
+		failureReason string
+	}
+	states := map[string]poolStateSnapshot{}
+	rows, err := db.Query(`select proxy_fingerprint, status, coalesce(last_failure_at_ms, 0), coalesce(last_failure_reason, '') from proxy_pool_state order by proxy_fingerprint`)
+	if err != nil {
+		t.Fatalf("read pool states: %v", err)
+	}
+	for rows.Next() {
+		var fingerprint string
+		var state poolStateSnapshot
+		if err := rows.Scan(&fingerprint, &state.status, &state.failureAtMS, &state.failureReason); err != nil {
+			_ = rows.Close()
+			t.Fatalf("scan pool state: %v", err)
+		}
+		states[fingerprint] = state
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close pool rows: %v", err)
+	}
+	for fingerprint, want := range map[string]poolStateSnapshot{
+		"legacy-timeout": {status: "normal", failureAtMS: 0, failureReason: ""},
+		"legacy-502":     {status: "normal", failureAtMS: 0, failureReason: ""},
+		"pending":        {status: "normal", failureAtMS: 0, failureReason: ""},
+		"direct":         {status: "suspect", failureAtMS: 1, failureReason: "proxy_connect_timeout"},
+		"unknown":        {status: "suspect", failureAtMS: 1, failureReason: "operator_marked"},
+	} {
+		if got := states[fingerprint]; got != want {
+			t.Fatalf("pool state %q=%#v, want %#v; all=%#v", fingerprint, got, want, states)
+		}
+	}
+	var usageCount, usageTokens int
+	if err := db.QueryRow(`select count(*), coalesce(sum(input_tokens), 0) from usage_events
+		where event_hash = 'proxy-cleanup-usage-sentinel'`).Scan(&usageCount, &usageTokens); err != nil {
+		t.Fatalf("read usage sentinel: %v", err)
+	}
+	if usageCount != 1 || usageTokens != 123 {
+		t.Fatalf("usage data changed by proxy cleanup: count=%d tokens=%d", usageCount, usageTokens)
+	}
+	var migrationCount int
+	if err := db.QueryRow(`select count(*) from cpam_feature_migrations where name = 'proxy_exit_ip_only_v1'`).Scan(&migrationCount); err != nil {
+		t.Fatalf("read cleanup migration marker: %v", err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("cleanup migration markers=%d, want 1", migrationCount)
+	}
+
+	// A later startup must preserve fresh direct evidence instead of repeatedly
+	// blanking every proxy_suspect value.
+	if _, err := db.Exec(`update codex_inspection_results set proxy_suspect = 1 where account_key = 'legacy-row'`); err != nil {
+		t.Fatalf("seed fresh direct result: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close once-cleaned sqlite: %v", err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen once-cleaned sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := db.QueryRow(`select proxy_suspect from codex_inspection_results where account_key = 'legacy-row'`).Scan(&suspect); err != nil {
+		t.Fatalf("read post-marker inspection result: %v", err)
+	}
+	if suspect != 1 {
+		t.Fatalf("cleanup replayed after marker: proxy_suspect=%d, want 1", suspect)
+	}
+}
+
 func TestUsageDataMigrationInitialStateMatchesExistingUsageData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage-data-migration.sqlite")
 	db, err := Open(path)

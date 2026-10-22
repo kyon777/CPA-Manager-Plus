@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isLocalProxySuspect,
+  isLocalProxyExitIPCandidate,
   normalizeProxyReplacementURL,
   proxyReplacementFingerprint,
 } from './proxyReplacement';
@@ -23,16 +23,16 @@ describe('proxy replacement model', () => {
     expect(proxyReplacementFingerprint('')).toBe('');
   });
 
-  it('only marks a proxied local inspection transport failure as suspected', () => {
+  it('only nominates a proxied local inspection transport failure for a direct exit-IP check', () => {
     expect(
-      isLocalProxySuspect({
+      isLocalProxyExitIPCandidate({
         proxyUrl: 'http://p:1/',
         errorKind: 'request_error',
         errorDetail: 'api-call failed: 502 {"error":"request failed"}',
       })
     ).toBe(true);
     expect(
-      isLocalProxySuspect({
+      isLocalProxyExitIPCandidate({
         proxyUrl: 'http://p:1',
         statusCode: 429,
         errorKind: 'http_status',
@@ -40,7 +40,7 @@ describe('proxy replacement model', () => {
       })
     ).toBe(false);
     expect(
-      isLocalProxySuspect({
+      isLocalProxyExitIPCandidate({
         proxyUrl: '',
         errorKind: 'request_error',
         errorDetail: 'context deadline exceeded',

@@ -1160,6 +1160,7 @@ func normalizeCredentialExitIPTargets(input []model.ProxyReplacementTarget) ([]m
 		target.FileName = strings.TrimSpace(target.FileName)
 		target.Provider = strings.TrimSpace(target.Provider)
 		if target.ClientKey == "" || target.FileName == "" || target.Provider == "" ||
+			(strings.TrimSpace(target.AuthIndex) == "" && strings.TrimSpace(target.RuntimeID) == "") ||
 			target.InspectionRunID != 0 || strings.TrimSpace(target.InspectionAccountKey) != "" {
 			return nil, ErrInvalidRequest
 		}

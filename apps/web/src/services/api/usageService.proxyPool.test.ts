@@ -48,3 +48,30 @@ describe('proxy pool exit-IP verification API', () => {
     );
   });
 });
+
+
+describe('credential exit-IP verification API', () => {
+  it('posts only strict credential locators to the manager endpoint', async () => {
+    const targets = [
+      {
+        clientKey: 'row-a',
+        fileName: 'a.json',
+        provider: 'codex',
+        runtimeId: 'runtime-a',
+        authIndex: '7',
+        accountEmail: 'a@example.com',
+      },
+    ];
+
+    await usageServiceApi.verifyCredentialExitIPs(BASE, KEY, targets);
+
+    expect(postSpy).toHaveBeenCalledWith(
+      'http://manager.local:18317/v0/management/proxy-replacements/credential-exit-ip-checks',
+      { targets },
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer manager-key' },
+        timeout: 240_000,
+      })
+    );
+  });
+});

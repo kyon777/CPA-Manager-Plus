@@ -64,12 +64,34 @@ func TestRestoreSuspectPoolEntriesRequiresAdminAndReturnsRestoredCount(t *testin
 	}
 }
 
-func TestInspectionSignalForwardsStrictTransportEvidence(t *testing.T) {
+func TestCredentialExitIPChecksRequireAdministratorAuthorization(t *testing.T) {
+	handler, _, service := newProxyReplacementHandler(t)
+	request := httptest.NewRequest(http.MethodPost, basePath+"/credential-exit-ip-checks", bytes.NewBufferString(`{
+		"targets":[{"clientKey":"row-a","fileName":"a.json","provider":"codex","runtimeId":"runtime-a"}]
+	}`))
+	recorder := httptest.NewRecorder()
+	handler.Handle(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if service.credentialExitIPCalls != 0 {
+		t.Fatalf("unauthorized request invoked credential exit-IP check %d times", service.credentialExitIPCalls)
+	}
+}
+
+func TestCredentialExitIPChecksAcceptOnlyStrictCredentialLocators(t *testing.T) {
 	handler, adminKey, service := newProxyReplacementHandler(t)
-	request := httptest.NewRequest(http.MethodPost, basePath+"/inspection-signals", bytes.NewBufferString(`{
-		"proxyUrl":"http://user:password@proxy.example:8080/",
-		"errorKind":"request_error",
-		"errorDetail":"context deadline exceeded"
+	service.credentialExitIPBatch = model.CredentialProxyExitIPCheckBatch{Results: []model.CredentialProxyExitIPCheckResult{{
+		ClientKey: "row-a",
+		Outcome:   model.ProxyExitIPOutcomeHealthy,
+		ExitIP:    "203.0.113.7",
+		LatencyMS: 31,
+	}}}
+	request := httptest.NewRequest(http.MethodPost, basePath+"/credential-exit-ip-checks", bytes.NewBufferString(`{
+		"targets":[{
+			"clientKey":"row-a","fileName":"a.json","provider":"codex",
+			"runtimeId":"runtime-a","authIndex":"7","accountEmail":"a@example.com"
+		}]
 	}`))
 	request.Header.Set("Authorization", "Bearer "+adminKey)
 	recorder := httptest.NewRecorder()
@@ -77,11 +99,42 @@ func TestInspectionSignalForwardsStrictTransportEvidence(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if service.signalCalls != 1 {
-		t.Fatalf("signal calls=%d", service.signalCalls)
+	if service.credentialExitIPCalls != 1 || len(service.credentialExitIPTargets) != 1 {
+		t.Fatalf("credential exit-IP input=%#v calls=%d", service.credentialExitIPTargets, service.credentialExitIPCalls)
 	}
-	if service.signal.ProxyURL != "http://user:password@proxy.example:8080/" {
-		t.Fatalf("unexpected proxy URL forwarding: %#v", service.signal)
+	got := service.credentialExitIPTargets[0]
+	if got.ClientKey != "row-a" || got.FileName != "a.json" || got.Provider != "codex" || got.RuntimeID != "runtime-a" {
+		t.Fatalf("strict locator=%#v", got)
+	}
+	if bytes.Contains(recorder.Body.Bytes(), []byte("proxyUrl")) || bytes.Contains(recorder.Body.Bytes(), []byte("proxy.example")) {
+		t.Fatalf("response leaked raw proxy URL: %s", recorder.Body.String())
+	}
+}
+
+func TestCredentialExitIPChecksRejectUnsafeOrAmbiguousInputs(t *testing.T) {
+	validTarget := `{"clientKey":"row-a","fileName":"a.json","provider":"codex","runtimeId":"runtime-a"}`
+	for name, payload := range map[string]string{
+		"raw proxy URL":        `{"targets":[` + validTarget[:len(validTarget)-1] + `,"proxyUrl":"http://user:secret@proxy.example:8080"}]}`,
+		"arbitrary target URL": `{"targets":[` + validTarget[:len(validTarget)-1] + `,"targetUrl":"https://attacker.example/"}]}`,
+		"inspection identity":  `{"targets":[` + validTarget[:len(validTarget)-1] + `,"inspectionRunId":4}]}`,
+		"duplicate client key": `{"targets":[` + validTarget + `,` + validTarget + `]}`,
+		"blank client key":     `{"targets":[{"clientKey":" ","fileName":"a.json","provider":"codex"}]}`,
+		"no strict locator":    `{"targets":[{"clientKey":"row-a","fileName":"a.json","provider":"codex"}]}`,
+		"unknown root field":   `{"targets":[` + validTarget + `],"proxyUrl":"http://user:secret@proxy.example:8080"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler, adminKey, service := newProxyReplacementHandler(t)
+			request := httptest.NewRequest(http.MethodPost, basePath+"/credential-exit-ip-checks", bytes.NewBufferString(payload))
+			request.Header.Set("Authorization", "Bearer "+adminKey)
+			recorder := httptest.NewRecorder()
+			handler.Handle(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if service.credentialExitIPCalls != 0 {
+				t.Fatalf("unsafe input invoked credential exit-IP check %d times", service.credentialExitIPCalls)
+			}
+		})
 	}
 }
 
@@ -169,14 +222,15 @@ func TestSafeHandlerErrorRedactsURLEmbeddedInsideStructuredError(t *testing.T) {
 }
 
 type fakeProxyReplacementService struct {
-	previewCalls        int
-	getCalls            int
-	signalCalls         int
-	signal              model.ProxyFailureEvidence
-	restoreSuspectCalls int
-	verifyCalls         int
-	verifyInput         []string
-	verifyBatch         model.ProxyExitIPCheckBatch
+	previewCalls            int
+	getCalls                int
+	restoreSuspectCalls     int
+	verifyCalls             int
+	verifyInput             []string
+	verifyBatch             model.ProxyExitIPCheckBatch
+	credentialExitIPCalls   int
+	credentialExitIPTargets []model.ProxyReplacementTarget
+	credentialExitIPBatch   model.CredentialProxyExitIPCheckBatch
 }
 
 func (s *fakeProxyReplacementService) CreatePreview(context.Context, model.ProxyReplacementPreviewRequest) (model.ProxyReplacementTaskPage, error) {
@@ -200,15 +254,16 @@ func (s *fakeProxyReplacementService) RestoreSuspectProxyPoolEntries(context.Con
 	s.restoreSuspectCalls++
 	return 3, nil
 }
-func (s *fakeProxyReplacementService) ReportInspectionSignal(_ context.Context, evidence model.ProxyFailureEvidence) (bool, error) {
-	s.signalCalls++
-	s.signal = evidence
-	return true, nil
-}
 func (s *fakeProxyReplacementService) VerifyProxyPoolExitIPs(_ context.Context, fingerprints []string) (model.ProxyExitIPCheckBatch, error) {
 	s.verifyCalls++
 	s.verifyInput = append([]string(nil), fingerprints...)
 	return s.verifyBatch, nil
+}
+
+func (s *fakeProxyReplacementService) VerifyCredentialExitIPs(_ context.Context, targets []model.ProxyReplacementTarget) (model.CredentialProxyExitIPCheckBatch, error) {
+	s.credentialExitIPCalls++
+	s.credentialExitIPTargets = append([]model.ProxyReplacementTarget(nil), targets...)
+	return s.credentialExitIPBatch, nil
 }
 
 func newProxyReplacementHandler(t *testing.T) (*Handler, string, *fakeProxyReplacementService) {

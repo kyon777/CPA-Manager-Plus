@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   getTask: vi.fn(),
   restoreSuspectProxyPoolStates: vi.fn(),
+  copyToClipboard: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -33,10 +34,21 @@ vi.mock('@/services/api/usageService', () => ({
   },
 }));
 
+vi.mock('@/utils/clipboard', () => ({
+  copyToClipboard: mocks.copyToClipboard,
+}));
+
 const hasText = (value: unknown, text: string): boolean => {
   if (typeof value === 'string') return value.includes(text);
   return Array.isArray(value) && value.some((entry) => hasText(entry, text));
 };
+
+const textContent = (node: { children: unknown[] }): string =>
+  node.children
+    .map((child) =>
+      typeof child === 'string' ? child : textContent(child as { children: unknown[] })
+    )
+    .join('');
 
 const findButton = (renderer: ReactTestRenderer, text: string) => {
   const button = renderer.root
@@ -251,6 +263,57 @@ describe('ProxyReplacementModal', () => {
           expect.objectContaining({ target: expect.objectContaining({ clientKey: 'row-2' }) }),
         ]),
       })
+    );
+    renderer!.unmount();
+  });
+
+  it('shows and copies the account, original proxy, new proxy, and direct exit-IP recheck outcome', async () => {
+    const terminalTask = {
+      ...draftPage.task,
+      source: 'inspection',
+      status: 'partial',
+      canConfirm: false,
+      recheckAfterWrite: true,
+      updatedCount: 1,
+      recheckInconclusiveCount: 1,
+    };
+    const terminalPage = {
+      ...draftPage,
+      task: terminalTask,
+      items: [{ ...draftPage.items[0], status: 'recheck_inconclusive' }],
+    };
+    mocks.createPreview.mockResolvedValue(terminalPage);
+    mocks.getTask.mockResolvedValue(terminalPage);
+    mocks.copyToClipboard.mockResolvedValue(true);
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ProxyReplacementModal
+          open
+          managerRequestScope={{ apiBase: 'https://manager.example', managementKey: 'key' }}
+          origin="inspection"
+          targets={draftPage.items.map((item) => item.target)}
+          onClose={() => {}}
+        />
+      );
+    });
+
+    await act(async () => {
+      findButton(renderer!, 'proxy_replacement.preview').props.onClick();
+      await Promise.resolve();
+    });
+
+    const row = renderer!.root.findByProps({ 'data-proxy-replacement-mapping-row': true });
+    expect(textContent(row)).toContain('http://old:8080');
+    expect(textContent(row)).toContain('http://new:8080');
+    expect(textContent(row)).toContain('proxy_replacement.item_status_recheck_inconclusive');
+
+    await act(async () => {
+      findButton(renderer!, 'proxy_replacement.copy_mapping').props.onClick();
+      await Promise.resolve();
+    });
+    expect(mocks.copyToClipboard).toHaveBeenCalledWith(
+      'alice@example.com | http://old:8080 -> http://new:8080 | proxy_replacement.item_status_recheck_inconclusive'
     );
     renderer!.unmount();
   });

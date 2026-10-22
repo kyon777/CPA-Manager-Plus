@@ -38,7 +38,7 @@ type Service interface {
 	ListProxyPool(context.Context) ([]model.ProxyPoolState, error)
 	RestoreProxyPoolEntry(context.Context, string) (model.ProxyPoolState, error)
 	RestoreSuspectProxyPoolEntries(context.Context) (int, error)
-	ReportInspectionSignal(context.Context, model.ProxyFailureEvidence) (bool, error)
+	VerifyCredentialExitIPs(context.Context, []model.ProxyReplacementTarget) (model.CredentialProxyExitIPCheckBatch, error)
 	VerifyProxyPoolExitIPs(context.Context, []string) (model.ProxyExitIPCheckBatch, error)
 }
 
@@ -60,8 +60,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == basePath+"/previews":
 		h.requireAdmin(w, r, h.preview)
-	case path == basePath+"/inspection-signals":
-		h.requireAdmin(w, r, h.inspectionSignal)
+	case path == basePath+"/credential-exit-ip-checks":
+		h.requireAdmin(w, r, h.verifyCredentialExitIPs)
 	case path == basePath+"/proxy-pool":
 		h.requirePanel(w, r, h.listPool)
 	case path == basePath+"/proxy-pool/restore-suspects":
@@ -79,22 +79,22 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) inspectionSignal(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) verifyCredentialExitIPs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		response.MethodNotAllowed(w)
 		return
 	}
-	evidence, err := decodeInspectionSignal(http.MaxBytesReader(w, r.Body, maxSmallRequestLen))
+	targets, err := decodeCredentialExitIPCheckRequest(http.MaxBytesReader(w, r.Body, maxSmallRequestLen))
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, err)
 		return
 	}
-	marked, err := h.Service.ReportInspectionSignal(r.Context(), evidence)
+	batch, err := h.Service.VerifyCredentialExitIPs(r.Context(), targets)
 	if err != nil {
 		response.Error(w, previewErrorStatus(err), safeHandlerError(err))
 		return
 	}
-	response.JSON(w, http.StatusOK, map[string]bool{"marked": marked})
+	response.JSON(w, http.StatusOK, batch)
 }
 
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request, next func(http.ResponseWriter, *http.Request)) {
@@ -271,43 +271,59 @@ func decodePreviewRequest(reader io.Reader) (model.ProxyReplacementPreviewReques
 	return request, nil
 }
 
-type inspectionSignalRequest struct {
-	ProxyURL    string `json:"proxyUrl"`
-	StatusCode  int    `json:"statusCode"`
-	ErrorKind   string `json:"errorKind"`
-	ErrorDetail string `json:"errorDetail"`
-}
-
-func decodeInspectionSignal(reader io.Reader) (model.ProxyFailureEvidence, error) {
+// decodeCredentialExitIPCheckRequest deliberately accepts only strict credential
+// locators. Browser callers cannot select a proxy URL, arbitrary outbound target,
+// inspection-run key, token, or credential payload.
+func decodeCredentialExitIPCheckRequest(reader io.Reader) ([]model.ProxyReplacementTarget, error) {
 	var root map[string]json.RawMessage
 	if err := decodeOneJSON(reader, &root); err != nil || root == nil {
-		return model.ProxyFailureEvidence{}, errors.New("invalid proxy inspection signal")
+		return nil, errors.New("invalid credential exit-IP check request")
+	}
+	if len(root) != 1 || root["targets"] == nil {
+		return nil, errors.New("credential exit-IP check request accepts only targets")
+	}
+	var rawTargets []json.RawMessage
+	if err := json.Unmarshal(root["targets"], &rawTargets); err != nil || len(rawTargets) == 0 || len(rawTargets) > maxExitIPChecks {
+		return nil, errors.New("credential exit-IP check requires 1 to 500 targets")
 	}
 	allowed := map[string]struct{}{
-		"proxyUrl": {}, "statusCode": {}, "errorKind": {}, "errorDetail": {},
+		"clientKey": {}, "fileName": {}, "authIndex": {}, "accountEmail": {}, "provider": {},
+		"runtimeId": {}, "accountId": {}, "accountSnapshot": {},
 	}
-	for key := range root {
-		if _, ok := allowed[key]; !ok {
-			return model.ProxyFailureEvidence{}, errors.New("proxy inspection signal contains an unsupported field")
+	seen := make(map[string]struct{}, len(rawTargets))
+	targets := make([]model.ProxyReplacementTarget, 0, len(rawTargets))
+	for _, rawTarget := range rawTargets {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(rawTarget, &object); err != nil || object == nil {
+			return nil, errors.New("invalid credential exit-IP check target")
 		}
+		for key := range object {
+			if _, ok := allowed[key]; !ok {
+				return nil, errors.New("credential exit-IP check target contains an unsupported field")
+			}
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			return nil, errors.New("invalid credential exit-IP check target")
+		}
+		var target model.ProxyReplacementTarget
+		if err := json.Unmarshal(encoded, &target); err != nil {
+			return nil, errors.New("invalid credential exit-IP check target")
+		}
+		target.ClientKey = strings.TrimSpace(target.ClientKey)
+		target.FileName = strings.TrimSpace(target.FileName)
+		target.Provider = strings.TrimSpace(target.Provider)
+		if target.ClientKey == "" || target.FileName == "" || target.Provider == "" ||
+			(strings.TrimSpace(target.AuthIndex) == "" && strings.TrimSpace(target.RuntimeID) == "") {
+			return nil, errors.New("credential exit-IP check target requires clientKey, fileName, provider, and authIndex or runtimeId")
+		}
+		if _, duplicate := seen[target.ClientKey]; duplicate {
+			return nil, errors.New("credential exit-IP check contains duplicate clientKey")
+		}
+		seen[target.ClientKey] = struct{}{}
+		targets = append(targets, target)
 	}
-	encoded, err := json.Marshal(root)
-	if err != nil {
-		return model.ProxyFailureEvidence{}, errors.New("invalid proxy inspection signal")
-	}
-	var request inspectionSignalRequest
-	if err := json.Unmarshal(encoded, &request); err != nil {
-		return model.ProxyFailureEvidence{}, errors.New("invalid proxy inspection signal")
-	}
-	if strings.TrimSpace(request.ProxyURL) == "" {
-		return model.ProxyFailureEvidence{}, errors.New("proxy inspection signal requires proxyUrl")
-	}
-	return model.ProxyFailureEvidence{
-		ProxyURL:    request.ProxyURL,
-		StatusCode:  request.StatusCode,
-		ErrorKind:   request.ErrorKind,
-		ErrorDetail: request.ErrorDetail,
-	}, nil
+	return targets, nil
 }
 
 // decodeExitIPVerificationRequest accepts only opaque, SHA-256 proxy

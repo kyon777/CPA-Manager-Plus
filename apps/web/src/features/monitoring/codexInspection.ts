@@ -181,10 +181,10 @@ export interface CodexInspectionResultItem extends CodexInspectionAccount {
   quotaInventoryObserved?: boolean;
   errorKind?: string;
   errorDetail?: string;
-  // Transport-only proxy evidence. This is deliberately independent from the
-  // suggested account action: a healthy credential can still have a dead
-  // egress proxy, and a failed credential may have failed for another reason.
+  // A proxy is abnormal only after Manager Server directly reaches the current
+  // server-side proxy and the fixed exit-IP echo fails through it.
   proxySuspect?: boolean;
+  proxyVerificationSource?: 'exit_ip';
   // Browser-local result only: a directed proxy replacement recheck succeeded
   // after this inspection, so the historical transport failure must not be
   // re-derived against the newly written proxy URL.

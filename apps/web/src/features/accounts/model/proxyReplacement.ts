@@ -84,7 +84,7 @@ export interface ProxyReplacementTaskPage {
   total: number;
 }
 
-export interface LocalProxyFailureEvidence {
+export interface LocalProxyExitIPCandidateEvidence {
   proxyUrl?: string;
   statusCode?: number;
   errorKind?: string;
@@ -104,8 +104,10 @@ export const proxyReplacementFingerprint = (value: unknown): string => {
   return normalized ? sha256RawTextHex(normalized) : '';
 };
 
-/** Keep this deliberately aligned with model.IsSuspectedProxyTransportFailure. */
-export const isLocalProxySuspect = (evidence: LocalProxyFailureEvidence): boolean => {
+// This only nominates a row for Manager Server's direct exit-IP test. It is
+// deliberately not a proxy-health verdict: account endpoint failures can be
+// caused by quota, auth, upstream overload, or the provider itself.
+export const isLocalProxyExitIPCandidate = (evidence: LocalProxyExitIPCandidateEvidence): boolean => {
   if (!normalizeProxyReplacementURL(evidence.proxyUrl)) return false;
   const detail = String(evidence.errorDetail ?? '')
     .trim()

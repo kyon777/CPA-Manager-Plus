@@ -455,16 +455,18 @@ export interface CredentialProxyExitIPCheckBatch {
   results: CredentialProxyExitIPCheckResult[];
 }
 
-export interface ProxyInspectionSignalRequest {
-  proxyUrl: string;
-  statusCode?: number;
-  errorKind?: string;
-  errorDetail?: string;
+export interface CredentialProxyExitIPTargetRequest {
+  clientKey: string;
+  fileName: string;
+  provider: string;
+  authIndex?: string;
+  accountEmail?: string;
+  runtimeId?: string;
+  accountId?: string;
+  accountSnapshot?: string;
 }
 
-export interface ProxyInspectionSignalResponse {
-  marked: boolean;
-}
+
 
 export interface CodexInspectionRun {
   id: number;
@@ -3524,19 +3526,25 @@ export const usageServiceApi = {
     });
   },
 
-  signalProxyInspectionFailure: async (
+  verifyCredentialExitIPs: async (
     base: string,
     managementKey: string | undefined,
-    signal: ProxyInspectionSignalRequest
-  ): Promise<ProxyInspectionSignalResponse> => {
+    targets: CredentialProxyExitIPTargetRequest[]
+  ): Promise<CredentialProxyExitIPCheckBatch> => {
     if (__DEMO_SITE__ && isDemoMode()) {
-      return { marked: false };
+      return {
+        results: targets.map((target) => ({
+          clientKey: target.clientKey,
+          outcome: 'inconclusive',
+          reason: 'ip_echo_unavailable',
+        })),
+      };
     }
 
     return withUsageServiceError(async () => {
-      const response = await axios.post<ProxyInspectionSignalResponse>(
-        buildUrl(base, '/v0/management/proxy-replacements/inspection-signals'),
-        signal,
+      const response = await axios.post<CredentialProxyExitIPCheckBatch>(
+        buildUrl(base, '/v0/management/proxy-replacements/credential-exit-ip-checks'),
+        { targets },
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),

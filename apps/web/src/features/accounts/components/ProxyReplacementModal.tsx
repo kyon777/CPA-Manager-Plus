@@ -268,10 +268,12 @@ export function ProxyReplacementModal({
       (taskPage?.items ?? [])
         .map((item) => {
           const label = item.target.accountEmail || item.target.accountSnapshot || item.target.fileName;
-          return `${label} -> ${item.newProxyUrl || '-'}`;
+          return `${label} | ${item.oldProxyUrl || '-'} -> ${item.newProxyUrl || '-'} | ${t(
+            itemStatusKey(item.status)
+          )}`;
         })
         .join('\n'),
-    [taskPage?.items]
+    [t, taskPage?.items]
   );
 
   const handleCopyMapping = useCallback(async () => {
@@ -408,6 +410,7 @@ export function ProxyReplacementModal({
                   skipped: task?.skippedCount ?? 0,
                   recheckSuccess: task?.recheckSuccessCount ?? 0,
                   recheckFailed: task?.recheckFailedCount ?? 0,
+                  recheckInconclusive: task?.recheckInconclusiveCount ?? 0,
                 })}
               </p>
             ) : null}
@@ -425,11 +428,22 @@ export function ProxyReplacementModal({
               </Button>
             </div>
             <div className={styles.mappingList}>
+              <div className={styles.mappingColumns} aria-hidden="true">
+                <span>{t('proxy_replacement.mapping_account')}</span>
+                <span>{t('proxy_replacement.mapping_old_proxy')}</span>
+                <span>{t('proxy_replacement.mapping_new_proxy')}</span>
+                <span>{t('proxy_replacement.mapping_recheck')}</span>
+              </div>
               {taskPage.items.map((item) => (
-                <div key={item.id || `${item.target.clientKey}-${item.itemOrder}`} className={styles.mappingRow}>
+                <div
+                  key={item.id || `${item.target.clientKey}-${item.itemOrder}`}
+                  className={styles.mappingRow}
+                  data-proxy-replacement-mapping-row={true}
+                >
                   <span title={item.target.accountEmail || item.target.fileName}>
                     {item.target.accountEmail || item.target.fileName}
                   </span>
+                  <code title={item.oldProxyUrl || ''}>{item.oldProxyUrl || '-'}</code>
                   <code title={item.newProxyUrl || ''}>{item.newProxyUrl || '-'}</code>
                   <span className={styles.itemStatus} data-status={item.status}>
                     {t(itemStatusKey(item.status))}

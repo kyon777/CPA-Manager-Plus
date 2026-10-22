@@ -329,6 +329,9 @@ const serializeResultItemForStorage = (
     quotaInventoryObserved: item.quotaInventoryObserved === true,
     errorKind: readString(item.errorKind),
     errorDetail: sanitizeStoredText(item.errorDetail),
+    ...(item.proxySuspect === true && item.proxyVerificationSource === 'exit_ip'
+      ? { proxySuspect: true, proxyVerificationSource: 'exit_ip' as const }
+      : {}),
     actionHandled: item.actionHandled === true,
     ...(note ? { note } : {}),
   };
@@ -347,6 +350,9 @@ const hydrateStoredResultItem = (
   const disabled = readBoolean(value.disabled, false);
   const key = readString(value.key) || `${fileName}::${authIndex || '-'}`;
   const note = readString(value.note);
+  const proxyVerificationSource = value.proxyVerificationSource === 'exit_ip' ? 'exit_ip' : undefined;
+  const proxySuspect =
+    proxyVerificationSource === 'exit_ip' && readBoolean(value.proxySuspect, false);
 
   return {
     key,
@@ -388,6 +394,8 @@ const hydrateStoredResultItem = (
     quotaInventoryObserved: readBoolean(value.quotaInventoryObserved, false),
     errorKind: readString(value.errorKind),
     errorDetail: sanitizeStoredText(value.errorDetail),
+    proxySuspect,
+    ...(proxyVerificationSource ? { proxyVerificationSource } : {}),
     actionHandled: readBoolean(value.actionHandled, false),
   };
 };

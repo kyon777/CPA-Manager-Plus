@@ -1,7 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest';
 import type { ProxyReplacementTaskItem } from '@/services/api/usageService';
 import type { CodexInspectionResultItem } from '@/features/monitoring/codexInspection';
-import { reconcileSuccessfulProxyRechecks } from './proxyRecheckReconciliation';
+import { reconcileProxyReplacementRechecks } from './proxyRecheckReconciliation';
 
 const createResult = (
   key: string,
@@ -41,27 +41,35 @@ const createTaskItem = (
     status,
   }) as ProxyReplacementTaskItem;
 
-describe('reconcileSuccessfulProxyRechecks', () => {
-  it('removes only successful rechecks from the proxy-abnormal state', () => {
+describe('reconcileProxyReplacementRechecks', () => {
+  it('clears direct proxy-abnormal state for healthy and inconclusive exit-IP rechecks only', () => {
     const rows = [
       createResult('success', true),
+      createResult('inconclusive', true),
       createResult('failed', true),
       createResult('already-normal', false),
     ];
+    rows[0].proxyVerificationSource = 'exit_ip';
+    rows[1].proxyVerificationSource = 'exit_ip';
+    rows[2].proxyVerificationSource = 'exit_ip';
 
-    const reconciled = reconcileSuccessfulProxyRechecks(rows, [
+    const reconciled = reconcileProxyReplacementRechecks(rows, [
       createTaskItem('success', 'recheck_succeeded'),
+      createTaskItem('inconclusive', 'recheck_inconclusive'),
       createTaskItem('failed', 'recheck_failed'),
       createTaskItem('already-normal', 'recheck_succeeded'),
     ]);
 
     expect(reconciled.map((row) => [row.key, row.proxySuspect])).toEqual([
       ['success', false],
+      ['inconclusive', false],
       ['failed', true],
       ['already-normal', false],
     ]);
     expect(reconciled[0].proxyRecheckSucceeded).toBe(true);
-    expect(reconciled[2].proxyRecheckSucceeded).toBe(true);
-    expect(reconciled[1]).toBe(rows[1]);
+    expect(reconciled[1].proxyRecheckSucceeded).toBeUndefined();
+    expect(reconciled[0].proxyVerificationSource).toBeUndefined();
+    expect(reconciled[1].proxyVerificationSource).toBeUndefined();
+    expect(reconciled[2]).toBe(rows[2]);
   });
 });

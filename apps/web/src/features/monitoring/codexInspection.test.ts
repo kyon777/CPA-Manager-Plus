@@ -147,6 +147,7 @@ const createResultItem = (
   errorKind: overrides.errorKind ?? '',
   errorDetail: overrides.errorDetail ?? '',
   proxySuspect: overrides.proxySuspect ?? false,
+  proxyVerificationSource: overrides.proxyVerificationSource,
   actionHandled: overrides.actionHandled ?? false,
 });
 
@@ -6825,6 +6826,38 @@ describe('Codex inspection last-run cache', () => {
     const loaded = loadCodexInspectionLastRun();
     expect(loaded?.result.results[0].actionHandled).toBe(true);
     expect(countHandlingStates(loaded?.result.results ?? []).pending).toBe(0);
+  });
+
+  it('drops legacy inferred proxy flags and restores only direct exit-IP proof', () => {
+    const baseResult = createRunResult();
+    const restored = hydrateCodexInspectionLastRun({
+      version: 1,
+      savedAt: 2_000,
+      result: {
+        ...baseResult,
+        results: [
+          createResultItem('keep', {
+            key: 'legacy',
+            fileName: 'legacy.json',
+            proxySuspect: true,
+          }),
+          createResultItem('keep', {
+            key: 'direct',
+            fileName: 'direct.json',
+            proxySuspect: true,
+            proxyVerificationSource: 'exit_ip',
+          }),
+        ],
+      },
+      logs: [],
+    });
+
+    const byKey = new Map((restored?.result.results ?? []).map((item) => [item.key, item]));
+    expect(byKey.get('legacy')).toEqual(expect.objectContaining({ proxySuspect: false }));
+    expect(byKey.get('legacy')?.proxyVerificationSource).toBeUndefined();
+    expect(byKey.get('direct')).toEqual(
+      expect.objectContaining({ proxySuspect: true, proxyVerificationSource: 'exit_ip' })
+    );
   });
 
   it('loads sanitized last-run records from storage', () => {

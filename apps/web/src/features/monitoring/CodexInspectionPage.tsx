@@ -35,9 +35,10 @@ import { Button } from '@/components/ui/Button';
 import { ProxyReplacementModal } from '@/features/accounts/components/ProxyReplacementModal';
 import {
   buildInspectionProxyReplacementTargets,
+  buildProxyReplacementTarget,
 } from '@/features/accounts/model/proxyReplacementTargets';
-import { isLocalProxySuspect } from '@/features/accounts/model/proxyReplacement';
-import { reconcileSuccessfulProxyRechecks } from '@/features/monitoring/model/proxyRecheckReconciliation';
+import { isLocalProxyExitIPCandidate } from '@/features/accounts/model/proxyReplacement';
+import { reconcileProxyReplacementRechecks } from '@/features/monitoring/model/proxyRecheckReconciliation';
 import { CodexInspectionLogsPanel } from '@/features/monitoring/components/CodexInspectionLogsPanel';
 import { CodexInspectionResultsPanel } from '@/features/monitoring/components/CodexInspectionResultsPanel';
 import { CodexInspectionStatusPanel } from '@/features/monitoring/components/CodexInspectionStatusPanel';
@@ -108,7 +109,10 @@ import type {
   TokenRecoveryBatchTargetRequest,
   TokenRecoveryTask,
 } from '@/services/api';
-import { usageServiceApi } from '@/services/api/usageService';
+import {
+  usageServiceApi,
+  type CredentialProxyExitIPTargetRequest,
+} from '@/services/api/usageService';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
 import styles from './CodexInspectionPage.module.scss';
@@ -151,6 +155,8 @@ const readInspectionProxyURL = (file: AuthFileItem | null | undefined): string =
   }
   return '';
 };
+
+const CREDENTIAL_EXIT_IP_CHECK_BATCH_SIZE = 500;
 
 const buildInspectionRuntimeMetadataTarget = (
   item: CodexInspectionResultItem
@@ -293,7 +299,7 @@ export function CodexInspectionPage({
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const [proxyReplacementOpen, setProxyReplacementOpen] = useState(false);
   const tokenRecoverySignalKeysRef = useRef<Set<string>>(new Set());
-  const proxyFailureSignalKeysRef = useRef<Set<string>>(new Set());
+  const proxyExitIPCheckKeysRef = useRef<Set<string>>(new Set());
   const logCounterRef = useRef(initialLastRun?.logs.length ?? 0);
   const sessionRef = useRef<CodexInspectionSession | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -1089,30 +1095,33 @@ export function CodexInspectionPage({
     if (!result) return [];
     return result.results.map((item) => {
       const currentFile = resolveInspectionAccountFile(item, currentAuthFiles);
-      // Prefer the proxy captured by the run. The current projection is only a
-      // compatibility fallback for an older CPA list response that did not
-      // include proxy_url in the original local inspection input.
-      const proxyURL = readInspectionProxyURL(item.raw) || readInspectionProxyURL(currentFile);
+      // A historical account probe is not proxy proof. Only direct Manager
+      // Server exit-IP evidence may put a row in the proxy-abnormal filter.
       const proxySuspect =
-        item.proxyRecheckSucceeded === true
-          ? false
-          : item.proxySuspect === true ||
-            isLocalProxySuspect({
-              proxyUrl: proxyURL,
-              statusCode: item.statusCode ?? undefined,
-              errorKind: item.errorKind,
-              errorDetail: item.errorDetail || item.error,
-            });
-      if (!currentFile && item.proxySuspect === proxySuspect) return item;
+        item.proxySuspect === true && item.proxyVerificationSource === 'exit_ip';
+      if (!currentFile && item.proxySuspect === proxySuspect && !item.proxyVerificationSource) {
+        return item;
+      }
+      const proxyURL = readInspectionProxyURL(currentFile);
+      const raw = currentFile
+        ? (() => {
+            const {
+              proxy_url: _historicalProxyURL,
+              proxyUrl: _historicalProxyURLCamel,
+              ['proxy-url']: _historicalProxyURLDash,
+              ...withoutHistoricalProxy
+            } = item.raw;
+            return {
+              ...withoutHistoricalProxy,
+              ...(proxyURL ? { proxy_url: proxyURL } : {}),
+            };
+          })()
+        : item.raw;
       return {
         ...item,
         proxySuspect,
-        raw: currentFile
-          ? {
-              ...item.raw,
-              ...(proxyURL ? { proxy_url: proxyURL } : {}),
-            }
-          : item.raw,
+        ...(proxySuspect ? { proxyVerificationSource: 'exit_ip' as const } : {}),
+        raw,
       };
     });
   }, [currentAuthFiles, result]);
@@ -1129,36 +1138,96 @@ export function CodexInspectionPage({
       return;
     }
 
-    for (const item of displayResults) {
-      if (!item.proxySuspect) continue;
-      const proxyURL = readInspectionProxyURL(item.raw);
-      if (!proxyURL) continue;
-      const signalKey = [
-        connectionFingerprint,
-        String(result.finishedAt),
-        item.key,
-        proxyURL,
-        String(item.statusCode ?? ''),
-        item.errorKind ?? '',
-      ].join('\u0000');
-      if (proxyFailureSignalKeysRef.current.has(signalKey)) continue;
-      proxyFailureSignalKeysRef.current.add(signalKey);
-      void usageServiceApi
-        .signalProxyInspectionFailure(managerRequestScope.apiBase, managerRequestScope.managementKey, {
-          proxyUrl: proxyURL,
+    const targets: CredentialProxyExitIPTargetRequest[] = [];
+    const seenClientKeys = new Set<string>();
+    for (const item of result.results) {
+      const currentFile = resolveInspectionAccountFile(item, currentAuthFiles);
+      const currentProxyURL = readInspectionProxyURL(currentFile);
+      if (
+        !currentFile ||
+        !isLocalProxyExitIPCandidate({
+          proxyUrl: currentProxyURL,
           statusCode: item.statusCode ?? undefined,
           errorKind: item.errorKind,
           errorDetail: item.errorDetail || item.error,
         })
-        .catch(() => {
-          // A browser-local run never retries proxy-state reporting. The
-          // result remains visible and the next explicit inspection can emit
-          // fresh transport evidence.
-        });
+      ) {
+        continue;
+      }
+      const target = buildProxyReplacementTarget(currentFile);
+      const clientKey = item.key.trim();
+      if (!target || !clientKey || seenClientKeys.has(clientKey)) continue;
+      const signalKey = [
+        connectionFingerprint,
+        String(result.finishedAt),
+        clientKey,
+        target.fileName,
+        target.authIndex ?? '',
+        target.runtimeId ?? '',
+      ].join('\u0000');
+      if (proxyExitIPCheckKeysRef.current.has(signalKey)) continue;
+      proxyExitIPCheckKeysRef.current.add(signalKey);
+      seenClientKeys.add(clientKey);
+      targets.push({ ...target, clientKey });
     }
+
+    if (targets.length === 0) return;
+
+    const checkedFinishedAt = result.finishedAt;
+    const applyExitIPResults = (
+      checks: Awaited<ReturnType<typeof usageServiceApi.verifyCredentialExitIPs>>['results']
+    ) => {
+      const checksByClientKey = new Map(checks.map((check) => [check.clientKey.trim(), check]));
+      if (checksByClientKey.size === 0) return;
+      setResult((previous) => {
+        if (
+          !previous ||
+          previous.finishedAt !== checkedFinishedAt ||
+          activeConnectionFingerprintRef.current !== connectionFingerprint
+        ) {
+          return previous;
+        }
+        let changed = false;
+        const results = previous.results.map((item) => {
+          const check = checksByClientKey.get(item.key.trim());
+          if (!check) return item;
+          if (check.outcome === 'proxy_failed') {
+            if (item.proxySuspect === true && item.proxyVerificationSource === 'exit_ip') return item;
+            changed = true;
+            return {
+              ...item,
+              proxySuspect: true,
+              proxyVerificationSource: 'exit_ip' as const,
+            };
+          }
+          if (!item.proxySuspect && !item.proxyVerificationSource) return item;
+          changed = true;
+          const { proxyVerificationSource: _source, ...withoutVerification } = item;
+          return { ...withoutVerification, proxySuspect: false };
+        });
+        return changed ? { ...previous, results } : previous;
+      });
+    };
+
+    void (async () => {
+      for (let offset = 0; offset < targets.length; offset += CREDENTIAL_EXIT_IP_CHECK_BATCH_SIZE) {
+        if (activeConnectionFingerprintRef.current !== connectionFingerprint) return;
+        try {
+          const batch = await usageServiceApi.verifyCredentialExitIPs(
+            managerRequestScope.apiBase,
+            managerRequestScope.managementKey,
+            targets.slice(offset, offset + CREDENTIAL_EXIT_IP_CHECK_BATCH_SIZE)
+          );
+          applyExitIPResults(batch.results);
+        } catch {
+          // A direct check is advisory. Do not promote account failures to a
+          // proxy anomaly when the proof request itself cannot finish.
+        }
+      }
+    })();
   }, [
     connectionFingerprint,
-    displayResults,
+    currentAuthFiles,
     managerRequestScope?.apiBase,
     managerRequestScope?.managementKey,
     result,
@@ -2169,7 +2238,7 @@ export function CodexInspectionPage({
             previous
               ? {
                   ...previous,
-                  results: reconcileSuccessfulProxyRechecks(previous.results, completion.items),
+                   results: reconcileProxyReplacementRechecks(previous.results, completion.items),
                 }
               : previous
           );

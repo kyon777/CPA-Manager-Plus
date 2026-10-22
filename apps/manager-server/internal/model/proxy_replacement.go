@@ -187,21 +187,6 @@ type ProxyReplacementItemOutcome struct {
 	RecheckErrorMessage string
 }
 
-type ProxyReplacementProbeResult struct {
-	Target       ProxyReplacementTarget
-	Succeeded    bool
-	ErrorCode    string
-	ErrorMessage string
-	ProxySuspect bool
-}
-
-type ProxyFailureEvidence struct {
-	ProxyURL    string
-	StatusCode  int
-	ErrorKind   string
-	ErrorDetail string
-}
-
 // NormalizeProxyURL produces the canonical proxy identity used by the pool.
 // User-entered whitespace and trailing path separators are not meaningful for
 // the saved proxy inventory.
@@ -219,32 +204,4 @@ func ProxyFingerprint(proxyURL string) string {
 	}
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])
-}
-
-// IsSuspectedProxyTransportFailure is deliberately narrow: a credential must
-// have a configured proxy and the failure must prove a proxy-chain transport
-// problem. Authentication, quota, credit, rate-limit, and server business
-// responses are not proxy evidence.
-func IsSuspectedProxyTransportFailure(evidence ProxyFailureEvidence) bool {
-	if NormalizeProxyURL(evidence.ProxyURL) == "" {
-		return false
-	}
-
-	detail := strings.ToLower(strings.TrimSpace(evidence.ErrorDetail))
-	kind := strings.ToLower(strings.TrimSpace(evidence.ErrorKind))
-	if evidence.StatusCode == 401 || evidence.StatusCode == 429 ||
-		strings.Contains(detail, "quota") || strings.Contains(detail, "credit") {
-		return false
-	}
-	if kind != "request_error" {
-		return false
-	}
-
-	if strings.Contains(detail, "context deadline exceeded") || strings.Contains(detail, "timeout") {
-		return true
-	}
-
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(detail)
-	return strings.Contains(compact, "api-callfailed:502") &&
-		strings.Contains(compact, `"error":"requestfailed"`)
 }

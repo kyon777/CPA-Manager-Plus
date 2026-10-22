@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	quotasnapshotrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
@@ -24,6 +25,7 @@ const (
 	usageMonitoringModelFormatVersionKey    = "usage_monitoring_model_format_version"
 	usageHourlyAggregateSchemaVersion       = 3
 	usageHourlyAggregateStructureRevision   = "schema-3:model-1"
+	proxyExitIPOnlyCleanupMigrationName     = "proxy_exit_ip_only_v1"
 
 	usageMonitoringAccountDailyTable  = "usage_monitoring_account_daily_rollups_v1"
 	usageMonitoringAPIKeyDailyTable   = "usage_monitoring_api_key_daily_rollups_v1"
@@ -1203,6 +1205,9 @@ func Migrate(db *sql.DB) error {
 	if err := ensureCodexInspectionOwnershipColumns(db); err != nil {
 		return err
 	}
+	if err := ensureProxyExitIPOnlyStateCleanup(db); err != nil {
+		return err
+	}
 	if err := ensureAccountActionCandidateColumns(db); err != nil {
 		return err
 	}
@@ -1312,6 +1317,60 @@ func ensureTokenRecoveryTaskColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// ensureProxyExitIPOnlyStateCleanup atomically removes state created by the
+// retired account-response inference path. The marker is independent from the
+// usage/rollup migration state, so this tiny feature migration cannot affect
+// billing, request history, quota snapshots, or credential files.
+func ensureProxyExitIPOnlyStateCleanup(db *sql.DB) error {
+	if db == nil {
+		return errors.New("sqlite database is unavailable")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`create table if not exists cpam_feature_migrations (
+		name text primary key,
+		completed_at_ms integer not null
+	)`); err != nil {
+		return fmt.Errorf("create CPAM feature migration state: %w", err)
+	}
+	var alreadyApplied int
+	if err := tx.QueryRow(`select count(*) from cpam_feature_migrations where name = ?`, proxyExitIPOnlyCleanupMigrationName).Scan(&alreadyApplied); err != nil {
+		return fmt.Errorf("read CPAM feature migration state: %w", err)
+	}
+	if alreadyApplied != 0 {
+		return tx.Commit()
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := tx.Exec(`update codex_inspection_results
+		set proxy_suspect = 0
+		where proxy_suspect <> 0`); err != nil {
+		return fmt.Errorf("clear legacy inferred inspection proxy state: %w", err)
+	}
+	if _, err := tx.Exec(`update proxy_pool_state
+		set status = ?, last_failure_at_ms = 0, last_failure_reason = '', updated_at_ms = ?
+		where status = ?
+			or (status = ? and lower(trim(coalesce(last_failure_reason, ''))) in (?, ?, ?))`,
+		model.ProxyPoolStatusNormal,
+		now,
+		model.ProxyPoolStatusPendingVerification,
+		model.ProxyPoolStatusSuspect,
+		"transport_timeout",
+		"transport_502_request_failed",
+		"transport_unknown",
+	); err != nil {
+		return fmt.Errorf("clear legacy inferred proxy pool state: %w", err)
+	}
+	if _, err := tx.Exec(`insert into cpam_feature_migrations (name, completed_at_ms) values (?, ?)`,
+		proxyExitIPOnlyCleanupMigrationName, now); err != nil {
+		return fmt.Errorf("record CPAM feature migration: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ensureProxyReplacementTaskColumns keeps development databases created by

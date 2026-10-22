@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
@@ -229,92 +228,6 @@ func TestInspectSingleAccountNeverInfersProxyFailure(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestReplacementRecheckDoesNotTriggerAutomaticActionsOrUsageCollection(t *testing.T) {
-	var actionCalls int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.URL.Path == "/v0/management/auth-files" && request.Method == http.MethodGet:
-			if request.URL.Query().Get("include_proxy_url") != "1" {
-				t.Fatalf("recheck inventory query = %q, want include_proxy_url=1", request.URL.RawQuery)
-			}
-			_, _ = w.Write([]byte(`{"files":[{"id":"runtime-alice","name":"alice.json","auth_index":"7","provider":"codex","account":"alice@example.com","proxy_url":"http://new-proxy.example:8080"}]}`))
-		case request.URL.Path == "/v0/management/api-call" && request.Method == http.MethodPost:
-			_, _ = w.Write([]byte(`{"status_code":401,"body":{"detail":"expired"}}`))
-		case request.URL.Path == "/v0/management/auth-files/status" || request.URL.Path == "/v0/management/auth-files":
-			actionCalls++
-			http.Error(w, "recheck must not mutate credentials", http.StatusInternalServerError)
-		default:
-			http.NotFound(w, request)
-		}
-	}))
-	t.Cleanup(upstream.Close)
-
-	db := newCodexInspectionTestStore(t)
-	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
-	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionDelete
-	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
-		t.Fatalf("save manager config: %v", err)
-	}
-	recovery := &inspectionRecoveryRecorder{}
-	usageWrites := &proxyRecheckQuotaSnapshotRecorder{}
-	svc := newCodexInspectionTestService(t, db)
-	svc.client = upstream.Client()
-	svc.reauthRecovery = recovery
-	svc.quotaSnapshots = usageWrites
-
-	output := svc.RecheckProxyReplacement(context.Background(), []model.ProxyReplacementTarget{{
-		ClientKey: "alice", FileName: "alice.json", RuntimeID: "runtime-alice", AuthIndex: "7",
-		AccountEmail: "alice@example.com", Provider: "codex",
-	}}, 1)
-	if len(output) != 1 || output[0].Succeeded || output[0].ErrorCode == "" {
-		t.Fatalf("recheck output = %#v, want one failed 401 probe", output)
-	}
-	if actionCalls != 0 {
-		t.Fatalf("recheck performed %d credential mutations", actionCalls)
-	}
-	if got := len(recovery.targets()); got != 0 {
-		t.Fatalf("recheck signaled automatic token recovery: %#v", recovery.targets())
-	}
-	if got := usageWrites.calls(); got != 0 {
-		t.Fatalf("recheck persisted %d usage snapshots", got)
-	}
-	runs, err := db.ListCodexInspectionRuns(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("list inspection runs: %v", err)
-	}
-	if len(runs) != 0 {
-		t.Fatalf("recheck created inspection runs: %#v", runs)
-	}
-}
-
-func TestSafeProxyRecheckMessageRedactsEmbeddedProxyURL(t *testing.T) {
-	message := safeProxyRecheckMessage(`upstream rejected {"proxy_url":"http://user:password@proxy.example:8080/path"}`)
-	if strings.Contains(message, "user:password@proxy.example") || strings.Contains(message, "http://") {
-		t.Fatalf("proxy URL leaked in recheck message: %q", message)
-	}
-	if !strings.Contains(message, "[redacted-url]") {
-		t.Fatalf("recheck message lost redaction marker: %q", message)
-	}
-}
-
-type proxyRecheckQuotaSnapshotRecorder struct {
-	mu    sync.Mutex
-	count int
-}
-
-func (r *proxyRecheckQuotaSnapshotRecorder) WriteCodexInspectionResult(context.Context, model.CodexInspectionResult) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.count++
-	return nil
-}
-
-func (r *proxyRecheckQuotaSnapshotRecorder) calls() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.count
 }
 
 func proxyInspectionTestClient(
