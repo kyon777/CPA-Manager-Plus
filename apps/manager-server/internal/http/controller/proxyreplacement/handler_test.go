@@ -85,6 +85,79 @@ func TestInspectionSignalForwardsStrictTransportEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifyExitIPRequiresAdministratorAuthorization(t *testing.T) {
+	handler, _, service := newProxyReplacementHandler(t)
+	request := httptest.NewRequest(http.MethodPost, basePath+"/proxy-pool/verify-exit-ip", bytes.NewBufferString(`{"fingerprints":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}`))
+	recorder := httptest.NewRecorder()
+	handler.Handle(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if service.verifyCalls != 0 {
+		t.Fatalf("unauthorized request invoked verification %d times", service.verifyCalls)
+	}
+}
+
+func TestVerifyExitIPRejectsRawProxyURLWithoutCallingService(t *testing.T) {
+	handler, adminKey, service := newProxyReplacementHandler(t)
+	request := httptest.NewRequest(http.MethodPost, basePath+"/proxy-pool/verify-exit-ip", bytes.NewBufferString(`{"proxyUrl":"http://user:secret@proxy.example:8080"}`))
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+	handler.Handle(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if service.verifyCalls != 0 {
+		t.Fatalf("raw proxy URL invoked verification %d times", service.verifyCalls)
+	}
+}
+
+func TestVerifyExitIPReturnsFingerprintOnlyResults(t *testing.T) {
+	handler, adminKey, service := newProxyReplacementHandler(t)
+	fingerprint := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	service.verifyBatch = model.ProxyExitIPCheckBatch{Results: []model.ProxyExitIPCheckResult{{
+		Fingerprint: fingerprint,
+		Outcome:     model.ProxyExitIPOutcomeHealthy,
+		ExitIP:      "203.0.113.7",
+		LatencyMS:   31,
+	}}}
+	request := httptest.NewRequest(http.MethodPost, basePath+"/proxy-pool/verify-exit-ip", bytes.NewBufferString(`{"fingerprints":["`+fingerprint+`"]}`))
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+	handler.Handle(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if service.verifyCalls != 1 || len(service.verifyInput) != 1 || service.verifyInput[0] != fingerprint {
+		t.Fatalf("verification input=%#v calls=%d", service.verifyInput, service.verifyCalls)
+	}
+	if bytes.Contains(recorder.Body.Bytes(), []byte("proxy.example")) || bytes.Contains(recorder.Body.Bytes(), []byte("user:secret")) {
+		t.Fatalf("response leaked raw proxy URL: %s", recorder.Body.String())
+	}
+}
+
+func TestVerifyExitIPRejectsDuplicateOrInvalidFingerprintInput(t *testing.T) {
+	for name, payload := range map[string]string{
+		"duplicate": `{"fingerprints":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}`,
+		"raw URL":   `{"fingerprints":["http://user:secret@proxy.example:8080"]}`,
+		"empty":     `{"fingerprints":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler, adminKey, service := newProxyReplacementHandler(t)
+			request := httptest.NewRequest(http.MethodPost, basePath+"/proxy-pool/verify-exit-ip", bytes.NewBufferString(payload))
+			request.Header.Set("Authorization", "Bearer "+adminKey)
+			recorder := httptest.NewRecorder()
+			handler.Handle(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if service.verifyCalls != 0 {
+				t.Fatalf("invalid input invoked verification %d times", service.verifyCalls)
+			}
+		})
+	}
+}
+
 func TestSafeHandlerErrorRedactsURLEmbeddedInsideStructuredError(t *testing.T) {
 	err := safeHandlerError(errors.New(`upstream rejected {"proxy_url":"http://user:password@proxy.example:8080/path"}`))
 	if got := err.Error(); bytes.Contains([]byte(got), []byte("user:password")) || bytes.Contains([]byte(got), []byte("proxy.example")) {
@@ -101,6 +174,9 @@ type fakeProxyReplacementService struct {
 	signalCalls         int
 	signal              model.ProxyFailureEvidence
 	restoreSuspectCalls int
+	verifyCalls         int
+	verifyInput         []string
+	verifyBatch         model.ProxyExitIPCheckBatch
 }
 
 func (s *fakeProxyReplacementService) CreatePreview(context.Context, model.ProxyReplacementPreviewRequest) (model.ProxyReplacementTaskPage, error) {
@@ -128,6 +204,11 @@ func (s *fakeProxyReplacementService) ReportInspectionSignal(_ context.Context, 
 	s.signalCalls++
 	s.signal = evidence
 	return true, nil
+}
+func (s *fakeProxyReplacementService) VerifyProxyPoolExitIPs(_ context.Context, fingerprints []string) (model.ProxyExitIPCheckBatch, error) {
+	s.verifyCalls++
+	s.verifyInput = append([]string(nil), fingerprints...)
+	return s.verifyBatch, nil
 }
 
 func newProxyReplacementHandler(t *testing.T) (*Handler, string, *fakeProxyReplacementService) {

@@ -22,12 +22,14 @@ const (
 	basePath           = "/v0/management/proxy-replacements"
 	maxPreviewBytes    = 1 << 20
 	maxSmallRequestLen = 256 << 10
+	maxExitIPChecks    = 500
 )
 
 // Match a URL until a transport delimiter or a structured-message boundary.
 // This intentionally also catches a URL enclosed in JSON quotes, which a
 // whitespace-only scrubber would leave intact with proxy credentials exposed.
 var urlRedactionPattern = regexp.MustCompile(`(?i)https?://[^\s"'<>}\]]+`)
+var proxyFingerprintPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type Service interface {
 	CreatePreview(context.Context, model.ProxyReplacementPreviewRequest) (model.ProxyReplacementTaskPage, error)
@@ -37,6 +39,7 @@ type Service interface {
 	RestoreProxyPoolEntry(context.Context, string) (model.ProxyPoolState, error)
 	RestoreSuspectProxyPoolEntries(context.Context) (int, error)
 	ReportInspectionSignal(context.Context, model.ProxyFailureEvidence) (bool, error)
+	VerifyProxyPoolExitIPs(context.Context, []string) (model.ProxyExitIPCheckBatch, error)
 }
 
 type Handler struct {
@@ -63,6 +66,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.requirePanel(w, r, h.listPool)
 	case path == basePath+"/proxy-pool/restore-suspects":
 		h.requireAdmin(w, r, h.restoreSuspectPool)
+	case path == basePath+"/proxy-pool/verify-exit-ip":
+		h.requireAdmin(w, r, h.verifyExitIP)
 	case strings.HasPrefix(path, basePath+"/proxy-pool/") && strings.HasSuffix(path, "/restore"):
 		h.requireAdmin(w, r, h.restorePool)
 	case strings.HasPrefix(path, basePath+"/tasks/") && strings.HasSuffix(path, "/confirm"):
@@ -221,6 +226,24 @@ func (h *Handler) restorePool(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, state)
 }
 
+func (h *Handler) verifyExitIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.MethodNotAllowed(w)
+		return
+	}
+	fingerprints, err := decodeExitIPVerificationRequest(http.MaxBytesReader(w, r.Body, maxSmallRequestLen))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err)
+		return
+	}
+	batch, err := h.Service.VerifyProxyPoolExitIPs(r.Context(), fingerprints)
+	if err != nil {
+		response.Error(w, previewErrorStatus(err), safeHandlerError(err))
+		return
+	}
+	response.JSON(w, http.StatusOK, batch)
+}
+
 func decodePreviewRequest(reader io.Reader) (model.ProxyReplacementPreviewRequest, error) {
 	var root map[string]json.RawMessage
 	if err := decodeOneJSON(reader, &root); err != nil || root == nil {
@@ -285,6 +308,36 @@ func decodeInspectionSignal(reader io.Reader) (model.ProxyFailureEvidence, error
 		ErrorKind:   request.ErrorKind,
 		ErrorDetail: request.ErrorDetail,
 	}, nil
+}
+
+// decodeExitIPVerificationRequest accepts only opaque, SHA-256 proxy
+// fingerprints. This deliberately prevents the authenticated browser from
+// choosing an arbitrary outbound proxy URL or exit-IP target.
+func decodeExitIPVerificationRequest(reader io.Reader) ([]string, error) {
+	var root map[string]json.RawMessage
+	if err := decodeOneJSON(reader, &root); err != nil || root == nil {
+		return nil, errors.New("invalid proxy exit-IP verification request")
+	}
+	if len(root) != 1 || root["fingerprints"] == nil {
+		return nil, errors.New("proxy exit-IP verification request accepts only fingerprints")
+	}
+	var fingerprints []string
+	if err := json.Unmarshal(root["fingerprints"], &fingerprints); err != nil || len(fingerprints) == 0 || len(fingerprints) > maxExitIPChecks {
+		return nil, errors.New("proxy exit-IP verification requires 1 to 500 fingerprints")
+	}
+	seen := make(map[string]struct{}, len(fingerprints))
+	for index, candidate := range fingerprints {
+		fingerprint := strings.TrimSpace(candidate)
+		if !proxyFingerprintPattern.MatchString(fingerprint) {
+			return nil, errors.New("proxy exit-IP verification contains an invalid fingerprint")
+		}
+		if _, duplicate := seen[fingerprint]; duplicate {
+			return nil, errors.New("proxy exit-IP verification contains duplicate fingerprints")
+		}
+		seen[fingerprint] = struct{}{}
+		fingerprints[index] = fingerprint
+	}
+	return fingerprints, nil
 }
 
 func validatePreviewTargets(raw json.RawMessage, request *model.ProxyReplacementPreviewRequest) error {
