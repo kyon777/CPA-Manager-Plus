@@ -206,6 +206,7 @@ describe('accounts workspace wiring', () => {
       'batch_recovery_page',
       'recovery_auto_processing',
       'recovery_auto_attempted',
+      'recovery_auto_cooling_down',
       'recovery_manual_processing',
       'recovery_succeeded',
       'recovery_failed_reason',
@@ -223,7 +224,7 @@ describe('accounts workspace wiring', () => {
     expect(String(recovery.batch_recovery_result)).toContain('{{count}}');
   });
 
-  it('keeps the one-shot automatic recovery marker visible after its task has reached a terminal state', () => {
+  it('keeps automatic recovery history visible after its task has reached a terminal state', () => {
     expect(accountsPageSource).toContain(
       'accountProxyURL || recoveryPresentation || hasAutomaticRecoveryAttempt(runtime?.recoveryTask)'
     );

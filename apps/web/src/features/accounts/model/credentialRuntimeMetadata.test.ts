@@ -11,6 +11,7 @@ import {
   buildPageRecoveryCandidates,
   formatRecoveryState,
   hasAutomaticRecoveryAttempt,
+  isAutomaticRecoveryCoolingDown,
   isPendingRecoveryStatus,
 } from './credentialRuntimeMetadata';
 import { buildCodexTokenRecoveryTarget } from '@/features/oauth/codexReauthModel';
@@ -239,6 +240,23 @@ describe('credential runtime metadata model', () => {
     expect(hasAutomaticRecoveryAttempt({ autoAttemptedAtMs: 123 } as never)).toBe(true);
     expect(hasAutomaticRecoveryAttempt({ autoAttemptedAtMs: 0 } as never)).toBe(false);
     expect(hasAutomaticRecoveryAttempt(null)).toBe(false);
+  });
+
+  it('treats automatic recovery as a rolling 24-hour cooldown', () => {
+    const nowMs = 1_800_000_000_000;
+    expect(isAutomaticRecoveryCoolingDown({ autoAttemptedAtMs: nowMs - 1 } as never, nowMs)).toBe(
+      true
+    );
+    expect(
+      isAutomaticRecoveryCoolingDown(
+        { autoAttemptedAtMs: nowMs - 24 * 60 * 60 * 1000 } as never,
+        nowMs
+      )
+    ).toBe(false);
+    expect(isAutomaticRecoveryCoolingDown({ autoAttemptedAtMs: nowMs + 1 } as never, nowMs)).toBe(
+      true
+    );
+    expect(isAutomaticRecoveryCoolingDown(null, nowMs)).toBe(false);
   });
 
   it('uses the verified Codex member email when making a recovery locator', () => {

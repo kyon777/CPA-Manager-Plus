@@ -113,6 +113,7 @@ import {
   buildPageRecoveryCandidates,
   formatRecoveryState,
   hasAutomaticRecoveryAttempt,
+  isAutomaticRecoveryCoolingDown,
 } from '@/features/accounts/model/credentialRuntimeMetadata';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
@@ -9893,6 +9894,7 @@ export function AccountsPage() {
     recoveryPresentation: ReturnType<typeof formatRecoveryState>
   ) => {
     const autoAttempted = hasAutomaticRecoveryAttempt(recoveryTask);
+    const autoCoolingDown = isAutomaticRecoveryCoolingDown(recoveryTask);
     if (!recoveryPresentation && !autoAttempted) return null;
     const label = recoveryPresentation
       ? t(recoveryPresentation.labelKey, recoveryPresentation.values)
@@ -9934,7 +9936,7 @@ export function AccountsPage() {
         {currentStatus}
         {autoAttempted ? (
           <span className={`${styles.accountRecoveryStatus} ${styles.accountRecoveryStatusInfo}`}>
-            {t('accounts.recovery_auto_attempted')}
+            {t(autoCoolingDown ? 'accounts.recovery_auto_cooling_down' : 'accounts.recovery_auto_attempted')}
           </span>
         ) : null}
       </span>

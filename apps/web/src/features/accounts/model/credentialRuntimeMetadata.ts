@@ -9,9 +9,7 @@ import {
   buildCodexTokenRecoveryTarget,
   createCodexReauthTargetFromAuthFile,
 } from '@/features/oauth/codexReauthModel';
-import {
-  buildAccountBannedDeleteTarget,
-} from '@/features/authFiles/model/accountBannedDelete';
+import { buildAccountBannedDeleteTarget } from '@/features/authFiles/model/accountBannedDelete';
 import { getAuthFilePatchTarget } from '@/features/authFiles/model/credentialStatus';
 import type { AccountRow } from './accountRows';
 
@@ -159,7 +157,10 @@ export const buildPageAccountBannedRows = (
 ): AccountRow[] =>
   rows.filter((row) =>
     Boolean(
-      buildPageAccountBannedDeleteTarget(row, metadataByClientKey.get(row.selectionKey)?.recoveryTask)
+      buildPageAccountBannedDeleteTarget(
+        row,
+        metadataByClientKey.get(row.selectionKey)?.recoveryTask
+      )
     )
   );
 
@@ -222,8 +223,21 @@ export const buildPageRecoveryCandidates = (
 export const isPendingRecoveryStatus = (status: TokenRecoveryStatus | null | undefined): boolean =>
   Boolean(status && pendingRecoveryStatuses.has(status));
 
+export const automaticRecoveryCooldownMs = 24 * 60 * 60 * 1000;
+
 export const hasAutomaticRecoveryAttempt = (task: TokenRecoveryTask | null | undefined): boolean =>
   Boolean(task && (task.autoAttemptedAtMs ?? 0) > 0);
+
+export const isAutomaticRecoveryCoolingDown = (
+  task: TokenRecoveryTask | null | undefined,
+  nowMs = Date.now()
+): boolean => {
+  const attemptedAtMs = task?.autoAttemptedAtMs ?? 0;
+  return (
+    attemptedAtMs > 0 &&
+    (nowMs <= attemptedAtMs || nowMs - attemptedAtMs < automaticRecoveryCooldownMs)
+  );
+};
 
 export const formatRecoveryState = (
   task: TokenRecoveryTask | null | undefined
