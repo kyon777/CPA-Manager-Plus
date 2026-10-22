@@ -1,6 +1,7 @@
 package monitoring
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -132,6 +133,11 @@ func (h *Handler) handleAccountWindowUsage(w http.ResponseWriter, r *http.Reques
 	}
 	result, err := h.App.MonitoringService.AccountWindowUsage(r.Context(), req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// The browser already abandoned this superseded page/filter request.
+			// Do not turn its cancellation into a misleading server-side 500.
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, err)
 		return
 	}

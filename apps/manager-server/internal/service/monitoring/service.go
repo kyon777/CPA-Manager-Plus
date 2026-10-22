@@ -2122,7 +2122,10 @@ func (s *Service) accountWindowUsage(ctx context.Context, req AccountWindowUsage
 		})
 	}
 
-	stats, available := s.monitoringReader.AccountWindowStats(ctx, queries)
+	stats, available, projectionErr := s.monitoringReader.AccountWindowStats(ctx, queries)
+	if projectionErr != nil {
+		return AccountWindowUsageResponse{}, projectionErr
+	}
 	if !available {
 		var err error
 		stats, err = s.store.AccountWindowModelStats(ctx, queries)

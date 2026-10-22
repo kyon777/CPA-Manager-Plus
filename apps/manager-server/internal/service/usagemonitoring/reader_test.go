@@ -2,6 +2,7 @@ package usagemonitoring
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -88,13 +89,41 @@ func TestAccountWindowStatsReturnsUnavailableForProjectionSchemaMismatch(t *test
 		t.Fatalf("invalidate projection state: %v", err)
 	}
 
-	rows, available := New(db).AccountWindowStats(ctx, []store.AccountWindowUsageQuery{{
+	rows, available, err := New(db).AccountWindowStats(ctx, []store.AccountWindowUsageQuery{{
 		RequestIndex:     0,
 		FromMS:           1,
 		ToMS:             2,
 		AuthFileSnapshot: "first.json",
 		AuthIndex:        "auth-1",
 	}})
+	if err != nil {
+		t.Fatalf("account window projection error = %v", err)
+	}
+	if available || rows != nil {
+		t.Fatalf("account window projection rows = %#v available=%v", rows, available)
+	}
+}
+
+func TestAccountWindowStatsReturnsCancellationWithoutFallback(t *testing.T) {
+	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	db := store.New(sqlDB)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rows, available, err := New(db).AccountWindowStats(ctx, []store.AccountWindowUsageQuery{{
+		RequestIndex:     0,
+		FromMS:           1,
+		ToMS:             2,
+		AuthFileSnapshot: "first.json",
+		AuthIndex:        "auth-1",
+	}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error = %v", err)
+	}
 	if available || rows != nil {
 		t.Fatalf("account window projection rows = %#v available=%v", rows, available)
 	}

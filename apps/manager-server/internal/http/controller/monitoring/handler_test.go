@@ -81,6 +81,28 @@ func TestHandleAccountWindowUsageRejectsUnknownTargetFields(t *testing.T) {
 	}
 }
 
+func TestHandleAccountWindowUsageDoesNotWriteServerErrorAfterClientCancellation(t *testing.T) {
+	st := newHandlerTestStore(t)
+	handler := &Handler{App: &app.Context{MonitoringService: monitoringsvc.New(st)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/monitoring/account-window-usage",
+		bytes.NewBufferString(`{"windows":[{"row_key":"row-1","provider_window_id":"monthly","period":"current","from_ms":1,"to_ms":2,"auth_file_snapshot":"credential.json","auth_provider_snapshot":"codex","auth_index":"idx-1"}]}`),
+	).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+
+	handler.handleAccountWindowUsage(recorder, req)
+
+	if recorder.Code == http.StatusInternalServerError {
+		t.Fatalf("canceled request wrote status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("canceled request wrote body=%s", recorder.Body.String())
+	}
+}
+
 func TestValidateAccountWindowUsageRequiresCredentialIdentity(t *testing.T) {
 	base := monitoringsvc.AccountWindowUsageTarget{
 		RowKey:           "row-1",
