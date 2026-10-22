@@ -104,7 +104,7 @@ describe('credential runtime metadata model', () => {
     expect(JSON.stringify(embedded)).not.toContain('must-not-cross-the-list-boundary');
   });
 
-  it('selects only current-page Codex rows with terminal account_banned recovery errors', () => {
+  it('selects only current-page Codex rows with matching terminal account_banned recovery errors', () => {
     const banned = makeRow({ selectionKey: 'row-banned', fileName: 'banned.json' });
     const caseVariant = makeRow({ selectionKey: 'row-case', fileName: 'case.json' });
     const pending = makeRow({ selectionKey: 'row-pending', fileName: 'pending.json' });
@@ -121,6 +121,8 @@ describe('credential runtime metadata model', () => {
           id: 1,
           fileName: `${clientKey}.json`,
           provider: 'codex',
+          authIndex: '7',
+          accountEmail: 'person@example.com',
           status,
           mode: 'manual',
           ...(lastErrorCode === undefined ? {} : { lastErrorCode }),
