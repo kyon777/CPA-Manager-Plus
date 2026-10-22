@@ -95,14 +95,7 @@ func (r *repository) RecentAccountRequests(
 	if len(targets) == 0 || limit <= 0 {
 		return []LatestAccountRequest{}, nil
 	}
-	ready, err := r.latestRequestIndexesReady(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if ready {
-		return r.recentAccountRequestsIndexed(ctx, targets, limit)
-	}
-	return r.recentAccountRequestsBatched(ctx, targets, limit)
+	return r.recentAccountRequestsCollection(ctx, targets, limit)
 }
 
 func (r *repository) latestRequestIndexesReady(ctx context.Context) (bool, error) {
@@ -386,7 +379,12 @@ limit ?`, args...)
 	return requests, rows.Err()
 }
 
-func (r *repository) recentAccountRequestsBatched(
+// recentAccountRequestsCollection resolves all credentials in one SQLite
+// statement.  The old indexed branch issued multiple snapshot/legacy queries
+// for every credential, which amplified a 1,000-account list request into
+// thousands of round trips.  This CTE keeps the same identity fencing and
+// per-credential Top-N semantics while giving SQLite the complete target set.
+func (r *repository) recentAccountRequestsCollection(
 	ctx context.Context,
 	targets []LatestAccountRequestQuery,
 	limit int,

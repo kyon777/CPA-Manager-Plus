@@ -389,6 +389,54 @@ func TestRecentAccountRequestsIndexedMatchesBatchedFallback(t *testing.T) {
 	}
 }
 
+func TestRecentAccountRequestsCollectionMatchesIndexedResultsWhenIndexesExist(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
+		t.Fatalf("prepare latest-request indexes: %v", err)
+	}
+	repo := New(db).(*repository)
+
+	ordinary := latestAccountRequestEvent("ordinary", 1_700_000_004_000, "ordinary.json", "idx-1", "ordinary.json")
+	legacy := latestAccountRequestEvent("legacy", 1_700_000_005_000, "", "idx-2", "legacy.json")
+	codex := latestAccountRequestEvent("codex", 1_700_000_006_000, "shared.json", "idx-3", "shared.json")
+	codex.Provider = "codex"
+	codex.AuthProviderSnapshot = "codex"
+	codex.AuthAccountIDSnapshot = "workspace-1"
+	codex.AccountSnapshot = "alice@example.com"
+	if _, err := repo.InsertBatch(ctx, []usage.Event{ordinary, legacy, codex}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	targets := []LatestAccountRequestQuery{
+		{RequestIndex: 0, AuthFileSnapshot: "ordinary.json", AuthIndex: "idx-1"},
+		{RequestIndex: 1, AuthFileSnapshot: "legacy.json", AuthIndex: "idx-2"},
+		{
+			RequestIndex:          2,
+			AuthFileSnapshot:      "shared.json",
+			AuthIndex:             "idx-3",
+			Provider:              "codex",
+			AuthAccountIDSnapshot: "workspace-1",
+			AccountSnapshot:       "alice@example.com",
+		},
+	}
+	indexed, err := repo.recentAccountRequestsIndexed(ctx, targets, 9)
+	if err != nil {
+		t.Fatalf("indexed results: %v", err)
+	}
+	collection, err := repo.recentAccountRequestsCollection(ctx, targets, 9)
+	if err != nil {
+		t.Fatalf("collection results: %v", err)
+	}
+	if !sameLatestAccountRequests(indexed, collection) {
+		t.Fatalf("indexed = %#v collection = %#v", indexed, collection)
+	}
+}
+
 func TestSnapshotLatestRequestQueryUsesAuthFileAndAuthIndexIndex(t *testing.T) {
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
