@@ -31,7 +31,7 @@
 - Modify: `apps/manager-server/internal/repository/usageevent/latest_account_request.go:90-165`
 - Modify: `apps/manager-server/internal/repository/usageevent/latest_account_request_test.go`
 
-- [ ] **Step 1: Write the failing parity test**
+- [x] **Step 1: Write the failing parity test**
 
 Add a test which prepares two otherwise identical temporary SQLite databases, one with latest-request indexes and one without. Seed a mixed target set containing a normal snapshot credential, an empty-index legacy credential, a complete Codex workspace/member target, and a conflicting Codex target. Invoke the direct indexed helper and the collection helper on the indexed database and compare the normalized results:
 
@@ -47,7 +47,7 @@ func TestRecentAccountRequestsIndexedCollectionMatchesLegacyIndexedSemantics(t *
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails for the intended path-selection gap**
+- [x] **Step 2: Run the test to verify it fails for the intended path-selection gap**
 
 Run:
 
@@ -56,9 +56,9 @@ Set-Location apps/manager-server
 go test ./internal/repository/usageevent -run TestRecentAccountRequestsIndexedCollectionMatchesLegacyIndexedSemantics -count=1
 ```
 
-Expected: test initially exposes any collection-path mismatch that must be corrected before routing the production indexed path to it. If it already passes because the helpers are semantically equivalent, add a second request-selection seam/test that asserts `RecentAccountRequests` delegates to the set-oriented helper when indexes exist; do not alter production code before a red test exists.
+Evidence: parity passed because the existing collection helper was equivalent; a request-selection regression was observed failing before production routing changed.
 
-- [ ] **Step 3: Make the smallest production routing change**
+- [x] **Step 3: Make the smallest production routing change**
 
 Replace the per-target indexed branch in `RecentAccountRequests` with a set-based branch. Preserve empty inputs and the index-read error contract, but route both indexed and non-indexed conditions to the one-CTE collection function. Keep `recentAccountRequestsIndexed` private as a parity/reference implementation until future cleanup.
 
@@ -82,7 +82,7 @@ return r.recentAccountRequestsBatched(ctx, targets, limit)
 
 Do not change CTE result fields, target limit, response order, legacy fallback predicates, Codex workspace/member guards, or redaction fields.
 
-- [ ] **Step 4: Run focused repository tests**
+- [x] **Step 4: Run focused repository tests**
 
 Run:
 
@@ -93,7 +93,7 @@ go test ./internal/repository/usageevent -count=1
 
 Expected: all existing snapshot, legacy, index-plan, and Codex identity tests pass.
 
-- [ ] **Step 5: Commit the verified server query change**
+- [x] **Step 5: Commit the verified server query change**
 
 ```powershell
 git add apps/manager-server/internal/repository/usageevent/latest_account_request.go apps/manager-server/internal/repository/usageevent/latest_account_request_test.go
@@ -108,7 +108,7 @@ git commit -m "perf: batch credential recent request index queries"
 - Modify: `apps/manager-server/internal/service/monitoring/service.go:2125-2132`
 - Modify: `apps/manager-server/internal/service/monitoring/service_test.go`
 
-- [ ] **Step 1: Write a failing Reader cancellation test**
+- [x] **Step 1: Write a failing Reader cancellation test**
 
 Add a test that passes an already-canceled context to `AccountWindowStats` and expects an error-bearing result instead of an indistinguishable `available=false` fallback signal:
 
@@ -121,7 +121,7 @@ if !errors.Is(err, context.Canceled) || available {
 }
 ```
 
-- [ ] **Step 2: Run the Reader test and confirm it fails**
+- [x] **Step 2: Run the Reader test and confirm it fails**
 
 Run:
 
@@ -130,9 +130,9 @@ Set-Location apps/manager-server
 go test ./internal/service/usagemonitoring -run TestAccountWindowStatsReturnsCancellationWithoutFallback -count=1
 ```
 
-Expected: FAIL because `AccountWindowStats` currently only returns `(rows, available)` and discards the cancellation error.
+Evidence: observed failing before cancellation routing made projection cancellation distinct from unavailability.
 
-- [ ] **Step 3: Implement cancellation-aware Reader and service behavior**
+- [x] **Step 3: Implement cancellation-aware Reader and service behavior**
 
 Change the Reader signature to return `([]store.AccountWindowModelStat, bool, error)`. Preserve `available=false, err=nil` for a real unavailable schema/projection. On store error, return the original error after rate-limited diagnostic logging. In `accountWindowUsage`, short-circuit cancellation/deadline errors before raw fallback; only call `s.store.AccountWindowModelStats` when `available` is false and `err` is nil.
 
@@ -149,7 +149,7 @@ if !available {
 
 The HTTP handler may still naturally abandon a client-disconnected request. Do not convert an abort into an application-level success response, and do not change normal 200/500 contracts for non-cancellation failures.
 
-- [ ] **Step 4: Write and run a service regression test**
+- [x] **Step 4: Write and run a service regression test**
 
 Add a canceled-context test around `Service.AccountWindowUsage` with a valid window target. Verify it returns `context.Canceled`; add a normal-window test or reuse existing tests to prove normal projection results remain available. Run:
 
@@ -160,7 +160,7 @@ go test ./internal/service/usagemonitoring ./internal/service/monitoring -count=
 
 Expected: green; cancellation does not trigger a raw `usage_events` fallback.
 
-- [ ] **Step 5: Commit cancellation handling**
+- [x] **Step 5: Commit cancellation handling**
 
 ```powershell
 git add apps/manager-server/internal/service/usagemonitoring/reader.go apps/manager-server/internal/service/usagemonitoring/reader_test.go apps/manager-server/internal/service/monitoring/service.go apps/manager-server/internal/service/monitoring/service_test.go
@@ -173,7 +173,7 @@ git commit -m "fix: avoid raw usage fallback after window request cancellation"
 - Modify: `apps/web/src/features/accounts/AccountsPage.tsx:1499-1503, 2445-2515, 4375-4376, 4901-4902, 5449`
 - Modify: `apps/web/src/features/accounts/AccountsPage.test.tsx`
 
-- [ ] **Step 1: Write failing refresh-domain tests**
+- [x] **Step 1: Write failing refresh-domain tests**
 
 Add tests with mocked `monitoringAnalyticsApi` that mount the accounts page, complete its first load, trigger passive evidence refresh, and assert no second calls to global `getAccountRecentIndex` or current-page `getAccountWindowUsage`. Add a separate explicit refresh assertion that increments its intended domain revision and causes the appropriate request.
 
@@ -185,7 +185,7 @@ expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(initialRecentIndexCall
 expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(initialWindowCalls);
 ```
 
-- [ ] **Step 2: Run the new frontend test to verify it fails**
+- [x] **Step 2: Run the new frontend test to verify it fails**
 
 Run:
 
@@ -193,9 +193,9 @@ Run:
 npm --workspace apps/web run test -- src/features/accounts/AccountsPage.test.tsx -t "does not reload global evidence after passive refresh"
 ```
 
-Expected: FAIL because `refreshPassiveAccountsEvidence` currently increments `accountHistoryAutoRefreshRevision`, which participates in both request keys.
+Evidence: observed failing before revision ownership was split; passive refresh advanced unrelated evidence domains.
 
-- [ ] **Step 3: Split revision ownership by data domain**
+- [x] **Step 3: Split revision ownership by data domain**
 
 Add `recentIndexRefreshRevision` beside existing state. Make these exact key changes:
 
@@ -207,7 +207,7 @@ const listWindowUsageAutoLoadKey = `${listWindowUsageAutoContextKey}\u0000${list
 
 Remove `setAccountHistoryAutoRefreshRevision` from `refreshPassiveAccountsEvidence`. Keep it in explicit `refreshAccountsWorkspace`, because manual refresh intentionally refreshes history. In that explicit callback increment `recentIndexRefreshRevision` and `listWindowUsageRefreshRevision` together with the history revision only after its dependency work completes and the scope remains current. Preserve existing quota-success increments to `listWindowUsageRefreshRevision`.
 
-- [ ] **Step 4: Run focused frontend tests and type-check**
+- [x] **Step 4: Run focused frontend tests and type-check**
 
 Run:
 
@@ -218,7 +218,7 @@ npm --workspace apps/web run type-check
 
 Expected: focused tests pass and TypeScript reports no errors.
 
-- [ ] **Step 5: Commit refresh-domain isolation**
+- [x] **Step 5: Commit refresh-domain isolation**
 
 ```powershell
 git add apps/web/src/features/accounts/AccountsPage.tsx apps/web/src/features/accounts/AccountsPage.test.tsx
@@ -232,7 +232,7 @@ git commit -m "perf: isolate passive credential evidence refreshes"
 - Modify: `apps/web/src/features/accounts/model/serverErrorPriorityUpdates.test.ts`
 - Modify: `apps/web/src/features/accounts/AccountsPage.tsx:1, 1459-1471`
 
-- [ ] **Step 1: Write failing high-cardinality merge tests**
+- [x] **Step 1: Write failing high-cardinality merge tests**
 
 Add a 4,000-file batch test with 200 matching updates and interleaved stale/manual updates. Assert only matching `priorityBefore` entries change, sequential same-credential cursor updates still chain, and untouched file object references are retained.
 
@@ -243,7 +243,7 @@ expect(result.files[3999]).toBe(files[3999]);
 expect(result.files[targetIndex]?.priority).toBe(expectedPriority);
 ```
 
-- [ ] **Step 2: Run the priority model test and verify the pre-change behavior lacks the batch-index guarantee**
+- [x] **Step 2: Run the priority model test and verify the pre-change behavior lacks the batch-index guarantee**
 
 Run:
 
@@ -251,9 +251,9 @@ Run:
 npm --workspace apps/web run test -- src/features/accounts/model/serverErrorPriorityUpdates.test.ts
 ```
 
-Expected: add a specific identity-index behavior assertion that fails until the model exposes/uses the precomputed lookup. Do not use wall-clock duration as a test oracle.
+Evidence: a 4,000-file regression uses a Proxy that throws on findIndex; it failed before the batch index implementation.
 
-- [ ] **Step 3: Implement a per-batch credential index and transition commit**
+- [x] **Step 3: Implement a per-batch credential index and transition commit**
 
 Create a normalized composite key helper from physical file name, normalized auth index, and normalized provider. Build `Map<string, number>` once from `files`; for each valid update look up its index, then retain the existing `readPriority(current) === priorityBefore` guard before cloning only that object. Preserve update input order so chained deltas remain correct.
 
@@ -268,7 +268,7 @@ startTransition(() => {
 
 Do not change the one-second polling cadence, cursor protocol, server queue, `priorityBefore` safety rule, or CPA priority write behavior.
 
-- [ ] **Step 4: Run model tests, hook-adjacent tests, and type-check**
+- [x] **Step 4: Run model tests, hook-adjacent tests, and type-check**
 
 Run:
 
@@ -279,7 +279,7 @@ npm --workspace apps/web run type-check
 
 Expected: all tests pass; ensure a missing hook test file is not referenced—if absent, run the model test plus the accounts workspace tests that exercise the hook.
 
-- [ ] **Step 5: Commit the sparse priority merge**
+- [x] **Step 5: Commit the sparse priority merge**
 
 ```powershell
 git add apps/web/src/features/accounts/model/serverErrorPriorityUpdates.ts apps/web/src/features/accounts/model/serverErrorPriorityUpdates.test.ts apps/web/src/features/accounts/AccountsPage.tsx
@@ -294,7 +294,7 @@ git commit -m "perf: batch priority demotion list updates"
 - Modify: `apps/web/src/features/accounts/AccountsPage.tsx:7538-7604`
 - Modify: `apps/web/src/features/accounts/AccountsPage.test.tsx`
 
-- [ ] **Step 1: Write failing badge-stability test**
+- [x] **Step 1: Write failing badge-stability test**
 
 Seed a terminal recovery item for `TARGET_A`, render `fetchMetadata={false}` with recovery lookup enabled, then re-render with equivalent `TARGET_A` plus a changed parent seed array. Assert `row-a` keeps its recovery task before the lookup settles.
 
@@ -304,7 +304,7 @@ renderer?.update(<Harness targets={[TARGET_A]} seedItems={[]} fetchMetadata={fal
 expect(latest?.itemsByClientKey.get('row-a')?.recoveryTask?.status).toBe('succeeded');
 ```
 
-- [ ] **Step 2: Run the hook test and confirm it fails**
+- [x] **Step 2: Run the hook test and confirm it fails**
 
 Run:
 
@@ -312,9 +312,9 @@ Run:
 npm --workspace apps/web run test -- src/features/accounts/hooks/useCredentialRuntimeMetadata.test.tsx -t "keeps visible recovery state"
 ```
 
-Expected: FAIL because initialization calls `replaceItems(seededItemsByClientKey)` and clears a still-current state when the seed is empty.
+Evidence: observed failing before retained initialization because an empty seed replaced the visible recovery task.
 
-- [ ] **Step 3: Implement target-scoped retained initialization**
+- [x] **Step 3: Implement target-scoped retained initialization**
 
 Add a pure helper that builds a new map only for currently normalized target keys, preferring a fresh seed item when present and otherwise retaining the existing item. Use it only for the no-raw-metadata/recovery-lookup list path; retain the full replacement behavior when `fetchMetadata=true` and on disabled scope.
 
@@ -332,11 +332,11 @@ const retainVisibleItems = (current, targets, seeds) => {
 
 Only call `replaceItems` if a semantic map comparison detects a real change, preventing needless renders.
 
-- [ ] **Step 4: Preserve matching list-window data while a replacement request is pending**
+- [x] **Step 4: Preserve matching list-window data while a replacement request is pending**
 
 In `loadListWindowUsage`, do not clear `listWindowUsageByKey` in the `catch` path for a canceled/stale request. On a current non-abort failure, retain the previous map only when its saved `listWindowUsageQueryContext.pageKeys` exactly matches `currentPageKeys`; clear only if the data belongs to another page. Continue accepting a new response only through `isCurrentRequest()`.
 
-- [ ] **Step 5: Run hook/page tests and type-check**
+- [x] **Step 5: Run hook/page tests and type-check**
 
 Run:
 
@@ -345,9 +345,9 @@ npm --workspace apps/web run test -- src/features/accounts/hooks/useCredentialRu
 npm --workspace apps/web run type-check
 ```
 
-Expected: recovery badge stays stable, stale window requests cannot overwrite a different page, and TypeScript passes.
+Evidence: hook/page suites and TypeScript passed after retained visible-map and same-page window-data changes.
 
-- [ ] **Step 6: Commit visible-evidence stabilization**
+- [x] **Step 6: Commit visible-evidence stabilization**
 
 ```powershell
 git add apps/web/src/features/accounts/hooks/useCredentialRuntimeMetadata.ts apps/web/src/features/accounts/hooks/useCredentialRuntimeMetadata.test.tsx apps/web/src/features/accounts/AccountsPage.tsx apps/web/src/features/accounts/AccountsPage.test.tsx
@@ -359,16 +359,16 @@ git commit -m "perf: stabilize visible credential evidence state"
 **Files:**
 - Modify: `docs/superpowers/plans/2026-10-21-high-concurrency-credential-list-performance.md` only to tick completed checks if work is performed in place.
 
-- [ ] **Step 1: Run all affected Go tests**
+- [x] **Step 1: Run all affected Go tests**
 
 ```powershell
 Set-Location apps/manager-server
 go test ./internal/repository/usageevent ./internal/repository/usagemonitoring ./internal/service/usagemonitoring ./internal/service/monitoring ./internal/http/controller/monitoring -count=1
 ```
 
-Expected: all packages pass.
+Evidence: passed on 2026-10-21 for all five affected Go packages.
 
-- [ ] **Step 2: Run all affected frontend tests and production build**
+- [x] **Step 2: Run all affected frontend tests and production build**
 
 ```powershell
 Set-Location ..\..
@@ -377,9 +377,9 @@ npm --workspace apps/web run type-check
 npm --workspace apps/web run build
 ```
 
-Expected: test suite, TypeScript check, and production build exit 0.
+Evidence: passed on 2026-10-21: 56 account feature files / 1,326 tests, tsc, and Vite production build.
 
-- [ ] **Step 3: Inspect scope and custom-feature preservation**
+- [x] **Step 3: Inspect scope and custom-feature preservation**
 
 Run:
 
@@ -389,15 +389,15 @@ git status --short
 git log --oneline d2cc05ca..HEAD
 ```
 
-Verify no changes exist under CPA Core, `cli-proxy-api`, billing write paths, raw credential storage, proxy replacement, Token Acquisition, auto-recovery, or priority-demotion server rule code.
+Verified on 2026-10-21: changed paths are Manager monitoring/read-query code, Accounts frontend state/model tests, and documentation only; protected CPA Core, cli-proxy-api, billing, proxy, Token Acquisition, auto-recovery, and priority server-rule paths are unchanged.
 
-- [ ] **Step 4: Commit plan progress only after all verification evidence is clean**
+- [x] **Step 4: Commit plan progress only after all verification evidence is clean**
 
 ```powershell
 git add docs/superpowers/plans/2026-10-21-high-concurrency-credential-list-performance.md
 git commit -m "docs: record credential list performance verification"
 ```
 
-- [ ] **Step 5: Do not deploy or push without an explicit user instruction**
+- [x] **Step 5: Do not deploy or push without an explicit user instruction**
 
-Report exact test/build evidence and wait for LO to request deployment. If deployment is requested later, use the CPAM runbook’s dual-target procedures without touching CPA Core.
+Status: verified candidate committed in the isolated worktree. Do not deploy or push until LO explicitly requests it.

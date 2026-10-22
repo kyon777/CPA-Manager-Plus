@@ -452,3 +452,46 @@ scheduling, `usage_events`, billing, quota collection, or priority demotion.
   cancellation, and coverage gating. A partial, failed, stale, or compact
   one-record index must never be interpreted as a completed empty anomaly
   result; the UI must show the dedicated loading/error state instead.
+
+## 2026-10-21: High-concurrency credential-list evidence stabilization
+
+This customization is CPAM-only. It must never modify, restart, rebuild, or
+reconfigure CPA Core / `cli-proxy-api`; it must not change credential routing,
+Token Acquisition behavior, proxy replacement, inspection scheduling,
+`usage_events` writes, quota semantics, Credits, billing, or model pricing.
+
+- The global `account-recent-index` read path must use the existing set-based
+  collection query for both indexed and non-indexed databases. Do not restore
+  the old one-query-per-credential indexed branch: it caused a 4,000+ account
+  list to monopolize SQLite while preserving no extra UI semantics. Keep the
+  current global inventory, global recent-request sort, legacy identity rules,
+  and safe/redacted response fields unchanged.
+- A canceled or deadline-expired `account-window-usage` projection read must
+  return its cancellation to the HTTP layer. It must **not** fall back to the
+  raw `usage_events` table, which can be tens of gigabytes and turns a normal
+  browser AbortController cancellation into an expensive 500/timeout. A truly
+  unavailable projection (not cancellation) retains the existing raw fallback
+  behavior and calculation semantics.
+- The normal 60-second passive Header/inspection refresh may refresh those
+  small evidence sources only. It must not automatically refetch global recent
+  index, current-page detailed history, or current-page window usage. Explicit
+  workspace/quota refreshes still advance their separate revisions and obtain
+  fresh evidence. This preserves the user's global recent-request ordering and
+  current-page history/cost display without periodic render/I/O fan-out.
+- Server-error priority-demotion UI updates must retain the strict existing
+  `(fileName, authIndex, provider, priorityBefore)` guard, but merge a batch
+  through one normalized credential-key index in `O(files + updates)` rather
+  than repeated full-array `findIndex` scans. The one resulting React file-list
+  replacement is scheduled with `startTransition`; polling cadence, durable
+  queue behavior, and every individual `-1` demotion rule remain unchanged.
+- Visible-page recovery metadata must retain a matching current row's compact
+  `recoveryTask` while a parent seed is rebuilt or a recovery lookup is in
+  flight. The normal list still uses only the redacted batch recovery route and
+  never fetches raw credential JSON. No-op semantic maps must not trigger a
+  state replacement, so `凭证已更新` / `已自动更新一次` badges do not blink or
+  cause avoidable card rerenders.
+- For a replacement list-window request that fails on the same visible page,
+  retain the prior matching window data; on page/filter change, retain no
+  mismatched old-page evidence. Stale/aborted requests remain unable to commit
+  results. This is display-cache behavior only and never writes or recalculates
+  accounting data.
