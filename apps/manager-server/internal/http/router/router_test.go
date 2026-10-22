@@ -203,6 +203,7 @@ type routerProxyReplacementPool struct{}
 func (routerProxyReplacementPool) List(context.Context) ([]model.ProxyPoolState, error) {
 	return []model.ProxyPoolState{}, nil
 }
+func (routerProxyReplacementPool) MarkPending(context.Context, string, string) error { return nil }
 func (routerProxyReplacementPool) MarkSuspect(context.Context, string, string) error { return nil }
 
 type routerBannedRecoveryLookup struct{}

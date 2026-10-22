@@ -3,8 +3,10 @@ package proxyreplacement
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,7 +176,7 @@ func TestManualBatchDoesNotProbeAndWritesOnlyProxyURL(t *testing.T) {
 	}
 }
 
-func TestInspectionRecheckMarksNewTransportFailedProxySuspectWithoutRollback(t *testing.T) {
+func TestInspectionRecheckMarksNewTransportFailedProxyPendingWithoutRollback(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
 		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
@@ -225,8 +227,11 @@ func TestInspectionRecheckMarksNewTransportFailedProxySuspectWithoutRollback(t *
 	if got := authFiles.proxyFor("runtime-1"); got != "http://new" {
 		t.Fatalf("proxy rollback or overwrite: %q", got)
 	}
-	if len(pool.calls) != 1 || pool.calls[0].proxyURL != "http://new" || pool.calls[0].reason != "transport_timeout" {
-		t.Fatalf("pool suspect calls=%#v", pool.calls)
+	if len(pool.pendingCalls) != 1 || pool.pendingCalls[0].proxyURL != "http://new" || pool.pendingCalls[0].reason != "transport_timeout" {
+		t.Fatalf("pool pending calls=%#v", pool.pendingCalls)
+	}
+	if len(pool.calls) != 0 {
+		t.Fatalf("inferred recheck failure prematurely marked suspect: %#v", pool.calls)
 	}
 	if len(inspectionResults.calls) != 0 {
 		t.Fatalf("failed recheck must not clear inspection proxy state: %#v", inspectionResults.calls)
@@ -292,7 +297,7 @@ func TestInspectionSuccessfulRecheckClearsOnlyThePersistentSourceResult(t *testi
 	}
 }
 
-func TestInspectionRecheckKeepsSharedProxySuspectWhenAnyTargetHasTransportFailure(t *testing.T) {
+func TestInspectionRecheckKeepsSharedProxyPendingWhenAnyTargetHasTransportFailure(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
 		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", "http://old-one", false),
@@ -331,8 +336,11 @@ func TestInspectionRecheckKeepsSharedProxySuspectWhenAnyTargetHasTransportFailur
 	if got := pool.restored; len(got) != 0 {
 		t.Fatalf("shared proxy restored despite transport failure: %#v", got)
 	}
-	if len(pool.calls) != 1 || pool.calls[0].proxyURL != "http://shared" {
-		t.Fatalf("shared proxy suspect calls=%#v", pool.calls)
+	if len(pool.pendingCalls) != 1 || pool.pendingCalls[0].proxyURL != "http://shared" {
+		t.Fatalf("shared proxy pending calls=%#v", pool.pendingCalls)
+	}
+	if len(pool.calls) != 0 {
+		t.Fatalf("shared inferred failure marked suspect: %#v", pool.calls)
 	}
 }
 
@@ -543,6 +551,159 @@ func TestCreatePreviewKeepsPendingVerificationProxyEligible(t *testing.T) {
 	}
 }
 
+func TestReportInspectionSignalMarksPendingWithoutExcludingPool(t *testing.T) {
+	pool := &recordingPoolState{}
+	service := NewWithOptions(Options{PoolState: pool})
+	marked, err := service.ReportInspectionSignal(context.Background(), model.ProxyFailureEvidence{
+		ProxyURL:    "http://user:secret@proxy.example:8080",
+		ErrorKind:   "request_error",
+		ErrorDetail: "Get https://api.example.test: context deadline exceeded",
+	})
+	if err != nil || !marked {
+		t.Fatalf("marked=%v err=%v", marked, err)
+	}
+	if len(pool.pendingCalls) != 1 {
+		t.Fatalf("pending calls = %#v", pool.pendingCalls)
+	}
+	if len(pool.calls) != 0 {
+		t.Fatalf("inspection transport evidence prematurely marked suspect: %#v", pool.calls)
+	}
+	if got := pool.pendingCalls[0]; got.reason != "transport_timeout" || got.proxyURL != "http://user:secret@proxy.example:8080" {
+		t.Fatalf("pending call = %#v", got)
+	}
+}
+
+func TestVerifyProxyPoolExitIPsUsesSavedURLAndRestoresHealthy(t *testing.T) {
+	proxyURL := "http://user:secret@proxy.example:8080/"
+	fingerprint := model.ProxyFingerprint(proxyURL)
+	pool := &recordingPoolState{}
+	checker := &recordingExitIPChecker{results: map[string]model.ProxyExitIPCheckResult{
+		model.NormalizeProxyURL(proxyURL): {
+			Outcome: model.ProxyExitIPOutcomeHealthy,
+			ExitIP:  "203.0.113.7",
+		},
+	}}
+	service := NewWithOptions(Options{
+		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: []string{proxyURL}}},
+		PoolState:     pool,
+		ExitIPChecker: checker,
+	})
+
+	batch, err := service.VerifyProxyPoolExitIPs(context.Background(), []string{fingerprint})
+	if err != nil {
+		t.Fatalf("verify exit IPs: %v", err)
+	}
+	if len(batch.Results) != 1 || batch.Results[0].Outcome != model.ProxyExitIPOutcomeHealthy || batch.Results[0].ExitIP != "203.0.113.7" {
+		t.Fatalf("batch=%#v", batch)
+	}
+	if !reflect.DeepEqual(checker.calls, []string{model.NormalizeProxyURL(proxyURL)}) {
+		t.Fatalf("checker URLs=%#v", checker.calls)
+	}
+	if !reflect.DeepEqual(pool.restored, []string{fingerprint}) {
+		t.Fatalf("restored=%#v", pool.restored)
+	}
+	if len(pool.calls) != 0 {
+		t.Fatalf("healthy proxy marked suspect: %#v", pool.calls)
+	}
+}
+
+func TestVerifyProxyPoolExitIPsNeverChecksUnknownFingerprint(t *testing.T) {
+	checker := &recordingExitIPChecker{}
+	service := NewWithOptions(Options{
+		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://saved.example:8080"}}},
+		PoolState:     &recordingPoolState{},
+		ExitIPChecker: checker,
+	})
+
+	batch, err := service.VerifyProxyPoolExitIPs(context.Background(), []string{"unknown-fingerprint"})
+	if err != nil {
+		t.Fatalf("verify unknown fingerprint: %v", err)
+	}
+	if len(batch.Results) != 1 || batch.Results[0].Outcome != model.ProxyExitIPOutcomeNotSaved {
+		t.Fatalf("batch=%#v", batch)
+	}
+	if len(checker.calls) != 0 {
+		t.Fatalf("unknown fingerprint invoked checker: %#v", checker.calls)
+	}
+}
+
+func TestVerifyProxyPoolExitIPsMarksOnlyDirectFailureSuspect(t *testing.T) {
+	failedURL := "http://failed.example:8080"
+	inconclusiveURL := "http://inconclusive.example:8080"
+	pool := &recordingPoolState{}
+	checker := &recordingExitIPChecker{results: map[string]model.ProxyExitIPCheckResult{
+		failedURL:       {Outcome: model.ProxyExitIPOutcomeProxyFailed, Reason: "proxy_auth_407"},
+		inconclusiveURL: {Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "ip_echo_http_429"},
+	}}
+	service := NewWithOptions(Options{
+		Settings:  staticSettings{settings: store.ProxyFilterSettings{URLs: []string{failedURL, inconclusiveURL}}},
+		PoolState: pool, ExitIPChecker: checker,
+	})
+
+	batch, err := service.VerifyProxyPoolExitIPs(context.Background(), []string{
+		model.ProxyFingerprint(failedURL), model.ProxyFingerprint(inconclusiveURL),
+	})
+	if err != nil {
+		t.Fatalf("verify exit IPs: %v", err)
+	}
+	if len(batch.Results) != 2 {
+		t.Fatalf("batch=%#v", batch)
+	}
+	if len(pool.calls) != 1 || pool.calls[0].proxyURL != failedURL || pool.calls[0].reason != "proxy_auth_407" {
+		t.Fatalf("suspect calls=%#v", pool.calls)
+	}
+	if len(pool.restored) != 0 {
+		t.Fatalf("inconclusive result restored proxy: %#v", pool.restored)
+	}
+}
+
+func TestVerifyProxyPoolExitIPsLimitsConcurrentChecksToEight(t *testing.T) {
+	const proxyCount = proxyExitIPCheckConcurrency + 1
+	urls := make([]string, 0, proxyCount)
+	fingerprints := make([]string, 0, proxyCount)
+	for index := 0; index < proxyCount; index++ {
+		url := fmt.Sprintf("http://proxy-%d.example:8080", index)
+		urls = append(urls, url)
+		fingerprints = append(fingerprints, model.ProxyFingerprint(url))
+	}
+	checker := &blockingExitIPChecker{
+		started: make(chan struct{}, proxyCount),
+		release: make(chan struct{}),
+	}
+	service := NewWithOptions(Options{
+		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: urls}},
+		PoolState:     &recordingPoolState{},
+		ExitIPChecker: checker,
+	})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := service.VerifyProxyPoolExitIPs(context.Background(), fingerprints)
+		finished <- err
+	}()
+
+	for started := 0; started < proxyExitIPCheckConcurrency; started++ {
+		select {
+		case <-checker.started:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d checks started before timeout", started)
+		}
+	}
+	select {
+	case <-checker.started:
+		t.Fatal("more than eight exit-IP checks ran concurrently")
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(checker.release)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("verify exit IPs: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bounded verification did not finish")
+	}
+}
+
 type previewTaskStore struct {
 	task   model.ProxyReplacementTask
 	items  []model.ProxyReplacementTaskItem
@@ -686,6 +847,7 @@ type staticPoolState struct {
 
 func (s staticPoolState) List(context.Context) ([]model.ProxyPoolState, error) { return s.states, nil }
 func (s staticPoolState) MarkSuspect(context.Context, string, string) error    { return nil }
+func (s staticPoolState) MarkPending(context.Context, string, string) error    { return nil }
 
 type recordedPoolStateCall struct {
 	proxyURL string
@@ -693,9 +855,11 @@ type recordedPoolStateCall struct {
 }
 
 type recordingPoolState struct {
-	states   []model.ProxyPoolState
-	calls    []recordedPoolStateCall
-	restored []string
+	mu           sync.Mutex
+	states       []model.ProxyPoolState
+	calls        []recordedPoolStateCall
+	pendingCalls []recordedPoolStateCall
+	restored     []string
 }
 
 type recordingInspectionResults struct {
@@ -708,15 +872,58 @@ func (s *recordingInspectionResults) ClearProxySuspects(_ context.Context, targe
 }
 
 func (s *recordingPoolState) List(context.Context) ([]model.ProxyPoolState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return append([]model.ProxyPoolState(nil), s.states...), nil
 }
 func (s *recordingPoolState) MarkSuspect(_ context.Context, proxyURL, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls = append(s.calls, recordedPoolStateCall{proxyURL: proxyURL, reason: reason})
 	return nil
 }
+func (s *recordingPoolState) MarkPending(_ context.Context, proxyURL, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingCalls = append(s.pendingCalls, recordedPoolStateCall{proxyURL: proxyURL, reason: reason})
+	return nil
+}
 func (s *recordingPoolState) Restore(_ context.Context, fingerprint string) (model.ProxyPoolState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.restored = append(s.restored, fingerprint)
 	return model.ProxyPoolState{Fingerprint: fingerprint, Status: model.ProxyPoolStatusNormal}, nil
+}
+
+type recordingExitIPChecker struct {
+	mu      sync.Mutex
+	results map[string]model.ProxyExitIPCheckResult
+	calls   []string
+}
+
+func (c *recordingExitIPChecker) Check(_ context.Context, proxyURL string) model.ProxyExitIPCheckResult {
+	normalized := model.NormalizeProxyURL(proxyURL)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, normalized)
+	if result, ok := c.results[normalized]; ok {
+		return result
+	}
+	return model.ProxyExitIPCheckResult{Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "ip_echo_unavailable"}
+}
+
+type blockingExitIPChecker struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingExitIPChecker) Check(context.Context, string) model.ProxyExitIPCheckResult {
+	c.started <- struct{}{}
+	<-c.release
+	return model.ProxyExitIPCheckResult{
+		Outcome: model.ProxyExitIPOutcomeHealthy,
+		ExitIP:  "203.0.113.7",
+	}
 }
 
 type staticSetupResolver struct {

@@ -66,6 +66,35 @@ func TestLoadWithoutCreatingDefaultDoesNotCreateConfig(t *testing.T) {
 	}
 }
 
+func TestLoadProxyExitIPCheckURLDefaultsAndAllowsEnvironmentOverride(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv(configEnvKey, filepath.Join(t.TempDir(), "missing-config.json"))
+	cfg, err := LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+	if cfg.ProxyExitIPCheckURL != DefaultProxyExitIPCheckURL {
+		t.Fatalf("default proxy exit check URL = %q", cfg.ProxyExitIPCheckURL)
+	}
+	t.Setenv("CPAMP_PROXY_EXIT_IP_CHECK_URL", "https://echo.example.test/ip")
+	cfg, err = LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("load overridden config: %v", err)
+	}
+	if cfg.ProxyExitIPCheckURL != "https://echo.example.test/ip" {
+		t.Fatalf("overridden proxy exit check URL = %q", cfg.ProxyExitIPCheckURL)
+	}
+}
+
+func TestLoadProxyExitIPCheckURLRejectsUnsafeTarget(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv(configEnvKey, filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("CPAMP_PROXY_EXIT_IP_CHECK_URL", "https://user:secret@echo.example.test/ip")
+	if _, err := LoadWithoutCreatingDefault(); err == nil {
+		t.Fatal("credential-bearing exit-IP target was accepted")
+	}
+}
+
 func TestLoadReadsConfigAndResolvesRelativePaths(t *testing.T) {
 	clearConfigEnv(t)
 	dir := t.TempDir()
@@ -406,6 +435,7 @@ func clearConfigEnv(t *testing.T) {
 		"TOKEN_ACQUISITION_BASE_URL",
 		"TOKEN_ACQUISITION_API_KEY",
 		"TOKEN_ACQUISITION_API_KEY_FILE",
+		"CPAMP_PROXY_EXIT_IP_CHECK_URL",
 		"USAGE_COLLECTOR_MODE",
 		"USAGE_RESP_QUEUE",
 		"USAGE_RESP_POP_SIDE",

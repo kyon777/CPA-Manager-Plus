@@ -21,6 +21,11 @@ const previewTTL = 15 * time.Minute
 
 const taskWorkerPollInterval = 250 * time.Millisecond
 
+const (
+	maxProxyExitIPCheckBatch    = 500
+	proxyExitIPCheckConcurrency = 8
+)
+
 var (
 	ErrUnavailable    = errors.New("proxy replacement service is unavailable")
 	ErrInvalidRequest = errors.New("proxy replacement request is invalid")
@@ -46,6 +51,7 @@ type SettingsStore interface {
 
 type PoolStateStore interface {
 	List(context.Context) ([]model.ProxyPoolState, error)
+	MarkPending(context.Context, string, string) error
 	MarkSuspect(context.Context, string, string) error
 }
 
@@ -92,6 +98,7 @@ type Options struct {
 	Invalidator         InventoryInvalidator
 	Rechecker           Rechecker
 	InspectionResults   InspectionResultStore
+	ExitIPChecker       ExitIPChecker
 	Concurrency         int
 }
 
@@ -105,6 +112,7 @@ type Service struct {
 	invalidator         InventoryInvalidator
 	rechecker           Rechecker
 	inspectionResults   InspectionResultStore
+	exitIPChecker       ExitIPChecker
 	concurrency         int
 	now                 func() time.Time
 	workerMu            sync.Mutex
@@ -182,10 +190,150 @@ func (s *Service) ReportInspectionSignal(ctx context.Context, evidence model.Pro
 	if !model.IsSuspectedProxyTransportFailure(evidence) {
 		return false, nil
 	}
-	if err := s.poolState.MarkSuspect(ctx, evidence.ProxyURL, proxyFailureReason(evidence)); err != nil {
+	if err := s.poolState.MarkPending(ctx, evidence.ProxyURL, proxyFailureReason(evidence)); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// VerifyProxyPoolExitIPs checks selected saved proxy endpoints through the
+// manager's fixed exit-IP Echo target. The input is fingerprint-only: raw
+// proxy URLs are resolved only from the Manager-owned saved proxy list and are
+// never put into response DTOs, errors, or logs. It does not contact CPA Core,
+// read account tokens, mutate credential files, or affect quota/billing data.
+func (s *Service) VerifyProxyPoolExitIPs(ctx context.Context, fingerprints []string) (model.ProxyExitIPCheckBatch, error) {
+	if s == nil || s.settings == nil || s.poolState == nil || s.exitIPChecker == nil {
+		return model.ProxyExitIPCheckBatch{}, ErrUnavailable
+	}
+	selected, err := normalizeProxyExitIPFingerprints(fingerprints)
+	if err != nil {
+		return model.ProxyExitIPCheckBatch{}, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	settings, _, err := s.settings.LoadProxyFilterSettings(ctx)
+	if err != nil {
+		return model.ProxyExitIPCheckBatch{}, fmt.Errorf("load saved proxy URLs: %w", err)
+	}
+
+	// Keep raw URLs within this function only. A fingerprint from the browser
+	// can therefore never turn the endpoint into an arbitrary outbound proxy
+	// probe.
+	savedURLByFingerprint := make(map[string]string, len(settings.URLs))
+	for _, rawURL := range settings.URLs {
+		normalized := model.NormalizeProxyURL(rawURL)
+		fingerprint := model.ProxyFingerprint(normalized)
+		if normalized == "" || fingerprint == "" {
+			continue
+		}
+		if _, exists := savedURLByFingerprint[fingerprint]; !exists {
+			savedURLByFingerprint[fingerprint] = normalized
+		}
+	}
+
+	results := make([]model.ProxyExitIPCheckResult, len(selected))
+	type verificationJob struct {
+		index       int
+		fingerprint string
+		proxyURL    string
+	}
+	jobs := make(chan verificationJob)
+	workerCount := proxyExitIPCheckConcurrency
+	if workerCount > len(selected) {
+		workerCount = len(selected)
+	}
+	var workers sync.WaitGroup
+	restorer, canRestore := s.poolState.(poolStateRestorer)
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for job := range jobs {
+				result := normalizeProxyExitIPCheckResult(s.exitIPChecker.Check(ctx, job.proxyURL))
+				result.Fingerprint = job.fingerprint
+				switch result.Outcome {
+				case model.ProxyExitIPOutcomeHealthy:
+					if !canRestore {
+						result = stateUpdateFailure(job.fingerprint)
+					} else if _, restoreErr := restorer.Restore(ctx, job.fingerprint); restoreErr != nil {
+						result = stateUpdateFailure(job.fingerprint)
+					}
+				case model.ProxyExitIPOutcomeProxyFailed:
+					if markErr := s.poolState.MarkSuspect(ctx, job.proxyURL, result.Reason); markErr != nil {
+						result = stateUpdateFailure(job.fingerprint)
+					}
+				}
+				results[job.index] = result
+			}
+		}()
+	}
+	for index, fingerprint := range selected {
+		proxyURL, saved := savedURLByFingerprint[fingerprint]
+		if !saved {
+			results[index] = model.ProxyExitIPCheckResult{
+				Fingerprint: fingerprint,
+				Outcome:     model.ProxyExitIPOutcomeNotSaved,
+			}
+			continue
+		}
+		jobs <- verificationJob{index: index, fingerprint: fingerprint, proxyURL: proxyURL}
+	}
+	close(jobs)
+	workers.Wait()
+	return model.ProxyExitIPCheckBatch{Results: results}, nil
+}
+
+func normalizeProxyExitIPFingerprints(input []string) ([]string, error) {
+	if len(input) == 0 || len(input) > maxProxyExitIPCheckBatch {
+		return nil, ErrInvalidRequest
+	}
+	seen := make(map[string]struct{}, len(input))
+	selected := make([]string, 0, len(input))
+	for _, candidate := range input {
+		fingerprint := strings.TrimSpace(candidate)
+		if fingerprint == "" {
+			return nil, ErrInvalidRequest
+		}
+		if _, duplicate := seen[fingerprint]; duplicate {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		selected = append(selected, fingerprint)
+	}
+	if len(selected) == 0 {
+		return nil, ErrInvalidRequest
+	}
+	return selected, nil
+}
+
+func normalizeProxyExitIPCheckResult(result model.ProxyExitIPCheckResult) model.ProxyExitIPCheckResult {
+	switch result.Outcome {
+	case model.ProxyExitIPOutcomeHealthy:
+		if strings.TrimSpace(result.ExitIP) == "" {
+			return model.ProxyExitIPCheckResult{Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "ip_echo_invalid_response"}
+		}
+		result.Reason = ""
+	case model.ProxyExitIPOutcomeProxyFailed:
+		if strings.TrimSpace(result.Reason) == "" {
+			result.Reason = "proxy_transport_failed"
+		}
+	case model.ProxyExitIPOutcomeInconclusive:
+		if strings.TrimSpace(result.Reason) == "" {
+			result.Reason = "ip_echo_unavailable"
+		}
+	default:
+		return model.ProxyExitIPCheckResult{Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "ip_echo_unavailable"}
+	}
+	return result
+}
+
+func stateUpdateFailure(fingerprint string) model.ProxyExitIPCheckResult {
+	return model.ProxyExitIPCheckResult{
+		Fingerprint: fingerprint,
+		Outcome:     model.ProxyExitIPOutcomeInconclusive,
+		Reason:      "state_update_failed",
+	}
 }
 
 func proxyFailureReason(evidence model.ProxyFailureEvidence) string {
@@ -300,6 +448,7 @@ func NewWithOptions(options Options) *Service {
 		invalidator:         options.Invalidator,
 		rechecker:           options.Rechecker,
 		inspectionResults:   options.InspectionResults,
+		exitIPChecker:       options.ExitIPChecker,
 		concurrency:         concurrency,
 		now:                 time.Now,
 	}
@@ -934,7 +1083,7 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 				// Store only the new proxy fingerprint and a finite reason code.
 				// Recheck failure never rolls this value back or triggers another
 				// automatic pool allocation.
-				_ = s.poolState.MarkSuspect(ctx, item.NewProxyURL, proxySuspectReasonFromRecheck(result))
+				_ = s.poolState.MarkPending(ctx, item.NewProxyURL, proxySuspectReasonFromRecheck(result))
 			}
 			_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
 				RecheckErrorCode: code, RecheckErrorMessage: message,

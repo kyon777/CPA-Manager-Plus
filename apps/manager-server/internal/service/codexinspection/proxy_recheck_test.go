@@ -18,21 +18,35 @@ type proxyFailureReportCall struct {
 }
 
 type proxyFailureReporterRecorder struct {
-	mu    sync.Mutex
-	calls []proxyFailureReportCall
+	mu           sync.Mutex
+	suspectCalls []proxyFailureReportCall
+	pendingCalls []proxyFailureReportCall
 }
 
 func (r *proxyFailureReporterRecorder) MarkSuspect(_ context.Context, proxyURL, reason string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, proxyFailureReportCall{proxyURL: proxyURL, reason: reason})
+	r.suspectCalls = append(r.suspectCalls, proxyFailureReportCall{proxyURL: proxyURL, reason: reason})
 	return nil
 }
 
-func (r *proxyFailureReporterRecorder) snapshot() []proxyFailureReportCall {
+func (r *proxyFailureReporterRecorder) MarkPending(_ context.Context, proxyURL, reason string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]proxyFailureReportCall(nil), r.calls...)
+	r.pendingCalls = append(r.pendingCalls, proxyFailureReportCall{proxyURL: proxyURL, reason: reason})
+	return nil
+}
+
+func (r *proxyFailureReporterRecorder) pendingSnapshot() []proxyFailureReportCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]proxyFailureReportCall(nil), r.pendingCalls...)
+}
+
+func (r *proxyFailureReporterRecorder) suspectSnapshot() []proxyFailureReportCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]proxyFailureReportCall(nil), r.suspectCalls...)
 }
 
 type proxyInspectionRoundTripper func(*http.Request) (*http.Response, error)
@@ -122,13 +136,16 @@ func TestInspectSingleAccountMarksOnlyTransportProxyFailure(t *testing.T) {
 			if result.ProxySuspect != tt.want {
 				t.Fatalf("ProxySuspect = %v, want %v; result=%#v", result.ProxySuspect, tt.want, result)
 			}
-			calls := reporter.snapshot()
+			calls := reporter.pendingSnapshot()
 			if tt.want {
 				if len(calls) != 1 || calls[0].proxyURL != tt.proxyURL || calls[0].reason != tt.wantReason {
-					t.Fatalf("reporter calls = %#v, want URL=%q reason=%q", calls, tt.proxyURL, tt.wantReason)
+					t.Fatalf("pending reporter calls = %#v, want URL=%q reason=%q", calls, tt.proxyURL, tt.wantReason)
 				}
 			} else if len(calls) != 0 {
-				t.Fatalf("unexpected proxy failure reports: %#v", calls)
+				t.Fatalf("unexpected pending proxy reports: %#v", calls)
+			}
+			if calls := reporter.suspectSnapshot(); len(calls) != 0 {
+				t.Fatalf("inferred inspection failure prematurely marked suspect: %#v", calls)
 			}
 		})
 	}

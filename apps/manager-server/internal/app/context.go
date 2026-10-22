@@ -236,6 +236,7 @@ func fromExisting(
 		Invalidator:         proxyService,
 		Rechecker:           codexInspectionService,
 		InspectionResults:   st.CodexInspections,
+		ExitIPChecker:       proxyreplacementsvc.NewExitIPChecker(cfg.ProxyExitIPCheckURL),
 	})
 	credentialListService := credentiallistsvc.NewWithRecentRecoveryAndGlobalMetricsReader(
 		proxyService,

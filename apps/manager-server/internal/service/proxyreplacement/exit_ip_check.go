@@ -17,10 +17,17 @@ import (
 )
 
 const (
-	exitIPCheckAttempts       = 2
-	exitIPCheckAttemptTimeout = 5 * time.Second
-	exitIPCheckResponseLimit  = 4 << 10
+	defaultExitIPCheckTargetURL = "https://api.ipify.org?format=json"
+	exitIPCheckAttempts         = 2
+	exitIPCheckAttemptTimeout   = 5 * time.Second
+	exitIPCheckResponseLimit    = 4 << 10
 )
+
+// ExitIPChecker performs a bounded direct request through a single saved
+// proxy. It never receives account credentials or an arbitrary browser target.
+type ExitIPChecker interface {
+	Check(context.Context, string) model.ProxyExitIPCheckResult
+}
 
 type exitIPFetchResult struct {
 	StatusCode   int
@@ -59,6 +66,29 @@ func newExitIPChecker(rawTargetURL string, fetcher exitIPFetcher) (*exitIPChecke
 		attemptTimeout: exitIPCheckAttemptTimeout,
 		now:            time.Now,
 	}, nil
+}
+
+// NewExitIPChecker constructs the production verifier. Configuration loading
+// validates the target first; if a caller bypasses that path, fail closed with
+// an inconclusive result rather than attempting an arbitrary request.
+func NewExitIPChecker(rawTargetURL string) ExitIPChecker {
+	if strings.TrimSpace(rawTargetURL) == "" {
+		rawTargetURL = defaultExitIPCheckTargetURL
+	}
+	checker, err := newExitIPChecker(rawTargetURL, nil)
+	if err != nil {
+		return unavailableExitIPChecker{}
+	}
+	return checker
+}
+
+type unavailableExitIPChecker struct{}
+
+func (unavailableExitIPChecker) Check(context.Context, string) model.ProxyExitIPCheckResult {
+	return model.ProxyExitIPCheckResult{
+		Outcome: model.ProxyExitIPOutcomeInconclusive,
+		Reason:  "ip_echo_unavailable",
+	}
 }
 
 func parseExitIPTargetURL(raw string) (*url.URL, error) {

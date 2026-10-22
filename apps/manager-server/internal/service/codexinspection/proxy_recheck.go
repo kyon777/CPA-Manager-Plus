@@ -42,7 +42,7 @@ func (s *Service) markProxySuspect(
 	if s != nil && s.proxyFailureReporter != nil {
 		// Pool-state persistence is best effort. The persisted inspection result
 		// remains the source of evidence even if a transient SQLite write fails.
-		_ = s.proxyFailureReporter.MarkSuspect(ctx, proxyURL, proxyFailureReason(evidence))
+		_ = s.proxyFailureReporter.MarkPending(ctx, proxyURL, proxyFailureReason(evidence))
 	}
 	return result
 }

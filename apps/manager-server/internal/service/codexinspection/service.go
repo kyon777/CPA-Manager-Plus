@@ -113,6 +113,7 @@ type ReauthRecoveryNotifier interface {
 // running. Implementations must persist a one-way fingerprint and a finite
 // reason code instead of retaining the credential-bearing URL.
 type ProxyFailureReporter interface {
+	MarkPending(context.Context, string, string) error
 	MarkSuspect(context.Context, string, string) error
 }
 

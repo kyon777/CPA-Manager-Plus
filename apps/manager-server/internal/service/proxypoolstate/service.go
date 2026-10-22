@@ -75,7 +75,10 @@ func (s *Service) Restore(ctx context.Context, fingerprint string) (model.ProxyP
 func normalizeReason(reason string) string {
 	normalized := strings.ToLower(strings.TrimSpace(reason))
 	switch normalized {
-	case "transport_502_request_failed", "transport_timeout":
+	case "transport_502_request_failed", "transport_timeout",
+		"proxy_auth_407", "proxy_dns_failed", "proxy_connect_refused",
+		"proxy_tls_failed", "proxy_connect_timeout", "proxy_transport_failed",
+		"proxy_url_invalid":
 		return normalized
 	}
 	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(normalized)

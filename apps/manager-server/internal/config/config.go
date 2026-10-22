@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +30,7 @@ const (
 	DefaultUsageArchiveRetentionDays                   = 30
 	DefaultServerErrorPriorityDemotionWorkers          = 8
 	DefaultServerErrorPriorityDemotionWakeBuffer       = 8192
+	DefaultProxyExitIPCheckURL                         = "https://api.ipify.org?format=json"
 	maxUsageArchiveRetentionDays                 int64 = math.MaxInt64 / int64(24*time.Hour)
 	minServerErrorPriorityDemotionWorkers              = 1
 	maxServerErrorPriorityDemotionWorkers              = 32
@@ -47,6 +49,7 @@ type Config struct {
 	DataKeyPath                           string
 	TokenAcquisitionBaseURL               string
 	TokenAcquisitionAPIKey                string
+	ProxyExitIPCheckURL                   string
 	CollectorMode                         string
 	Queue                                 string
 	PopSide                               string
@@ -170,6 +173,10 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 	if dataKeyPath == "" {
 		dataKeyPath = filepath.Join(dataDir, "data.key")
 	}
+	proxyExitIPCheckURL := env("CPAMP_PROXY_EXIT_IP_CHECK_URL", DefaultProxyExitIPCheckURL)
+	if err := validateProxyExitIPCheckURL(proxyExitIPCheckURL); err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		HTTPAddr:                           env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
@@ -182,6 +189,7 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		DataKeyPath:                        env("CPA_MANAGER_DATA_KEY_PATH", dataKeyPath),
 		TokenAcquisitionBaseURL:            env("TOKEN_ACQUISITION_BASE_URL", "https://401.kyon888.xyz"),
 		TokenAcquisitionAPIKey:             readSecret("TOKEN_ACQUISITION_API_KEY", "TOKEN_ACQUISITION_API_KEY_FILE", defaultTokenAcquisitionSecretFile),
+		ProxyExitIPCheckURL:                proxyExitIPCheckURL,
 		CollectorMode:                      normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
 		Queue:                              env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
 		PopSide:                            env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
@@ -336,6 +344,15 @@ func env(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func validateProxyExitIPCheckURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("CPAMP_PROXY_EXIT_IP_CHECK_URL must be an absolute http or https URL without credentials")
+	}
+	return nil
 }
 
 func envInt(key string, fallback int) int {
