@@ -76,10 +76,11 @@ USAGE_QUERY_LIMIT=50000
 
 ### Codex 401 自动恢复与人工恢复
 
-- 只针对“已启用且巡检判定需要重新登录”的账号。
-- 开关打开后，每个账号最多自动尝试一次；无论成功或失败都写入一次性标记，后续不自动重复。
-- 列表显示“已自动更新一次”或可读失败原因，方便人工核查。
-- 自动失败后保留人工重试按钮；按钮操作不应破坏一次性自动尝试语义。
+- 只针对“已启用且巡检判定需要重新登录”的 Codex 账号。
+- 开关打开后，同一凭证滚动 24 小时最多自动尝试一次；从自动任务被 worker 实际 claim 时开始计时，成功或失败都进入 24 小时冷却。
+- 冷却结束后必须有新的已确认 HTTP 401 / 重登录信号才能再次自动恢复；不按时间在后台自行重试。
+- 列表在冷却期显示“24 小时内已自动更新”；冷却结束后保留“曾自动更新”历史标记和可读失败原因，方便人工核查。
+- 自动失败后保留人工重试按钮；人工操作不占用、不清除、不延长自动冷却。
 - Token Acquisition 在 Manager Server 内完成：按邮箱匹配目标 JSON，传递 `proxy_url` 给外部接口；只更新返回的 token 字段，保留 `note`、`priority`、`proxy_url`、headers 等原字段；若返回 `chatgpt_account_id`，允许覆盖写入；不要求 account_id 匹配。
 - 自动/批量恢复状态、代理元数据和封禁原因通过服务端 runtime metadata 提供；敏感 token 不写入日志、任务状态、浏览器存储或普通 SQLite 记录。
 
@@ -376,7 +377,7 @@ billing, scheduler, or priority-demotion calls.
 - CPA auth-file mutation remains separately limited to 4 concurrent accounts,
   and the per-file `MutationCoordinator` remains mandatory. The 12/4 controls
   do not change CPA scheduling, billing, quota, usage collection, or the
-  one-shot automatic-recovery behavior.
+  24-hour-cooldown automatic-recovery behavior.
 - Known outbound Token Acquisition transport failures must persist as
   `token_acquisition_transport_failed`, with only a fixed redacted operator
   message. Do not persist raw socket/DNS/TLS errors because they can contain
