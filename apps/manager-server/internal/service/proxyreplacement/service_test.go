@@ -15,27 +15,6 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
-func TestRecheckTransportVerifiedRequiresResponseEvidence(t *testing.T) {
-	tests := []struct {
-		name   string
-		result model.ProxyReplacementProbeResult
-		want   bool
-	}{
-		{name: "successful response", result: model.ProxyReplacementProbeResult{Succeeded: true}, want: true},
-		{name: "http status response", result: model.ProxyReplacementProbeResult{ErrorCode: "http_status"}, want: true},
-		{name: "http code response", result: model.ProxyReplacementProbeResult{ErrorCode: "http_401"}, want: true},
-		{name: "missing credential", result: model.ProxyReplacementProbeResult{ErrorCode: "credential_not_found"}, want: false},
-		{name: "suspected transport", result: model.ProxyReplacementProbeResult{ErrorCode: "http_status", ProxySuspect: true}, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := recheckTransportVerified(tt.result); got != tt.want {
-				t.Fatalf("recheckTransportVerified(%#v)=%v, want %v", tt.result, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPlanPoolPrefersUnusedThenRotatesAllNormalCandidates(t *testing.T) {
 	unused := []proxyCandidate{{URL: "http://p1", Fingerprint: "p1"}}
 	all := []proxyCandidate{
@@ -149,8 +128,8 @@ func TestManualBatchDoesNotProbeAndWritesOnlyProxyURL(t *testing.T) {
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
 		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
 	}}
-	probes := &recordingRechecker{}
-	service := newWorkerService(tasks, authFiles, probes)
+	checker := &recordingExitIPChecker{}
+	service := newWorkerService(tasks, authFiles, checker)
 	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
 		Source:          model.ProxyReplacementSourceBatchUniform,
 		Mode:            model.ProxyReplacementModeUniform,
@@ -168,28 +147,24 @@ func TestManualBatchDoesNotProbeAndWritesOnlyProxyURL(t *testing.T) {
 	if _, err := service.RunPending(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if probes.calls != 0 {
-		t.Fatalf("manual batch unexpectedly probed %d time(s)", probes.calls)
+	if len(checker.calls) != 0 {
+		t.Fatalf("manual batch unexpectedly ran exit-IP checks: %#v", checker.calls)
 	}
 	if !reflect.DeepEqual(authFiles.lastPatch, map[string]string{"name": "runtime-1", "proxy_url": "http://new"}) {
 		t.Fatalf("direct patch = %#v", authFiles.lastPatch)
 	}
 }
 
-func TestInspectionRecheckMarksNewTransportFailedProxyPendingWithoutRollback(t *testing.T) {
+func TestInspectionRecheckUsesDirectExitIPHealth(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
 		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
 	}}
 	pool := &recordingPoolState{}
 	inspectionResults := &recordingInspectionResults{}
-	probes := &recordingRechecker{results: []model.ProxyReplacementProbeResult{{
-		Target:       model.ProxyReplacementTarget{ClientKey: "one"},
-		Succeeded:    false,
-		ProxySuspect: true,
-		ErrorCode:    "request_error",
-		ErrorMessage: "context deadline exceeded",
-	}}}
+	checker := &recordingExitIPChecker{results: map[string]model.ProxyExitIPCheckResult{
+		"http://new": {Outcome: model.ProxyExitIPOutcomeHealthy, ExitIP: "203.0.113.8"},
+	}}
 	service := NewWithOptions(Options{
 		Tasks: tasks,
 		SetupResolver: staticSetupResolver{setup: store.Setup{
@@ -198,7 +173,63 @@ func TestInspectionRecheckMarksNewTransportFailedProxyPendingWithoutRollback(t *
 		Settings:          staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
 		PoolState:         pool,
 		AuthFiles:         authFiles,
-		Rechecker:         probes,
+		ExitIPChecker:     checker,
+		InspectionResults: inspectionResults,
+	})
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source: model.ProxyReplacementSourceInspection,
+		Mode:   model.ProxyReplacementModePool,
+		Targets: []model.ProxyReplacementTarget{{
+			ClientKey: "one", FileName: "one.json", AuthIndex: "1", AccountEmail: "a@example.com", Provider: "codex", RuntimeID: "runtime-1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.states = []model.ProxyPoolState{{Fingerprint: model.ProxyFingerprint("http://new"), Status: model.ProxyPoolStatusSuspect}}
+	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	page, err := tasks.GetTask(context.Background(), preview.Task.ID, 1, 10)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("task page=%#v err=%v", page, err)
+	}
+	if got := page.Items[0].Status; got != model.ProxyReplacementItemRecheckSucceeded {
+		t.Fatalf("status=%q, want direct recheck success", got)
+	}
+	if got := checker.calls; !reflect.DeepEqual(got, []string{"http://new"}) {
+		t.Fatalf("exit-IP checker calls=%#v", got)
+	}
+	if len(inspectionResults.calls) != 1 || len(inspectionResults.calls[0]) != 1 {
+		t.Fatalf("inspection clear calls=%#v", inspectionResults.calls)
+	}
+	if got := pool.restored; !reflect.DeepEqual(got, []string{model.ProxyFingerprint("http://new")}) {
+		t.Fatalf("restored pool fingerprints=%#v", got)
+	}
+}
+
+func TestInspectionRecheckMarksDirectProxyFailureWithoutRollback(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
+	}}
+	pool := &recordingPoolState{}
+	inspectionResults := &recordingInspectionResults{}
+	checker := &recordingExitIPChecker{results: map[string]model.ProxyExitIPCheckResult{
+		"http://new": {Outcome: model.ProxyExitIPOutcomeProxyFailed, Reason: "proxy_connect_timeout"},
+	}}
+	service := NewWithOptions(Options{
+		Tasks: tasks,
+		SetupResolver: staticSetupResolver{setup: store.Setup{
+			CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key",
+		}},
+		Settings:          staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
+		PoolState:         pool,
+		AuthFiles:         authFiles,
+		ExitIPChecker:     checker,
 		InspectionResults: inspectionResults,
 	})
 	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
@@ -227,14 +258,14 @@ func TestInspectionRecheckMarksNewTransportFailedProxyPendingWithoutRollback(t *
 	if got := authFiles.proxyFor("runtime-1"); got != "http://new" {
 		t.Fatalf("proxy rollback or overwrite: %q", got)
 	}
-	if len(pool.pendingCalls) != 1 || pool.pendingCalls[0].proxyURL != "http://new" || pool.pendingCalls[0].reason != "transport_timeout" {
-		t.Fatalf("pool pending calls=%#v", pool.pendingCalls)
+	if len(pool.calls) != 1 || pool.calls[0].proxyURL != "http://new" || pool.calls[0].reason != "proxy_connect_timeout" {
+		t.Fatalf("pool direct-failure calls=%#v", pool.calls)
 	}
-	if len(pool.calls) != 0 {
-		t.Fatalf("inferred recheck failure prematurely marked suspect: %#v", pool.calls)
+	if len(pool.pendingCalls) != 0 {
+		t.Fatalf("direct probe must not use pending state: %#v", pool.pendingCalls)
 	}
 	if len(inspectionResults.calls) != 0 {
-		t.Fatalf("failed recheck must not clear inspection proxy state: %#v", inspectionResults.calls)
+		t.Fatalf("direct failed recheck must not clear inspection proxy state: %#v", inspectionResults.calls)
 	}
 }
 
@@ -253,7 +284,7 @@ func TestInspectionSuccessfulRecheckClearsOnlyThePersistentSourceResult(t *testi
 		Settings:          staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
 		PoolState:         pool,
 		AuthFiles:         authFiles,
-		Rechecker:         &recordingRechecker{},
+		ExitIPChecker:     &recordingExitIPChecker{results: map[string]model.ProxyExitIPCheckResult{"http://new": {Outcome: model.ProxyExitIPOutcomeHealthy, ExitIP: "203.0.113.9"}}},
 		InspectionResults: inspectionResults,
 	})
 	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
@@ -297,16 +328,16 @@ func TestInspectionSuccessfulRecheckClearsOnlyThePersistentSourceResult(t *testi
 	}
 }
 
-func TestInspectionRecheckKeepsSharedProxyPendingWhenAnyTargetHasTransportFailure(t *testing.T) {
+func TestInspectionRecheckSharedProxyFailureWinsOverHealthyResult(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
 		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", "http://old-one", false),
 		proxyTestFile("runtime-2", "two.json", "2", "two@example.com", "http://old-two", false),
 	}}
 	pool := &recordingPoolState{}
-	probes := &recordingRechecker{results: []model.ProxyReplacementProbeResult{
-		{Target: model.ProxyReplacementTarget{ClientKey: "one"}, Succeeded: true},
-		{Target: model.ProxyReplacementTarget{ClientKey: "two"}, Succeeded: false, ProxySuspect: true, ErrorCode: "timeout", ErrorMessage: "context deadline exceeded"},
+	checker := &sequenceExitIPChecker{results: []model.ProxyExitIPCheckResult{
+		{Outcome: model.ProxyExitIPOutcomeHealthy, ExitIP: "203.0.113.10"},
+		{Outcome: model.ProxyExitIPOutcomeProxyFailed, Reason: "proxy_connect_refused"},
 	}}
 	service := NewWithOptions(Options{
 		Tasks:         tasks,
@@ -314,7 +345,7 @@ func TestInspectionRecheckKeepsSharedProxyPendingWhenAnyTargetHasTransportFailur
 		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://shared"}}},
 		PoolState:     pool,
 		AuthFiles:     authFiles,
-		Rechecker:     probes,
+		ExitIPChecker: checker,
 	})
 	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
 		Source: model.ProxyReplacementSourceInspection,
@@ -327,6 +358,7 @@ func TestInspectionRecheckKeepsSharedProxyPendingWhenAnyTargetHasTransportFailur
 	if err != nil {
 		t.Fatal(err)
 	}
+	pool.states = []model.ProxyPoolState{{Fingerprint: model.ProxyFingerprint("http://shared"), Status: model.ProxyPoolStatusSuspect}}
 	if _, err := service.Confirm(context.Background(), preview.Task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -334,36 +366,34 @@ func TestInspectionRecheckKeepsSharedProxyPendingWhenAnyTargetHasTransportFailur
 		t.Fatal(err)
 	}
 	if got := pool.restored; len(got) != 0 {
-		t.Fatalf("shared proxy restored despite transport failure: %#v", got)
+		t.Fatalf("shared proxy restored despite direct failure: %#v", got)
 	}
-	if len(pool.pendingCalls) != 1 || pool.pendingCalls[0].proxyURL != "http://shared" {
-		t.Fatalf("shared proxy pending calls=%#v", pool.pendingCalls)
+	if len(pool.calls) != 1 || pool.calls[0].proxyURL != "http://shared" || pool.calls[0].reason != "proxy_connect_refused" {
+		t.Fatalf("shared proxy direct-failure calls=%#v", pool.calls)
 	}
-	if len(pool.calls) != 0 {
-		t.Fatalf("shared inferred failure marked suspect: %#v", pool.calls)
+	if len(pool.pendingCalls) != 0 {
+		t.Fatalf("direct failures must not create pending state: %#v", pool.pendingCalls)
 	}
 }
 
-func TestInspectionRecheckDoesNotRestoreSuspectPoolWithoutTransportEvidence(t *testing.T) {
+func TestInspectionRecheckInconclusiveClearsStaleResultWithoutRestoringPool(t *testing.T) {
 	tasks := &previewTaskStore{}
 	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
 		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", "http://old", false),
 	}}
 	pool := &recordingPoolState{}
-	probes := &recordingRechecker{results: []model.ProxyReplacementProbeResult{{
-		Target:       model.ProxyReplacementTarget{ClientKey: "one"},
-		Succeeded:    false,
-		ProxySuspect: false,
-		ErrorCode:    "credential_not_found",
-		ErrorMessage: "credential vanished before recheck",
-	}}}
+	inspectionResults := &recordingInspectionResults{}
+	checker := &recordingExitIPChecker{results: map[string]model.ProxyExitIPCheckResult{
+		"http://new": {Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "ip_echo_unavailable"},
+	}}
 	service := NewWithOptions(Options{
-		Tasks:         tasks,
-		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
-		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
-		PoolState:     pool,
-		AuthFiles:     authFiles,
-		Rechecker:     probes,
+		Tasks:             tasks,
+		SetupResolver:     staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		Settings:          staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://new"}}},
+		PoolState:         pool,
+		AuthFiles:         authFiles,
+		ExitIPChecker:     checker,
+		InspectionResults: inspectionResults,
 	})
 	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
 		Source: model.ProxyReplacementSourceInspection,
@@ -385,8 +415,18 @@ func TestInspectionRecheckDoesNotRestoreSuspectPoolWithoutTransportEvidence(t *t
 	if _, err := service.RunPending(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	page, err := tasks.GetTask(context.Background(), preview.Task.ID, 1, 10)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Status != model.ProxyReplacementItemRecheckInconclusive {
+		t.Fatalf("task page=%#v err=%v", page, err)
+	}
 	if got := pool.restored; len(got) != 0 {
-		t.Fatalf("pool restored without transport evidence: %#v", got)
+		t.Fatalf("pool restored without healthy direct proof: %#v", got)
+	}
+	if len(pool.calls) != 0 || len(pool.pendingCalls) != 0 {
+		t.Fatalf("inconclusive direct probe changed pool state: suspect=%#v pending=%#v", pool.calls, pool.pendingCalls)
+	}
+	if len(inspectionResults.calls) != 1 || len(inspectionResults.calls[0]) != 1 {
+		t.Fatalf("inconclusive recheck must clear stale display result: %#v", inspectionResults.calls)
 	}
 }
 
@@ -548,28 +588,6 @@ func TestCreatePreviewKeepsPendingVerificationProxyEligible(t *testing.T) {
 	}
 	if len(preview.Items) != 1 || preview.Items[0].NewProxyURL != "http://pending" {
 		t.Fatalf("pending proxy must remain eligible: %#v", preview.Items)
-	}
-}
-
-func TestReportInspectionSignalMarksPendingWithoutExcludingPool(t *testing.T) {
-	pool := &recordingPoolState{}
-	service := NewWithOptions(Options{PoolState: pool})
-	marked, err := service.ReportInspectionSignal(context.Background(), model.ProxyFailureEvidence{
-		ProxyURL:    "http://user:secret@proxy.example:8080",
-		ErrorKind:   "request_error",
-		ErrorDetail: "Get https://api.example.test: context deadline exceeded",
-	})
-	if err != nil || !marked {
-		t.Fatalf("marked=%v err=%v", marked, err)
-	}
-	if len(pool.pendingCalls) != 1 {
-		t.Fatalf("pending calls = %#v", pool.pendingCalls)
-	}
-	if len(pool.calls) != 0 {
-		t.Fatalf("inspection transport evidence prematurely marked suspect: %#v", pool.calls)
-	}
-	if got := pool.pendingCalls[0]; got.reason != "transport_timeout" || got.proxyURL != "http://user:secret@proxy.example:8080" {
-		t.Fatalf("pending call = %#v", got)
 	}
 }
 
@@ -787,7 +805,7 @@ func (s *previewTaskStore) CompleteTask(_ context.Context, taskID int64) (model.
 	if taskID != s.task.ID {
 		return model.ProxyReplacementTask{}, errors.New("missing task")
 	}
-	var updated, failed, skipped, recheckSuccess, recheckFailed int
+	var updated, failed, skipped, recheckSuccess, recheckFailed, recheckInconclusive int
 	for _, item := range s.items {
 		switch item.Status {
 		case model.ProxyReplacementItemUpdated:
@@ -798,6 +816,9 @@ func (s *previewTaskStore) CompleteTask(_ context.Context, taskID int64) (model.
 		case model.ProxyReplacementItemRecheckFailed:
 			updated++
 			recheckFailed++
+		case model.ProxyReplacementItemRecheckInconclusive:
+			updated++
+			recheckInconclusive++
 		case model.ProxyReplacementItemWriteFailed:
 			failed++
 		case model.ProxyReplacementItemSkippedStale:
@@ -809,6 +830,7 @@ func (s *previewTaskStore) CompleteTask(_ context.Context, taskID int64) (model.
 	s.task.SkippedCount = skipped
 	s.task.RecheckSuccessCount = recheckSuccess
 	s.task.RecheckFailedCount = recheckFailed
+	s.task.RecheckInconclusiveCount = recheckInconclusive
 	s.task.Status = model.ProxyReplacementTaskCompleted
 	if failed > 0 || skipped > 0 || recheckFailed > 0 {
 		s.task.Status = model.ProxyReplacementTaskPartial
@@ -1008,31 +1030,32 @@ func (s *previewAuthFiles) proxyFor(runtimeID string) string {
 	return ""
 }
 
-type recordingRechecker struct {
-	calls   int
-	results []model.ProxyReplacementProbeResult
+type sequenceExitIPChecker struct {
+	mu      sync.Mutex
+	results []model.ProxyExitIPCheckResult
+	calls   []string
 }
 
-func (r *recordingRechecker) RecheckProxyReplacement(_ context.Context, targets []model.ProxyReplacementTarget, _ int) []model.ProxyReplacementProbeResult {
-	r.calls++
-	if r.results != nil {
-		return append([]model.ProxyReplacementProbeResult(nil), r.results...)
+func (c *sequenceExitIPChecker) Check(_ context.Context, proxyURL string) model.ProxyExitIPCheckResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, model.NormalizeProxyURL(proxyURL))
+	if len(c.results) == 0 {
+		return model.ProxyExitIPCheckResult{Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "ip_echo_unavailable"}
 	}
-	results := make([]model.ProxyReplacementProbeResult, 0, len(targets))
-	for _, target := range targets {
-		results = append(results, model.ProxyReplacementProbeResult{Target: target, Succeeded: true})
-	}
-	return results
+	result := c.results[0]
+	c.results = c.results[1:]
+	return result
 }
 
-func newWorkerService(tasks *previewTaskStore, authFiles *previewAuthFiles, rechecker Rechecker) *Service {
+func newWorkerService(tasks *previewTaskStore, authFiles *previewAuthFiles, checker ExitIPChecker) *Service {
 	return NewWithOptions(Options{
 		Tasks:         tasks,
 		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
 		Settings:      staticSettings{settings: store.ProxyFilterSettings{}},
 		PoolState:     staticPoolState{},
 		AuthFiles:     authFiles,
-		Rechecker:     rechecker,
+		ExitIPChecker: checker,
 	})
 }
 

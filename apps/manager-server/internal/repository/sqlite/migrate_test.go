@@ -17,6 +17,30 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
+func TestProxyReplacementTaskMigrationAddsInconclusiveRecheckCount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy-replacement-inconclusive.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`alter table proxy_replacement_tasks drop column recheck_inconclusive_count`); err != nil {
+		_ = db.Close()
+		t.Fatalf("remove recheck inconclusive fixture column: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	columns := migrationTableColumns(t, db, "proxy_replacement_tasks")
+	if !columns["recheck_inconclusive_count"] {
+		t.Fatalf("proxy replacement task columns = %#v", columns)
+	}
+}
+
 func TestUsageDataMigrationInitialStateMatchesExistingUsageData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage-data-migration.sqlite")
 	db, err := Open(path)

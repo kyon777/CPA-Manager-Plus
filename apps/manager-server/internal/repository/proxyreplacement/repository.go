@@ -76,12 +76,12 @@ func (r *repository) CreateDraft(ctx context.Context, task model.ProxyReplacemen
 
 	result, err := tx.ExecContext(ctx, `insert into proxy_replacement_tasks (
 		source, mode, status, recheck_after_write, task_offset, total_count,
-		updated_count, failed_count, skipped_count, recheck_success_count, recheck_failed_count,
+		updated_count, failed_count, skipped_count, recheck_success_count, recheck_failed_count, recheck_inconclusive_count,
 		unused_normal_count, fallback_normal_count, suspect_excluded_count, expires_at_ms,
 		created_at_ms, updated_at_ms
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.Source, task.Mode, task.Status, boolToInt(task.RecheckAfterWrite), task.TaskOffset, task.TotalCount,
-		task.UpdatedCount, task.FailedCount, task.SkippedCount, task.RecheckSuccessCount, task.RecheckFailedCount,
+		task.UpdatedCount, task.FailedCount, task.SkippedCount, task.RecheckSuccessCount, task.RecheckFailedCount, task.RecheckInconclusiveCount,
 		task.UnusedNormalCount, task.FallbackNormalCount, task.SuspectExcludedCount, nullableInt64(task.ExpiresAtMS),
 		task.CreatedAtMS, task.UpdatedAtMS,
 	)
@@ -319,20 +319,22 @@ func (r *repository) CompleteTask(ctx context.Context, taskID int64) (model.Prox
 		return model.ProxyReplacementTask{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var updated, failed, skipped, recheckSucceeded, recheckFailed int
+	var updated, failed, skipped, recheckSucceeded, recheckFailed, recheckInconclusive int
 	err = tx.QueryRowContext(ctx, `select
-		sum(case when status in (?, ?, ?) then 1 else 0 end),
+		sum(case when status in (?, ?, ?, ?) then 1 else 0 end),
+		sum(case when status = ? then 1 else 0 end),
 		sum(case when status = ? then 1 else 0 end),
 		sum(case when status = ? then 1 else 0 end),
 		sum(case when status = ? then 1 else 0 end),
 		sum(case when status = ? then 1 else 0 end)
 		from proxy_replacement_task_items where task_id = ?`,
-		model.ProxyReplacementItemUpdated, model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemRecheckFailed,
+		model.ProxyReplacementItemUpdated, model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemRecheckInconclusive,
 		model.ProxyReplacementItemWriteFailed,
 		model.ProxyReplacementItemSkippedStale,
 		model.ProxyReplacementItemRecheckSucceeded,
 		model.ProxyReplacementItemRecheckFailed,
-		taskID).Scan(&updated, &failed, &skipped, &recheckSucceeded, &recheckFailed)
+		model.ProxyReplacementItemRecheckInconclusive,
+		taskID).Scan(&updated, &failed, &skipped, &recheckSucceeded, &recheckFailed, &recheckInconclusive)
 	if err != nil {
 		return model.ProxyReplacementTask{}, err
 	}
@@ -343,8 +345,8 @@ func (r *repository) CompleteTask(ctx context.Context, taskID int64) (model.Prox
 	now := time.Now().UnixMilli()
 	result, err := tx.ExecContext(ctx, `update proxy_replacement_tasks set
 		status = ?, updated_count = ?, failed_count = ?, skipped_count = ?,
-		recheck_success_count = ?, recheck_failed_count = ?, completed_at_ms = ?, updated_at_ms = ?
-		where id = ? and status in (?, ?)`, status, updated, failed, skipped, recheckSucceeded, recheckFailed, now, now, taskID,
+		recheck_success_count = ?, recheck_failed_count = ?, recheck_inconclusive_count = ?, completed_at_ms = ?, updated_at_ms = ?
+		where id = ? and status in (?, ?)`, status, updated, failed, skipped, recheckSucceeded, recheckFailed, recheckInconclusive, now, now, taskID,
 		model.ProxyReplacementTaskRunning, model.ProxyReplacementTaskQueued)
 	if err != nil {
 		return model.ProxyReplacementTask{}, err
@@ -459,12 +461,12 @@ func readTask(ctx context.Context, queryer interface {
 	var recheckAfterWrite int
 	err := queryer.QueryRowContext(ctx, `select
 		id, source, mode, status, recheck_after_write, task_offset, total_count,
-		updated_count, failed_count, skipped_count, recheck_success_count, recheck_failed_count,
+		updated_count, failed_count, skipped_count, recheck_success_count, recheck_failed_count, recheck_inconclusive_count,
 		unused_normal_count, fallback_normal_count, suspect_excluded_count,
 		coalesce(expires_at_ms, 0), created_at_ms, updated_at_ms
 		from proxy_replacement_tasks where id = ?`, taskID).Scan(
 		&task.ID, &task.Source, &task.Mode, &task.Status, &recheckAfterWrite, &task.TaskOffset, &task.TotalCount,
-		&task.UpdatedCount, &task.FailedCount, &task.SkippedCount, &task.RecheckSuccessCount, &task.RecheckFailedCount,
+		&task.UpdatedCount, &task.FailedCount, &task.SkippedCount, &task.RecheckSuccessCount, &task.RecheckFailedCount, &task.RecheckInconclusiveCount,
 		&task.UnusedNormalCount, &task.FallbackNormalCount, &task.SuspectExcludedCount,
 		&task.ExpiresAtMS, &task.CreatedAtMS, &task.UpdatedAtMS,
 	)
@@ -553,7 +555,7 @@ func validItemStatus(status model.ProxyReplacementItemStatus) bool {
 	case model.ProxyReplacementItemPlanned, model.ProxyReplacementItemWriting, model.ProxyReplacementItemUpdated,
 		model.ProxyReplacementItemSkippedStale, model.ProxyReplacementItemWriteFailed,
 		model.ProxyReplacementItemRecheckRunning, model.ProxyReplacementItemRecheckSucceeded,
-		model.ProxyReplacementItemRecheckFailed:
+		model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemRecheckInconclusive:
 		return true
 	default:
 		return false

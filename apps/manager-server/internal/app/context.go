@@ -236,7 +236,6 @@ func fromExisting(
 		AuthFiles:           authFiles,
 		MutationCoordinator: authFileMutationCoordinator,
 		Invalidator:         proxyService,
-		Rechecker:           codexInspectionService,
 		InspectionResults:   st.CodexInspections,
 		ExitIPChecker:       exitIPChecker,
 	})

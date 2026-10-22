@@ -98,6 +98,7 @@ func TestCompleteTaskSeparatesWriteFailuresFromRecheckFailures(t *testing.T) {
 		{Target: model.ProxyReplacementTarget{ClientKey: "success", FileName: "success.json", Provider: "codex"}},
 		{Target: model.ProxyReplacementTarget{ClientKey: "recheck-failed", FileName: "recheck-failed.json", Provider: "codex"}},
 		{Target: model.ProxyReplacementTarget{ClientKey: "write-failed", FileName: "write-failed.json", Provider: "codex"}},
+		{Target: model.ProxyReplacementTarget{ClientKey: "inconclusive", FileName: "inconclusive.json", Provider: "codex"}},
 	})
 	if err != nil {
 		t.Fatalf("create draft: %v", err)
@@ -109,7 +110,7 @@ func TestCompleteTaskSeparatesWriteFailuresFromRecheckFailures(t *testing.T) {
 		t.Fatalf("claim queued: claimed=%v err=%v", claimed, err)
 	}
 	page, err := repo.GetTask(ctx, task.ID, 1, 10)
-	if err != nil || len(page.Items) != 3 {
+	if err != nil || len(page.Items) != 4 {
 		t.Fatalf("task page=%#v err=%v", page, err)
 	}
 	if err := repo.MarkItem(ctx, page.Items[0].ID, model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemOutcome{}); err != nil {
@@ -121,12 +122,15 @@ func TestCompleteTaskSeparatesWriteFailuresFromRecheckFailures(t *testing.T) {
 	if err := repo.MarkItem(ctx, page.Items[2].ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{WriteErrorCode: "write_failed"}); err != nil {
 		t.Fatalf("mark write failure: %v", err)
 	}
+	if err := repo.MarkItem(ctx, page.Items[3].ID, model.ProxyReplacementItemRecheckInconclusive, model.ProxyReplacementItemOutcome{RecheckErrorCode: "ip_echo_unavailable"}); err != nil {
+		t.Fatalf("mark recheck inconclusive: %v", err)
+	}
 
 	completed, err := repo.CompleteTask(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("complete task: %v", err)
 	}
-	if completed.UpdatedCount != 2 || completed.FailedCount != 1 || completed.RecheckSuccessCount != 1 || completed.RecheckFailedCount != 1 {
+	if completed.UpdatedCount != 3 || completed.FailedCount != 1 || completed.RecheckSuccessCount != 1 || completed.RecheckFailedCount != 1 || completed.RecheckInconclusiveCount != 1 {
 		t.Fatalf("completed task counts = %#v", completed)
 	}
 	if completed.Status != model.ProxyReplacementTaskPartial {

@@ -77,13 +77,9 @@ type InventoryInvalidator interface {
 	InvalidateAuthFileInventory(context.Context)
 }
 
-type Rechecker interface {
-	RecheckProxyReplacement(context.Context, []model.ProxyReplacementTarget, int) []model.ProxyReplacementProbeResult
-}
-
-// InspectionResultStore is intentionally limited to acknowledging a successful
-// directed proxy recheck. It has no capability to create, alter, or delete
-// inspection evidence beyond clearing the now-resolved transport flag.
+// InspectionResultStore is intentionally limited to clearing proxy abnormal
+// evidence after a replacement has received a non-failing direct exit-IP
+// outcome. It cannot create, alter, or delete inspection evidence otherwise.
 type InspectionResultStore interface {
 	ClearProxySuspects(context.Context, []model.ProxyReplacementTarget) error
 }
@@ -96,7 +92,6 @@ type Options struct {
 	AuthFiles           AuthFilesClient
 	MutationCoordinator *cpaauthfiles.MutationCoordinator
 	Invalidator         InventoryInvalidator
-	Rechecker           Rechecker
 	InspectionResults   InspectionResultStore
 	ExitIPChecker       ExitIPChecker
 	Concurrency         int
@@ -110,7 +105,6 @@ type Service struct {
 	authFiles           AuthFilesClient
 	mutationCoordinator *cpaauthfiles.MutationCoordinator
 	invalidator         InventoryInvalidator
-	rechecker           Rechecker
 	inspectionResults   InspectionResultStore
 	exitIPChecker       ExitIPChecker
 	concurrency         int
@@ -177,23 +171,6 @@ func (s *Service) RestoreSuspectProxyPoolEntries(ctx context.Context) (int, erro
 		restored++
 	}
 	return restored, nil
-}
-
-// ReportInspectionSignal persists only independently classifiable proxy-chain
-// evidence from the browser-local inspection mode.  It deliberately ignores
-// every other failure class: authentication, rate limits, quota and normal
-// upstream errors must never poison a proxy-pool entry.
-func (s *Service) ReportInspectionSignal(ctx context.Context, evidence model.ProxyFailureEvidence) (bool, error) {
-	if s == nil || s.poolState == nil {
-		return false, ErrUnavailable
-	}
-	if !model.IsSuspectedProxyTransportFailure(evidence) {
-		return false, nil
-	}
-	if err := s.poolState.MarkPending(ctx, evidence.ProxyURL, proxyFailureReason(evidence)); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // VerifyProxyPoolExitIPs checks selected saved proxy endpoints through the
@@ -336,14 +313,6 @@ func stateUpdateFailure(fingerprint string) model.ProxyExitIPCheckResult {
 	}
 }
 
-func proxyFailureReason(evidence model.ProxyFailureEvidence) string {
-	detail := strings.ToLower(evidence.ErrorDetail)
-	if strings.Contains(detail, "context deadline exceeded") || strings.Contains(detail, "timeout") {
-		return "transport_timeout"
-	}
-	return "transport_502_request_failed"
-}
-
 // Start owns a single bounded task worker for the process lifetime. Work is
 // durable; a restart simply requeues incomplete task items after their old/new
 // proxy comparison protects against overwrite.
@@ -446,7 +415,6 @@ func NewWithOptions(options Options) *Service {
 		authFiles:           client,
 		mutationCoordinator: coordinator,
 		invalidator:         options.Invalidator,
-		rechecker:           options.Rechecker,
 		inspectionResults:   options.InspectionResults,
 		exitIPChecker:       options.ExitIPChecker,
 		concurrency:         concurrency,
@@ -822,7 +790,7 @@ func (s *Service) executeTask(ctx context.Context, task model.ProxyReplacementTa
 	close(work)
 	workers.Wait()
 
-	if task.RecheckAfterWrite && s.rechecker != nil {
+	if task.RecheckAfterWrite && s.exitIPChecker != nil {
 		s.runRechecks(ctx, task.ID)
 	}
 	if _, err := s.tasks.CompleteTask(ctx, task.ID); err != nil {
@@ -1001,9 +969,15 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 	if err != nil {
 		return
 	}
-	targets := make([]model.ProxyReplacementTarget, 0)
-	itemsByKey := make(map[string]model.ProxyReplacementTaskItem)
-	itemIDs := make([]int64, 0)
+	if s == nil || s.setupResolver == nil || s.authFiles == nil || s.exitIPChecker == nil {
+		return
+	}
+	setup, configured, err := s.setupResolver.ResolveSetup(ctx)
+	if err != nil || !configured {
+		return
+	}
+	targets := make([]model.ProxyReplacementTarget, 0, len(page.Items))
+	itemsByKey := make(map[string]model.ProxyReplacementTaskItem, len(page.Items))
 	for _, item := range page.Items {
 		if item.Status != model.ProxyReplacementItemUpdated {
 			continue
@@ -1011,21 +985,18 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 		_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckRunning, model.ProxyReplacementItemOutcome{})
 		targets = append(targets, item.Target)
 		itemsByKey[item.Target.ClientKey] = item
-		itemIDs = append(itemIDs, item.ID)
 	}
 	if len(targets) == 0 {
 		return
 	}
-	results := s.rechecker.RecheckProxyReplacement(ctx, targets, s.concurrency)
-	byKey := make(map[string]model.ProxyReplacementProbeResult, len(results))
+	results := s.verifyCurrentCredentialExitIPs(ctx, setup, targets)
+	byKey := make(map[string]model.CredentialProxyExitIPCheckResult, len(results))
 	for _, result := range results {
-		byKey[result.Target.ClientKey] = result
+		byKey[result.ClientKey] = result
 	}
 
-	// A pre-existing suspect entry is restored only after a directed recheck
-	// proves that the replacement proxy reached the upstream.  This lookup also
-	// avoids issuing a no-op Restore call for ordinary pool URLs that have never
-	// been quarantined.
+	// A pre-existing suspect entry is restored only after direct exit-IP proof.
+	// This lookup avoids a no-op Restore for ordinary pool URLs never quarantined.
 	preexistingSuspects := make(map[string]struct{})
 	if s.poolState != nil {
 		states, stateErr := s.poolState.List(ctx)
@@ -1043,12 +1014,14 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 		}
 	}
 	type poolRecheckEvidence struct {
-		verifiedTransport bool
-		proxySuspect      bool
+		directFailure bool
+		directHealthy bool
+		proxyURL      string
+		failureReason string
 	}
 	evidenceByFingerprint := make(map[string]poolRecheckEvidence)
-	succeededTargets := make([]model.ProxyReplacementTarget, 0, len(targets))
-	for index, target := range targets {
+	clearTargets := make([]model.ProxyReplacementTarget, 0, len(targets))
+	for _, target := range targets {
 		result, found := byKey[target.ClientKey]
 		item, hasItem := itemsByKey[target.ClientKey]
 		fingerprint := ""
@@ -1058,61 +1031,88 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 				fingerprint = model.ProxyFingerprint(item.NewProxyURL)
 			}
 		}
-		if found && fingerprint != "" {
-			evidence := evidenceByFingerprint[fingerprint]
-			if result.ProxySuspect {
-				evidence.proxySuspect = true
-			} else if recheckTransportVerified(result) {
-				// HTTP authentication/quota failures are still proof that the
-				// proxy transport connected. Internal lookup/configuration
-				// failures are not, and must leave a quarantine intact.
-				evidence.verifiedTransport = true
-			}
-			evidenceByFingerprint[fingerprint] = evidence
+		if !hasItem {
+			continue
 		}
-		if !found || !result.Succeeded {
-			message := "复检失败"
-			code := "recheck_failed"
-			if found && strings.TrimSpace(result.ErrorMessage) != "" {
-				message = result.ErrorMessage
-			}
-			if found && strings.TrimSpace(result.ErrorCode) != "" {
-				code = result.ErrorCode
-			}
-			if found && result.ProxySuspect && s.poolState != nil && hasItem {
-				// Store only the new proxy fingerprint and a finite reason code.
-				// Recheck failure never rolls this value back or triggers another
-				// automatic pool allocation.
-				_ = s.poolState.MarkPending(ctx, item.NewProxyURL, proxySuspectReasonFromRecheck(result))
-			}
-			_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
-				RecheckErrorCode: code, RecheckErrorMessage: message,
+		if !found {
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
+				RecheckErrorCode: "recheck_unavailable", RecheckErrorMessage: "出口 IP 复检未返回结果",
 			})
 			continue
 		}
-		_ = s.tasks.MarkItem(ctx, itemIDs[index], model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemOutcome{})
-		succeededTargets = append(succeededTargets, target)
+		switch result.Outcome {
+		case model.ProxyExitIPOutcomeHealthy:
+			if fingerprint != "" {
+				evidence := evidenceByFingerprint[fingerprint]
+				evidence.directHealthy = true
+				evidenceByFingerprint[fingerprint] = evidence
+			}
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckSucceeded, model.ProxyReplacementItemOutcome{})
+			clearTargets = append(clearTargets, target)
+		case model.ProxyExitIPOutcomeProxyFailed:
+			reason := directExitIPReason(result.Reason, "proxy_transport_failed")
+			if fingerprint != "" {
+				evidence := evidenceByFingerprint[fingerprint]
+				evidence.directFailure = true
+				if evidence.proxyURL == "" {
+					evidence.proxyURL = item.NewProxyURL
+				}
+				if evidence.failureReason == "" {
+					evidence.failureReason = reason
+				}
+				evidenceByFingerprint[fingerprint] = evidence
+			}
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
+				RecheckErrorCode: reason, RecheckErrorMessage: directExitIPFailureMessage(reason),
+			})
+		case model.ProxyExitIPOutcomeInconclusive, model.ProxyExitIPOutcomeNotSaved:
+			reason := directExitIPReason(result.Reason, "ip_echo_unavailable")
+			if reason == "credential_not_found" || reason == "credential_ambiguous" || reason == "credential_lookup_failed" {
+				_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
+					RecheckErrorCode: reason, RecheckErrorMessage: "当前凭证不存在或已变化，无法复检",
+				})
+				continue
+			}
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckInconclusive, model.ProxyReplacementItemOutcome{
+				RecheckErrorCode: reason, RecheckErrorMessage: "出口 IP 复检未确认（未判定代理异常）",
+			})
+			clearTargets = append(clearTargets, target)
+		default:
+			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckInconclusive, model.ProxyReplacementItemOutcome{
+				RecheckErrorCode: "ip_echo_unavailable", RecheckErrorMessage: "出口 IP 复检未确认（未判定代理异常）",
+			})
+			clearTargets = append(clearTargets, target)
+		}
 	}
 
-	// A single explicit transport failure wins for a shared proxy in this batch.
-	// That prevents result order from resurrecting a genuinely bad pool entry.
-	if restorer, ok := s.poolState.(poolStateRestorer); ok {
-		for fingerprint, evidence := range evidenceByFingerprint {
-			if !evidence.verifiedTransport || evidence.proxySuspect {
-				continue
+	// Reconcile each shared proxy once. A single direct failure wins over any
+	// healthy result in this task, so we never restore a fingerprint that has
+	// contradictory direct evidence.
+	for fingerprint, evidence := range evidenceByFingerprint {
+		if evidence.directFailure {
+			if s.poolState != nil {
+				if err := s.poolState.MarkSuspect(ctx, evidence.proxyURL, evidence.failureReason); err != nil {
+					log.Printf("mark proxy pool direct recheck failure: %s", safeTaskError(err))
+				}
 			}
-			if _, wasSuspect := preexistingSuspects[fingerprint]; !wasSuspect {
-				continue
-			}
+			continue
+		}
+		if !evidence.directHealthy {
+			continue
+		}
+		if _, wasSuspect := preexistingSuspects[fingerprint]; !wasSuspect {
+			continue
+		}
+		if restorer, ok := s.poolState.(poolStateRestorer); ok {
 			if _, restoreErr := restorer.Restore(ctx, fingerprint); restoreErr != nil {
 				// The task result remains authoritative. A later explicit
 				// recheck can reconcile a transient pool-state write failure.
-				log.Printf("restore proxy pool state after directed recheck: %s", safeTaskError(restoreErr))
+				log.Printf("restore proxy pool state after direct recheck: %s", safeTaskError(restoreErr))
 			}
 		}
 	}
-	if len(succeededTargets) > 0 && s.inspectionResults != nil {
-		if err := s.inspectionResults.ClearProxySuspects(ctx, succeededTargets); err != nil {
+	if len(clearTargets) > 0 && s.inspectionResults != nil {
+		if err := s.inspectionResults.ClearProxySuspects(ctx, clearTargets); err != nil {
 			// The credential write and recheck are already authoritative. Leave
 			// task success intact and retry reconciliation on a later explicit
 			// inspection rather than falsely reporting a write failure.
@@ -1121,30 +1121,146 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 	}
 }
 
-// recheckTransportVerified distinguishes an actual CPA/ChatGPT HTTP response
-// from local bookkeeping failures such as missing credentials or cancelled
-// work. The latter cannot prove that a proxy has recovered.
-func recheckTransportVerified(result model.ProxyReplacementProbeResult) bool {
-	if result.ProxySuspect {
-		return false
+// VerifyCredentialExitIPs resolves each browser-supplied credential locator
+// against the current CPA inventory, then tests its current proxy via the
+// fixed exit-IP checker. The browser never sends a raw proxy URL and this
+// method never returns one.
+func (s *Service) VerifyCredentialExitIPs(
+	ctx context.Context,
+	targets []model.ProxyReplacementTarget,
+) (model.CredentialProxyExitIPCheckBatch, error) {
+	if s == nil || s.setupResolver == nil || s.authFiles == nil || s.exitIPChecker == nil {
+		return model.CredentialProxyExitIPCheckBatch{}, ErrUnavailable
 	}
-	if result.Succeeded {
-		return true
+	normalized, err := normalizeCredentialExitIPTargets(targets)
+	if err != nil {
+		return model.CredentialProxyExitIPCheckBatch{}, err
 	}
-	code := strings.ToLower(strings.TrimSpace(result.ErrorCode))
-	return code == "http_status" || strings.HasPrefix(code, "http_")
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	setup, configured, err := s.setupResolver.ResolveSetup(ctx)
+	if err != nil {
+		return model.CredentialProxyExitIPCheckBatch{}, err
+	}
+	if !configured {
+		return model.CredentialProxyExitIPCheckBatch{}, ErrUnavailable
+	}
+	return model.CredentialProxyExitIPCheckBatch{Results: s.verifyCurrentCredentialExitIPs(ctx, setup, normalized)}, nil
 }
 
-func proxySuspectReasonFromRecheck(result model.ProxyReplacementProbeResult) string {
-	code := strings.ToLower(strings.TrimSpace(result.ErrorCode))
-	message := strings.ToLower(strings.TrimSpace(result.ErrorMessage))
-	if strings.Contains(code, "timeout") || strings.Contains(message, "timeout") || strings.Contains(message, "deadline") {
-		return "transport_timeout"
+func normalizeCredentialExitIPTargets(input []model.ProxyReplacementTarget) ([]model.ProxyReplacementTarget, error) {
+	if len(input) == 0 || len(input) > maxProxyExitIPCheckBatch {
+		return nil, ErrInvalidRequest
 	}
-	if strings.Contains(code, "502") || strings.Contains(message, "request failed") {
-		return "transport_502_request_failed"
+	seen := make(map[string]struct{}, len(input))
+	result := make([]model.ProxyReplacementTarget, 0, len(input))
+	for _, target := range input {
+		target.ClientKey = strings.TrimSpace(target.ClientKey)
+		target.FileName = strings.TrimSpace(target.FileName)
+		target.Provider = strings.TrimSpace(target.Provider)
+		if target.ClientKey == "" || target.FileName == "" || target.Provider == "" ||
+			target.InspectionRunID != 0 || strings.TrimSpace(target.InspectionAccountKey) != "" {
+			return nil, ErrInvalidRequest
+		}
+		if _, duplicate := seen[target.ClientKey]; duplicate {
+			return nil, ErrInvalidRequest
+		}
+		seen[target.ClientKey] = struct{}{}
+		result = append(result, target)
 	}
-	return "transport_unknown"
+	return result, nil
+}
+
+func (s *Service) verifyCurrentCredentialExitIPs(
+	ctx context.Context,
+	setup store.Setup,
+	targets []model.ProxyReplacementTarget,
+) []model.CredentialProxyExitIPCheckResult {
+	results := make([]model.CredentialProxyExitIPCheckResult, len(targets))
+	if len(targets) == 0 {
+		return results
+	}
+	type job struct{ index int }
+	jobs := make(chan job)
+	workerCount := proxyExitIPCheckConcurrency
+	if workerCount > len(targets) {
+		workerCount = len(targets)
+	}
+	var workers sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for next := range jobs {
+				target := targets[next.index]
+				results[next.index] = s.verifyCurrentCredentialExitIP(ctx, setup, target)
+			}
+		}()
+	}
+	for index := range targets {
+		select {
+		case <-ctx.Done():
+			for remaining := index; remaining < len(targets); remaining++ {
+				results[remaining] = model.CredentialProxyExitIPCheckResult{
+					ClientKey: targets[remaining].ClientKey, Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "check_cancelled",
+				}
+			}
+			close(jobs)
+			workers.Wait()
+			return results
+		case jobs <- job{index: index}:
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	return results
+}
+
+func (s *Service) verifyCurrentCredentialExitIP(
+	ctx context.Context,
+	setup store.Setup,
+	target model.ProxyReplacementTarget,
+) model.CredentialProxyExitIPCheckResult {
+	result := model.CredentialProxyExitIPCheckResult{ClientKey: target.ClientKey}
+	resolved, err := s.resolveCurrentProxyMutationTarget(ctx, setup, target)
+	if err != nil {
+		result.Outcome = model.ProxyExitIPOutcomeInconclusive
+		switch {
+		case errors.Is(err, cpaauthfiles.ErrAuthFileNotFound):
+			result.Reason = "credential_not_found"
+		case errors.Is(err, cpaauthfiles.ErrIdentityMismatch):
+			result.Reason = "credential_ambiguous"
+		default:
+			result.Reason = "credential_lookup_failed"
+		}
+		return result
+	}
+	proxyURL := model.NormalizeProxyURL(proxyURLFromFile(resolved.File))
+	if proxyURL == "" {
+		return model.CredentialProxyExitIPCheckResult{
+			ClientKey: target.ClientKey, Outcome: model.ProxyExitIPOutcomeNotSaved, Reason: "proxy_not_configured",
+		}
+	}
+	check := normalizeProxyExitIPCheckResult(s.exitIPChecker.Check(ctx, proxyURL))
+	return model.CredentialProxyExitIPCheckResult{
+		ClientKey: target.ClientKey,
+		Outcome:   check.Outcome,
+		ExitIP:    check.ExitIP,
+		LatencyMS: check.LatencyMS,
+		Reason:    check.Reason,
+	}
+}
+
+func directExitIPReason(value, fallback string) string {
+	if reason := strings.TrimSpace(value); reason != "" {
+		return reason
+	}
+	return fallback
+}
+
+func directExitIPFailureMessage(reason string) string {
+	return "出口 IP 复检确认代理不可用：" + strings.TrimSpace(reason)
 }
 
 func safeTaskError(err error) string {
