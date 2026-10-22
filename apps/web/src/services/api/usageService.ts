@@ -320,7 +320,8 @@ export interface ProxyFilterSettingsResponse {
 // Proxy replacement is intentionally isolated from the generic auth-file
 // mutation API.  The Manager Server only accepts a frozen, identity-scoped
 // proxy_url plan and never accepts an arbitrary field patch from this UI.
-export type ProxyPoolStatus = 'normal' | 'suspect';
+export type ProxyPoolStatus = 'normal' | 'pending_verification' | 'suspect';
+export type ProxyExitIPOutcome = 'healthy' | 'proxy_failed' | 'inconclusive' | 'not_saved';
 export type ProxyReplacementSource = 'inspection' | 'batch_uniform' | 'batch_pool';
 export type ProxyReplacementMode = 'uniform' | 'pool';
 export type ProxyReplacementTaskStatus =
@@ -423,6 +424,18 @@ export interface ProxyPoolStatesResponse {
 
 export interface ProxyPoolRestoreSuspectsResponse {
   restoredCount: number;
+}
+
+export interface ProxyExitIPCheckResult {
+	fingerprint: string;
+	outcome: ProxyExitIPOutcome;
+	exitIp?: string;
+	latencyMs?: number;
+	reason?: string;
+}
+
+export interface ProxyExitIPCheckBatch {
+	results: ProxyExitIPCheckResult[];
 }
 
 export interface ProxyInspectionSignalRequest {
@@ -3407,6 +3420,34 @@ export const usageServiceApi = {
     return withUsageServiceError(async () => {
       const response = await axios.get<ProxyPoolStatesResponse>(
         buildUrl(base, '/v0/management/proxy-replacements/proxy-pool'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  verifyProxyPoolExitIPs: async (
+    base: string,
+    managementKey: string | undefined,
+    fingerprints: string[]
+  ): Promise<ProxyExitIPCheckBatch> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        results: fingerprints.map((fingerprint) => ({
+          fingerprint,
+          outcome: 'inconclusive',
+          reason: 'ip_echo_unavailable',
+        })),
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<ProxyExitIPCheckBatch>(
+        buildUrl(base, '/v0/management/proxy-replacements/proxy-pool/verify-exit-ip'),
+        { fingerprints },
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
