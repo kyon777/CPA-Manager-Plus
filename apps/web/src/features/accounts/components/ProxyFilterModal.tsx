@@ -2,14 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import { IconCopy, IconSearch } from '@/components/ui/icons';
+import { IconCopy, IconRefreshCw, IconSearch } from '@/components/ui/icons';
 import type { AuthFileItem } from '@/types';
 import {
   findMissingEnabledProxyURLs,
   normalizeProxyFilterURLs,
 } from '@/features/accounts/model/proxyFilter';
 import { proxyReplacementFingerprint } from '@/features/accounts/model/proxyReplacement';
-import { usageServiceApi, type ProxyPoolState } from '@/services/api/usageService';
+import {
+  usageServiceApi,
+  type ProxyExitIPCheckResult,
+  type ProxyPoolState,
+} from '@/services/api/usageService';
 import styles from './ProxyFilterModal.module.scss';
 
 type ProxyFilterModalProps = {
@@ -58,6 +62,9 @@ export function ProxyFilterModal({
   const [poolStates, setPoolStates] = useState<ProxyPoolState[]>([]);
   const [poolError, setPoolError] = useState('');
   const [restoringFingerprint, setRestoringFingerprint] = useState('');
+  const [verificationBusy, setVerificationBusy] = useState(false);
+  const [verificationTotal, setVerificationTotal] = useState(0);
+  const [verificationResults, setVerificationResults] = useState<ProxyExitIPCheckResult[]>([]);
 
   const savedInput = savedURLs.join('\n');
   const savedInputKey = `${sessionID}\u0000${savedInput}`;
@@ -69,6 +76,24 @@ export function ProxyFilterModal({
     () => new Map(poolStates.map((state) => [state.fingerprint, state] as const)),
     [poolStates]
   );
+  const savedURLByFingerprint = useMemo(
+    () =>
+      new Map(
+        normalizeProxyFilterURLs(savedURLs).map(
+          (url) => [proxyReplacementFingerprint(url), url] as const
+        )
+      ),
+    [savedURLs]
+  );
+  const pendingSavedURLs = useMemo(
+    () =>
+      normalizeProxyFilterURLs(savedURLs).flatMap((url) => {
+        const fingerprint = proxyReplacementFingerprint(url);
+        const state = poolStateByFingerprint.get(fingerprint);
+        return state?.status === 'pending_verification' ? [{ url, fingerprint, state }] : [];
+      }),
+    [poolStateByFingerprint, savedURLs]
+  );
   const suspectedSavedURLs = useMemo(
     () =>
       normalizeProxyFilterURLs(savedURLs).flatMap((url) => {
@@ -78,15 +103,26 @@ export function ProxyFilterModal({
       }),
     [poolStateByFingerprint, savedURLs]
   );
+  const verificationCandidates = useMemo(
+    () =>
+      Array.from(
+        new Set([...pendingSavedURLs, ...suspectedSavedURLs].map(({ fingerprint }) => fingerprint))
+      ),
+    [pendingSavedURLs, suspectedSavedURLs]
+  );
 
   useEffect(() => {
     let active = true;
     setPoolStates([]);
     setPoolError('');
     setRestoringFingerprint('');
-    if (!open || !managerRequestScope) return () => {
-      active = false;
-    };
+    setVerificationBusy(false);
+    setVerificationTotal(0);
+    setVerificationResults([]);
+    if (!open || !managerRequestScope)
+      return () => {
+        active = false;
+      };
     void usageServiceApi
       .listProxyPoolStates(managerRequestScope.apiBase, managerRequestScope.managementKey)
       .then((response) => {
@@ -139,8 +175,40 @@ export function ProxyFilterModal({
     }
   };
 
+  const handleVerifyExitIPs = async (fingerprints: readonly string[]) => {
+    if (!managerRequestScope || verificationBusy) return;
+    const selected = Array.from(
+      new Set(fingerprints.map((fingerprint) => fingerprint.trim()).filter(Boolean))
+    );
+    if (selected.length === 0) return;
+    setVerificationBusy(true);
+    setVerificationTotal(selected.length);
+    setVerificationResults([]);
+    setPoolError('');
+    try {
+      const batch = await usageServiceApi.verifyProxyPoolExitIPs(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey,
+        selected
+      );
+      const results = Array.isArray(batch.results) ? batch.results : [];
+      setVerificationResults(results);
+      const refreshed = await usageServiceApi.listProxyPoolStates(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey
+      );
+      setPoolStates(Array.isArray(refreshed.items) ? refreshed.items : []);
+    } catch (verificationError) {
+      setPoolError(
+        verificationError instanceof Error ? verificationError.message : String(verificationError)
+      );
+    } finally {
+      setVerificationBusy(false);
+    }
+  };
+
   const resultText = missingURLs?.join('\n') ?? '';
-  const busy = loading || saving || Boolean(restoringFingerprint);
+  const busy = loading || saving || Boolean(restoringFingerprint) || verificationBusy;
 
   return (
     <Modal
@@ -154,7 +222,12 @@ export function ProxyFilterModal({
           <Button variant="secondary" onClick={onClose} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button variant="secondary" onClick={() => void handleSave()} disabled={busy} loading={saving}>
+          <Button
+            variant="secondary"
+            onClick={() => void handleSave()}
+            disabled={busy}
+            loading={saving}
+          >
             {t('accounts.proxy_filter_save')}
           </Button>
           <Button
@@ -200,9 +273,61 @@ export function ProxyFilterModal({
         ) : null}
         {credentialsError ? <div className={styles.error}>{credentialsError}</div> : null}
         {poolError ? <div className={styles.error}>{poolError}</div> : null}
+        {verificationCandidates.length > 0 ? (
+          <div className={styles.poolStateActions}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleVerifyExitIPs(verificationCandidates)}
+              loading={verificationBusy}
+              disabled={busy}
+            >
+              <IconRefreshCw size={14} />
+              {t('accounts.proxy_pool_verify_all', { count: verificationCandidates.length })}
+            </Button>
+          </div>
+        ) : null}
+        {verificationBusy ? (
+          <p className={styles.verificationProgress} aria-live="polite">
+            {t('accounts.proxy_pool_verify_progress', { count: verificationTotal })}
+          </p>
+        ) : null}
+        {pendingSavedURLs.length > 0 ? (
+          <section className={styles.pendingPoolState} aria-live="polite">
+            <strong>
+              {t('accounts.proxy_pool_pending_count', { count: pendingSavedURLs.length })}
+            </strong>
+            <p>{t('accounts.proxy_pool_pending_hint')}</p>
+            <div className={styles.poolStateList}>
+              {pendingSavedURLs.map(({ url, fingerprint, state }) => (
+                <div
+                  key={fingerprint}
+                  className={styles.poolStateRow}
+                  data-proxy-pool-pending={fingerprint}
+                >
+                  <code title={url}>{url}</code>
+                  <span>
+                    {t(`accounts.proxy_pool_reason_${state.lastFailureReason || 'unknown'}`)}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleVerifyExitIPs([fingerprint])}
+                    loading={verificationBusy}
+                    disabled={busy}
+                  >
+                    {t('accounts.proxy_pool_verify_one')}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
         {suspectedSavedURLs.length > 0 ? (
           <section className={styles.poolState} aria-live="polite">
-            <strong>{t('accounts.proxy_pool_suspect_count', { count: suspectedSavedURLs.length })}</strong>
+            <strong>
+              {t('accounts.proxy_pool_suspect_count', { count: suspectedSavedURLs.length })}
+            </strong>
             <p>{t('accounts.proxy_pool_suspect_hint')}</p>
             <div className={styles.poolStateList}>
               {suspectedSavedURLs.map(({ url, fingerprint, state }) => (
@@ -212,7 +337,18 @@ export function ProxyFilterModal({
                   data-proxy-pool-suspect={fingerprint}
                 >
                   <code title={url}>{url}</code>
-                  <span>{t(`accounts.proxy_pool_reason_${state.lastFailureReason || 'unknown'}`)}</span>
+                  <span>
+                    {t(`accounts.proxy_pool_reason_${state.lastFailureReason || 'unknown'}`)}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleVerifyExitIPs([fingerprint])}
+                    loading={verificationBusy}
+                    disabled={busy}
+                  >
+                    {t('accounts.proxy_pool_verify_one')}
+                  </Button>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -227,10 +363,44 @@ export function ProxyFilterModal({
             </div>
           </section>
         ) : null}
+        {verificationResults.length > 0 ? (
+          <section className={styles.verificationResults} aria-live="polite">
+            <strong>
+              {t('accounts.proxy_pool_verify_result_count', { count: verificationResults.length })}
+            </strong>
+            <div className={styles.verificationResultList}>
+              {verificationResults.map((result) => (
+                <div
+                  key={result.fingerprint}
+                  className={styles.verificationResultRow}
+                  data-proxy-exit-ip-result={result.fingerprint}
+                >
+                  <code title={savedURLByFingerprint.get(result.fingerprint)}>
+                    {savedURLByFingerprint.get(result.fingerprint) || result.fingerprint}
+                  </code>
+                  <span className={styles[`verification${result.outcome}`]}>
+                    {t(`accounts.proxy_pool_outcome_${result.outcome}`)}
+                  </span>
+                  {result.exitIp ? (
+                    <span>{t('accounts.proxy_pool_exit_ip', { ip: result.exitIp })}</span>
+                  ) : null}
+                  {typeof result.latencyMs === 'number' ? (
+                    <span>{t('accounts.proxy_pool_latency', { ms: result.latencyMs })}</span>
+                  ) : null}
+                  {result.reason ? (
+                    <span>{t(`accounts.proxy_pool_reason_${result.reason}`)}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
         {missingURLs !== null ? (
           <section className={styles.result} aria-live="polite">
             <div className={styles.resultHeader}>
-              <strong>{t('accounts.proxy_filter_result_count', { count: missingURLs.length })}</strong>
+              <strong>
+                {t('accounts.proxy_filter_result_count', { count: missingURLs.length })}
+              </strong>
               <Button
                 variant="secondary"
                 size="sm"

@@ -20,7 +20,7 @@ export type ProxyReplacementItemStatus =
   | 'recheck_running'
   | 'recheck_succeeded'
   | 'recheck_failed';
-export type ProxyPoolStatus = 'normal' | 'suspect';
+export type ProxyPoolStatus = 'normal' | 'pending_verification' | 'suspect';
 
 export interface ProxyReplacementTarget {
   clientKey: string;
@@ -105,8 +105,12 @@ export const proxyReplacementFingerprint = (value: unknown): string => {
 /** Keep this deliberately aligned with model.IsSuspectedProxyTransportFailure. */
 export const isLocalProxySuspect = (evidence: LocalProxyFailureEvidence): boolean => {
   if (!normalizeProxyReplacementURL(evidence.proxyUrl)) return false;
-  const detail = String(evidence.errorDetail ?? '').trim().toLowerCase();
-  const kind = String(evidence.errorKind ?? '').trim().toLowerCase();
+  const detail = String(evidence.errorDetail ?? '')
+    .trim()
+    .toLowerCase();
+  const kind = String(evidence.errorKind ?? '')
+    .trim()
+    .toLowerCase();
   if (
     evidence.statusCode === 401 ||
     evidence.statusCode === 429 ||
