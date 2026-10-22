@@ -46,3 +46,12 @@ func TestIsSuspectedProxyTransportFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyPoolPendingVerificationIsDistinctFromSuspect(t *testing.T) {
+	if ProxyPoolStatusPendingVerification == ProxyPoolStatusSuspect {
+		t.Fatal("pending verification must not alias the allocation-excluding suspect state")
+	}
+	if got := string(ProxyPoolStatusPendingVerification); got != "pending_verification" {
+		t.Fatalf("pending verification value = %q", got)
+	}
+}

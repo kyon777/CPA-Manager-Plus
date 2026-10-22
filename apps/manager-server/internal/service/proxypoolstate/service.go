@@ -29,6 +29,17 @@ func New(store Store) *Service {
 // fingerprint before persistence, and records a finite reason code rather
 // than potentially credential-bearing transport text.
 func (s *Service) MarkSuspect(ctx context.Context, proxyURL string, reason string) error {
+	return s.mark(ctx, proxyURL, reason, model.ProxyPoolStatusSuspect)
+}
+
+// MarkPending records a transport signal which is not yet direct proof that a
+// proxy has failed. Pending entries deliberately remain eligible for pool
+// allocation until a direct exit-IP check confirms a failure.
+func (s *Service) MarkPending(ctx context.Context, proxyURL string, reason string) error {
+	return s.mark(ctx, proxyURL, reason, model.ProxyPoolStatusPendingVerification)
+}
+
+func (s *Service) mark(ctx context.Context, proxyURL string, reason string, status model.ProxyPoolStatus) error {
 	if s == nil || s.store == nil {
 		return errors.New("proxy pool state store is unavailable")
 	}
@@ -36,12 +47,13 @@ func (s *Service) MarkSuspect(ctx context.Context, proxyURL string, reason strin
 	if fingerprint == "" {
 		return errors.New("proxy URL is required")
 	}
+	now := time.Now().UnixMilli()
 	_, err := s.store.UpsertProxyPoolState(ctx, model.ProxyPoolState{
 		Fingerprint:       fingerprint,
-		Status:            model.ProxyPoolStatusSuspect,
-		LastFailureAtMS:   time.Now().UnixMilli(),
+		Status:            status,
+		LastFailureAtMS:   now,
 		LastFailureReason: normalizeReason(reason),
-		UpdatedAtMS:       time.Now().UnixMilli(),
+		UpdatedAtMS:       now,
 	})
 	return err
 }

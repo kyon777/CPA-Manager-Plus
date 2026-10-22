@@ -76,6 +76,40 @@ func TestPoolStatePreservesFiniteTransportReasonCode(t *testing.T) {
 	}
 }
 
+func TestPoolStateCanBeMarkedPendingWithoutPersistingURL(t *testing.T) {
+	db := openTestDB(t)
+	protector, err := security.NewProtector([]byte("proxy-pool-pending-state-test-key-material"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := proxypoolstate.New(proxyreplacement.New(db, protector))
+	proxyURL := "http://user:secret@proxy:8080/"
+	if err := service.MarkPending(context.Background(), proxyURL, "context deadline exceeded while contacting upstream"); err != nil {
+		t.Fatalf("mark pending: %v", err)
+	}
+	states, err := service.List(context.Background())
+	if err != nil || len(states) != 1 {
+		t.Fatalf("states=%#v err=%v", states, err)
+	}
+	state := states[0]
+	if state.Status != model.ProxyPoolStatusPendingVerification {
+		t.Fatalf("state status=%q", state.Status)
+	}
+	if state.Fingerprint != model.ProxyFingerprint(proxyURL) {
+		t.Fatalf("fingerprint=%q", state.Fingerprint)
+	}
+	if state.LastFailureReason != "transport_timeout" {
+		t.Fatalf("reason=%q", state.LastFailureReason)
+	}
+	var raw string
+	if err := db.QueryRow(`select proxy_fingerprint || ' ' || coalesce(last_failure_reason, '') from proxy_pool_state`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if containsSecret(raw, "user:secret") {
+		t.Fatalf("raw proxy state leaked URL: %q", raw)
+	}
+}
+
 func containsSecret(value, secret string) bool {
 	return len(secret) > 0 && len(value) >= len(secret) && (value == secret || contains(value, secret))
 }

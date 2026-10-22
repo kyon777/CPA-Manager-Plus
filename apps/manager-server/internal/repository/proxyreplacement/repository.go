@@ -543,7 +543,9 @@ func validMode(mode model.ProxyReplacementMode) bool {
 }
 
 func validPoolStatus(status model.ProxyPoolStatus) bool {
-	return status == model.ProxyPoolStatusNormal || status == model.ProxyPoolStatusSuspect
+	return status == model.ProxyPoolStatusNormal ||
+		status == model.ProxyPoolStatusPendingVerification ||
+		status == model.ProxyPoolStatusSuspect
 }
 
 func validItemStatus(status model.ProxyReplacementItemStatus) bool {

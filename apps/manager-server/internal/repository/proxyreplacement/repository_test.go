@@ -133,3 +133,26 @@ func TestCompleteTaskSeparatesWriteFailuresFromRecheckFailures(t *testing.T) {
 		t.Fatalf("completed task status = %q, want %q", completed.Status, model.ProxyReplacementTaskPartial)
 	}
 }
+
+func TestProxyPoolStateRoundTripsPendingVerification(t *testing.T) {
+	db := openTestDB(t)
+	repo := proxyreplacement.New(db, testProtector(t))
+	ctx := context.Background()
+	want := model.ProxyPoolState{
+		Fingerprint:       "pending-proxy-fingerprint",
+		Status:            model.ProxyPoolStatusPendingVerification,
+		LastFailureAtMS:   1,
+		LastFailureReason: "transport_timeout",
+		UpdatedAtMS:       2,
+	}
+	if _, err := repo.UpsertProxyPoolState(ctx, want); err != nil {
+		t.Fatalf("upsert pending state: %v", err)
+	}
+	states, err := repo.ListProxyPoolStates(ctx)
+	if err != nil || len(states) != 1 {
+		t.Fatalf("states=%#v err=%v", states, err)
+	}
+	if got := states[0]; got.Status != model.ProxyPoolStatusPendingVerification || got.Fingerprint != want.Fingerprint {
+		t.Fatalf("state=%#v", got)
+	}
+}

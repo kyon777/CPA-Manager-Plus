@@ -9,8 +9,9 @@ import (
 type ProxyPoolStatus string
 
 const (
-	ProxyPoolStatusNormal  ProxyPoolStatus = "normal"
-	ProxyPoolStatusSuspect ProxyPoolStatus = "suspect"
+	ProxyPoolStatusNormal              ProxyPoolStatus = "normal"
+	ProxyPoolStatusPendingVerification ProxyPoolStatus = "pending_verification"
+	ProxyPoolStatusSuspect             ProxyPoolStatus = "suspect"
 )
 
 type ProxyReplacementSource string

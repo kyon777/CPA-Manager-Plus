@@ -510,6 +510,39 @@ func TestCreatePreviewExcludesSuspectAndInspectionOldProxy(t *testing.T) {
 	}
 }
 
+func TestCreatePreviewKeepsPendingVerificationProxyEligible(t *testing.T) {
+	tasks := &previewTaskStore{}
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "a@example.com", "http://old", false),
+	}}
+	service := NewWithOptions(Options{
+		Tasks:         tasks,
+		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		Settings:      staticSettings{settings: store.ProxyFilterSettings{URLs: []string{"http://pending", "http://suspect"}}},
+		PoolState: staticPoolState{states: []model.ProxyPoolState{
+			{Fingerprint: model.ProxyFingerprint("http://pending"), Status: model.ProxyPoolStatusPendingVerification},
+			{Fingerprint: model.ProxyFingerprint("http://suspect"), Status: model.ProxyPoolStatusSuspect},
+		}},
+		AuthFiles: authFiles,
+	})
+	preview, err := service.CreatePreview(context.Background(), model.ProxyReplacementPreviewRequest{
+		Source: model.ProxyReplacementSourceInspection,
+		Mode:   model.ProxyReplacementModePool,
+		Targets: []model.ProxyReplacementTarget{{
+			ClientKey: "run:1", FileName: "one.json", AuthIndex: "1", AccountEmail: "a@example.com", Provider: "codex", RuntimeID: "runtime-1",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create preview: %v", err)
+	}
+	if preview.Task.SuspectExcludedCount != 1 {
+		t.Fatalf("suspect excluded = %d, want 1", preview.Task.SuspectExcludedCount)
+	}
+	if len(preview.Items) != 1 || preview.Items[0].NewProxyURL != "http://pending" {
+		t.Fatalf("pending proxy must remain eligible: %#v", preview.Items)
+	}
+}
+
 type previewTaskStore struct {
 	task   model.ProxyReplacementTask
 	items  []model.ProxyReplacementTaskItem
