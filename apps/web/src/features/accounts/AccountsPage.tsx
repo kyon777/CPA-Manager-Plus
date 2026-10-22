@@ -1499,6 +1499,7 @@ export function AccountsPage() {
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [accountHistoryRefreshRevision, setAccountHistoryRefreshRevision] = useState(0);
   const [accountHistoryAutoRefreshRevision, setAccountHistoryAutoRefreshRevision] = useState(0);
+  const [recentIndexRefreshRevision, setRecentIndexRefreshRevision] = useState(0);
   const [accountQuotaRefreshRevision, setAccountQuotaRefreshRevision] = useState(0);
   const [listWindowUsageRefreshRevision, setListWindowUsageRefreshRevision] = useState(0);
   const [suppressedInspectionResultKeys, setSuppressedInspectionResultKeys] = useState<Set<string>>(
@@ -2470,6 +2471,8 @@ export function AccountsPage() {
       loadHeaderSnapshots(),
     ]);
     setAccountHistoryAutoRefreshRevision((current) => current + 1);
+    setRecentIndexRefreshRevision((current) => current + 1);
+    setListWindowUsageRefreshRevision((current) => current + 1);
   }, [
     credentialEvidenceScopeKey,
     loadFiles,
@@ -2506,7 +2509,6 @@ export function AccountsPage() {
       canLoadHeaderSnapshots ? loadHeaderSnapshots() : Promise.resolve(),
       canLoadInspectionSummary ? loadInspectionSummaryAndSynchronize() : Promise.resolve(),
     ]);
-    setAccountHistoryAutoRefreshRevision((current) => current + 1);
   }, [
     canLoadHeaderSnapshots,
     canLoadInspectionSummary,
@@ -4372,7 +4374,7 @@ export function AccountsPage() {
       operationalFilterNeedsRecentRequestIndex,
     ]
   );
-  const accountRecentAnomalyIndexScopeKey = `${accountRecentAnomalyIndexContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
+  const accountRecentAnomalyIndexScopeKey = `${accountRecentAnomalyIndexContextKey}\u0000${recentIndexRefreshRevision}`;
   const accountRecentAnomalyIndexAutoLoadKey = `${accountRecentAnomalyIndexScopeKey}\u0000${accountRecentAnomalyIndexRequiredLimit}`;
   const accountRecentAnomalyIndexCoverage = accountRecentAnomalyIndexCoverageRef.current;
   const accountRecentAnomalyIndexError = accountRecentAnomalyIndexErrorRef.current;
@@ -4898,7 +4900,7 @@ export function AccountsPage() {
       managementKey,
     ]
   );
-  const accountRecentIndexAutoLoadKey = `${accountRecentIndexAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
+  const accountRecentIndexAutoLoadKey = `${accountRecentIndexAutoContextKey}\u0000${recentIndexRefreshRevision}`;
   const accountHistoryAutoLoadKey = `${accountHistoryAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
   useEffect(() => {
     const currentRowKeys = new Set(rows.map((row) => row.selectionKey));
@@ -5446,7 +5448,7 @@ export function AccountsPage() {
       pageRows,
     ]
   );
-  const listWindowUsageAutoLoadKey = `${listWindowUsageAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}\u0000${listWindowUsageRefreshRevision}`;
+  const listWindowUsageAutoLoadKey = `${listWindowUsageAutoContextKey}\u0000${listWindowUsageRefreshRevision}`;
   const accountDisplayHint = t(
     accountDisplayMode === 'masked'
       ? 'accounts.show_full_credentials_hint'

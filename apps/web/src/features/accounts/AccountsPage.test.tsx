@@ -18716,7 +18716,7 @@ describe('AccountsPage replacement flows', () => {
       expect(restoredText).toMatch(/Weekly|7d/);
     });
 
-    it('refreshes list window usage on passive 60s evidence refresh interval', async () => {
+    it('does not refresh list window usage on passive 60s evidence refresh interval', async () => {
       vi.useFakeTimers();
       const file = makeCodexFile('codex-passive.json', 'auth-passive', 'passive@example.com');
       mocks.files = [file];
@@ -18779,6 +18779,7 @@ describe('AccountsPage replacement flows', () => {
       await flushPromises();
 
       expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+      expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
       const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
       expect(readText(card)).toContain('$0.50');
       expect(readText(card)).toContain('50.0K');
@@ -18788,10 +18789,11 @@ describe('AccountsPage replacement flows', () => {
       });
       await flushPromises();
 
-      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(2);
-      const updatedCard = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
-      expect(readText(updatedCard)).toContain('$0.80');
-      expect(readText(updatedCard)).toContain('80.0K');
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+      expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(1);
+      const unchangedCard = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
+      expect(readText(unchangedCard)).toContain('$0.50');
+      expect(readText(unchangedCard)).toContain('50.0K');
     });
 
     it('refreshes list window usage after single account quota refresh succeeds without opening drawer', async () => {
