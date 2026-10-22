@@ -53,6 +53,10 @@ const (
 	ProxyReplacementItemRecheckRunning   ProxyReplacementItemStatus = "recheck_running"
 	ProxyReplacementItemRecheckSucceeded ProxyReplacementItemStatus = "recheck_succeeded"
 	ProxyReplacementItemRecheckFailed    ProxyReplacementItemStatus = "recheck_failed"
+	// ProxyReplacementItemRecheckInconclusive means the fixed exit-IP probe
+	// could not establish either health or a proxy failure. It is deliberately
+	// distinct from a direct proxy failure.
+	ProxyReplacementItemRecheckInconclusive ProxyReplacementItemStatus = "recheck_inconclusive"
 )
 
 type ProxyReplacementTarget struct {
@@ -113,26 +117,42 @@ type ProxyExitIPCheckBatch struct {
 	Results []ProxyExitIPCheckResult `json:"results"`
 }
 
+// CredentialProxyExitIPCheckResult binds direct exit-IP evidence to the
+// browser-supplied opaque client key. It intentionally contains no proxy URL:
+// URLs are resolved only from the current Manager Server credential record.
+type CredentialProxyExitIPCheckResult struct {
+	ClientKey string             `json:"clientKey"`
+	Outcome   ProxyExitIPOutcome `json:"outcome"`
+	ExitIP    string             `json:"exitIp,omitempty"`
+	LatencyMS int64              `json:"latencyMs,omitempty"`
+	Reason    string             `json:"reason,omitempty"`
+}
+
+type CredentialProxyExitIPCheckBatch struct {
+	Results []CredentialProxyExitIPCheckResult `json:"results"`
+}
+
 type ProxyReplacementTask struct {
-	ID                   int64                      `json:"id"`
-	Source               ProxyReplacementSource     `json:"source"`
-	Mode                 ProxyReplacementMode       `json:"mode"`
-	Status               ProxyReplacementTaskStatus `json:"status"`
-	RecheckAfterWrite    bool                       `json:"recheckAfterWrite"`
-	CanConfirm           bool                       `json:"canConfirm"`
-	TaskOffset           int                        `json:"taskOffset"`
-	TotalCount           int                        `json:"totalCount"`
-	UpdatedCount         int                        `json:"updatedCount"`
-	FailedCount          int                        `json:"failedCount"`
-	SkippedCount         int                        `json:"skippedCount"`
-	RecheckSuccessCount  int                        `json:"recheckSuccessCount"`
-	RecheckFailedCount   int                        `json:"recheckFailedCount"`
-	UnusedNormalCount    int                        `json:"unusedNormalCount"`
-	FallbackNormalCount  int                        `json:"fallbackNormalCount"`
-	SuspectExcludedCount int                        `json:"suspectExcludedCount"`
-	ExpiresAtMS          int64                      `json:"expiresAtMs,omitempty"`
-	CreatedAtMS          int64                      `json:"createdAtMs"`
-	UpdatedAtMS          int64                      `json:"updatedAtMs"`
+	ID                       int64                      `json:"id"`
+	Source                   ProxyReplacementSource     `json:"source"`
+	Mode                     ProxyReplacementMode       `json:"mode"`
+	Status                   ProxyReplacementTaskStatus `json:"status"`
+	RecheckAfterWrite        bool                       `json:"recheckAfterWrite"`
+	CanConfirm               bool                       `json:"canConfirm"`
+	TaskOffset               int                        `json:"taskOffset"`
+	TotalCount               int                        `json:"totalCount"`
+	UpdatedCount             int                        `json:"updatedCount"`
+	FailedCount              int                        `json:"failedCount"`
+	SkippedCount             int                        `json:"skippedCount"`
+	RecheckSuccessCount      int                        `json:"recheckSuccessCount"`
+	RecheckFailedCount       int                        `json:"recheckFailedCount"`
+	RecheckInconclusiveCount int                        `json:"recheckInconclusiveCount"`
+	UnusedNormalCount        int                        `json:"unusedNormalCount"`
+	FallbackNormalCount      int                        `json:"fallbackNormalCount"`
+	SuspectExcludedCount     int                        `json:"suspectExcludedCount"`
+	ExpiresAtMS              int64                      `json:"expiresAtMs,omitempty"`
+	CreatedAtMS              int64                      `json:"createdAtMs"`
+	UpdatedAtMS              int64                      `json:"updatedAtMs"`
 }
 
 type ProxyReplacementTaskItem struct {

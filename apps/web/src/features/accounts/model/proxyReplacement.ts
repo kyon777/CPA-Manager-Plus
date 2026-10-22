@@ -19,7 +19,8 @@ export type ProxyReplacementItemStatus =
   | 'write_failed'
   | 'recheck_running'
   | 'recheck_succeeded'
-  | 'recheck_failed';
+  | 'recheck_failed'
+  | 'recheck_inconclusive';
 export type ProxyPoolStatus = 'normal' | 'pending_verification' | 'suspect';
 
 export interface ProxyReplacementTarget {
@@ -49,6 +50,7 @@ export interface ProxyReplacementTask {
   skippedCount: number;
   recheckSuccessCount: number;
   recheckFailedCount: number;
+  recheckInconclusiveCount: number;
   unusedNormalCount: number;
   fallbackNormalCount: number;
   suspectExcludedCount: number;

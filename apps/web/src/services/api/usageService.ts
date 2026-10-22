@@ -341,7 +341,8 @@ export type ProxyReplacementItemStatus =
   | 'write_failed'
   | 'recheck_running'
   | 'recheck_succeeded'
-  | 'recheck_failed';
+  | 'recheck_failed'
+  | 'recheck_inconclusive';
 
 export interface ProxyReplacementTargetRequest {
   clientKey: string;
@@ -377,6 +378,7 @@ export interface ProxyReplacementTask {
   skippedCount: number;
   recheckSuccessCount: number;
   recheckFailedCount: number;
+  recheckInconclusiveCount: number;
   unusedNormalCount: number;
   fallbackNormalCount: number;
   suspectExcludedCount: number;
@@ -436,6 +438,21 @@ export interface ProxyExitIPCheckResult {
 
 export interface ProxyExitIPCheckBatch {
 	results: ProxyExitIPCheckResult[];
+}
+
+// The browser supplies only a stable credential locator. Manager Server reads
+// the current server-side proxy URL and emits direct exit-IP evidence without
+// returning that credential-bearing URL in this endpoint's response.
+export interface CredentialProxyExitIPCheckResult {
+  clientKey: string;
+  outcome: ProxyExitIPOutcome;
+  exitIp?: string;
+  latencyMs?: number;
+  reason?: string;
+}
+
+export interface CredentialProxyExitIPCheckBatch {
+  results: CredentialProxyExitIPCheckResult[];
 }
 
 export interface ProxyInspectionSignalRequest {

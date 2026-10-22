@@ -55,3 +55,20 @@ func TestProxyPoolPendingVerificationIsDistinctFromSuspect(t *testing.T) {
 		t.Fatalf("pending verification value = %q", got)
 	}
 }
+
+func TestProxyReplacementRecheckInconclusiveIsDistinct(t *testing.T) {
+	if ProxyReplacementItemRecheckInconclusive == ProxyReplacementItemRecheckFailed {
+		t.Fatal("inconclusive must not be represented as a direct proxy failure")
+	}
+}
+
+func TestCredentialExitIPCheckResultKeepsOnlyLocatorAndDirectOutcome(t *testing.T) {
+	got := CredentialProxyExitIPCheckResult{
+		ClientKey: "row-1",
+		Outcome:   ProxyExitIPOutcomeProxyFailed,
+		Reason:    "proxy_connect_timeout",
+	}
+	if got.ClientKey != "row-1" || got.Outcome != ProxyExitIPOutcomeProxyFailed {
+		t.Fatalf("result=%#v", got)
+	}
+}
