@@ -11,14 +11,41 @@ export type ServerErrorPriorityUpdateMergeResult = {
 
 const normalizedText = (value: unknown): string => String(value ?? '').trim().toLowerCase();
 
-const sameCredential = (file: AuthFileItem, update: ServerErrorPriorityDemotionUpdate): boolean => {
-  const fileName = readAuthFileStatusPhysicalName(file);
-  const fileAuthIndex = readAuthFileStatusAuthIndex(file);
-  return (
-    fileName === String(update.fileName ?? '').trim() &&
-    fileAuthIndex === normalizeAuthIndex(update.authIndex) &&
-    readAuthFileStatusProvider(file) === normalizedText(update.provider)
+const credentialKey = (
+  fileName: unknown,
+  authIndex: unknown,
+  provider: unknown
+): string | null => {
+  const normalizedFileName = String(fileName ?? '').trim();
+  const normalizedAuthIndex = normalizeAuthIndex(authIndex);
+  const normalizedProvider = normalizedText(provider);
+  if (!normalizedFileName || !normalizedAuthIndex || !normalizedProvider) return null;
+  return [normalizedFileName, normalizedAuthIndex, normalizedProvider].join('\u0000');
+};
+
+const credentialKeyForFile = (file: AuthFileItem): string | null =>
+  credentialKey(
+    readAuthFileStatusPhysicalName(file),
+    readAuthFileStatusAuthIndex(file),
+    readAuthFileStatusProvider(file)
   );
+
+const credentialKeyForUpdate = (update: ServerErrorPriorityDemotionUpdate): string | null =>
+  credentialKey(update.fileName, update.authIndex, update.provider);
+
+const credentialIndexes = (files: readonly AuthFileItem[]): Map<string, number[]> => {
+  const indexes = new Map<string, number[]>();
+  files.forEach((file, index) => {
+    const key = credentialKeyForFile(file);
+    if (!key) return;
+    const existing = indexes.get(key);
+    if (existing) {
+      existing.push(index);
+      return;
+    }
+    indexes.set(key, [index]);
+  });
+  return indexes;
 };
 
 const readPriority = (file: AuthFileItem): number | null => {
@@ -40,6 +67,7 @@ export const applyServerErrorPriorityUpdates = (
 
   let nextFiles: AuthFileItem[] | null = null;
   let appliedCount = 0;
+  const indexes = credentialIndexes(files);
 
   for (const update of updates) {
     if (
@@ -51,12 +79,13 @@ export const applyServerErrorPriorityUpdates = (
     ) {
       continue;
     }
+    const matchingIndexes = indexes.get(credentialKeyForUpdate(update) ?? '');
+    if (!matchingIndexes) continue;
     const currentFiles: readonly AuthFileItem[] = nextFiles ?? files;
-    const index = currentFiles.findIndex(
-      (file: AuthFileItem) =>
-        sameCredential(file, update) && readPriority(file) === update.priorityBefore
+    const index = matchingIndexes.find(
+      (candidateIndex) => readPriority(currentFiles[candidateIndex]!) === update.priorityBefore
     );
-    if (index < 0) continue;
+    if (index === undefined) continue;
 
     if (!nextFiles) nextFiles = [...files];
     const current = nextFiles[index];

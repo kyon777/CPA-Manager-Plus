@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -1465,7 +1465,9 @@ export function AccountsPage() {
       // Keep the ref authoritative until React commits, so a fast subsequent
       // delta cannot replay from the pre-demotion list snapshot.
       prioritySyncFilesRef.current = result.files;
-      replaceFiles(result.files);
+      startTransition(() => {
+        replaceFiles(result.files);
+      });
     },
     [replaceFiles]
   );
