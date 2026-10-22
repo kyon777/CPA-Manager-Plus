@@ -90,6 +90,29 @@ type ProxyPoolState struct {
 	UpdatedAtMS       int64           `json:"updatedAtMs"`
 }
 
+// ProxyExitIPOutcome is the result of a direct CPAM-to-proxy exit-IP check.
+// It never includes a proxy URL because those URLs can contain credentials.
+type ProxyExitIPOutcome string
+
+const (
+	ProxyExitIPOutcomeHealthy      ProxyExitIPOutcome = "healthy"
+	ProxyExitIPOutcomeProxyFailed  ProxyExitIPOutcome = "proxy_failed"
+	ProxyExitIPOutcomeInconclusive ProxyExitIPOutcome = "inconclusive"
+	ProxyExitIPOutcomeNotSaved     ProxyExitIPOutcome = "not_saved"
+)
+
+type ProxyExitIPCheckResult struct {
+	Fingerprint string             `json:"fingerprint"`
+	Outcome     ProxyExitIPOutcome `json:"outcome"`
+	ExitIP      string             `json:"exitIp,omitempty"`
+	LatencyMS   int64              `json:"latencyMs,omitempty"`
+	Reason      string             `json:"reason,omitempty"`
+}
+
+type ProxyExitIPCheckBatch struct {
+	Results []ProxyExitIPCheckResult `json:"results"`
+}
+
 type ProxyReplacementTask struct {
 	ID                   int64                      `json:"id"`
 	Source               ProxyReplacementSource     `json:"source"`
