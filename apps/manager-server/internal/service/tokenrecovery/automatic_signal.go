@@ -3,6 +3,7 @@ package tokenrecovery
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
@@ -62,14 +63,14 @@ func (g *AutomaticSignalGate) SignalAutomatic(ctx context.Context, target model.
 		return model.TokenRecoveryTask{}, nil
 	}
 
-	// Avoid hitting CPA Core after a queue/running state or a previous automatic
-	// attempt. This is both a strict one-shot guard and a low-noise path for the
-	// stream of repeated 401 usage events.
+	// Avoid hitting CPA Core while a cycle is in flight or the last automatic
+	// claim is still cooling down. This keeps repeated 401 event streams quiet
+	// without turning historical automatic work into a permanent block.
 	existing, found, err := g.recovery.Get(ctx, target)
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
 	}
-	if found && automaticSignalAlreadyResolved(existing) {
+	if found && automaticSignalAlreadyResolved(existing, time.Now().UnixMilli()) {
 		return existing, nil
 	}
 	if g.setupResolver == nil || g.authFiles == nil {
@@ -104,8 +105,8 @@ func isEligibleAutomaticSignal(target model.TokenRecoveryTarget) bool {
 		(strings.TrimSpace(target.AuthIndex) != "" || strings.TrimSpace(target.AccountEmail) != "")
 }
 
-func automaticSignalAlreadyResolved(task model.TokenRecoveryTask) bool {
-	if task.AutoAttemptedAtMS > 0 {
+func automaticSignalAlreadyResolved(task model.TokenRecoveryTask, nowMS int64) bool {
+	if task.AutomaticRecoveryCoolingDown(nowMS) {
 		return true
 	}
 	switch task.Status {
@@ -115,7 +116,8 @@ func automaticSignalAlreadyResolved(task model.TokenRecoveryTask) bool {
 		model.TokenRecoveryStatusManualRunning:
 		return true
 	}
-	// A legacy terminal auto task predates the explicit audit marker but still
-	// proves that its one automatic acquisition cycle has already happened.
-	return task.Mode == model.TokenRecoveryModeAuto
+	// A terminal legacy auto task with no explicit attempt timestamp must reach
+	// the repository: it backfills historical timing and applies the same
+	// durable 24-hour rule transactionally.
+	return false
 }

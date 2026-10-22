@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
@@ -15,6 +16,7 @@ func TestAutomaticSignalGateOnlyQueuesEnabledCodex401Once(t *testing.T) {
 	target := model.TokenRecoveryTarget{
 		FileName: "physical.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedStatusCode: http.StatusUnauthorized,
 	}
+	nowMS := time.Now().UnixMilli()
 	tests := []struct {
 		name         string
 		enabled      bool
@@ -32,10 +34,11 @@ func TestAutomaticSignalGateOnlyQueuesEnabledCodex401Once(t *testing.T) {
 		{name: "non 401", enabled: true, target: withObservedStatus(target, http.StatusForbidden), wantSignals: 0, wantVerifies: 0},
 		{name: "currently disabled", enabled: true, target: target, verifyFile: cpaauthfiles.File{Disabled: true}, wantSignals: 0, wantVerifies: 1},
 		{name: "verification unavailable", enabled: true, target: target, verifyErr: errors.New("core unavailable"), wantSignals: 0, wantVerifies: 1},
-		{name: "auto attempt already recorded", enabled: true, target: target, existing: model.TokenRecoveryTask{ID: 9, AutoAttemptedAtMS: 123}, found: true, wantSignals: 0, wantVerifies: 0, wantTaskID: 9},
+		{name: "auto attempt within daily cooldown", enabled: true, target: target, existing: model.TokenRecoveryTask{ID: 9, AutoAttemptedAtMS: nowMS - time.Hour.Milliseconds()}, found: true, wantSignals: 0, wantVerifies: 0, wantTaskID: 9},
+		{name: "auto attempt after daily cooldown", enabled: true, target: target, existing: model.TokenRecoveryTask{ID: 10, AutoAttemptedAtMS: nowMS - (24 * time.Hour).Milliseconds() - 1}, found: true, verifyFile: cpaauthfiles.File{Name: "physical.json", AuthIndex: "7", Provider: "codex", AccountSnapshot: "person@example.com"}, wantSignals: 1, wantVerifies: 1, wantTaskID: 41},
 		{name: "automatic queue already present", enabled: true, target: target, existing: model.TokenRecoveryTask{ID: 10, Status: model.TokenRecoveryStatusAutoQueued, Mode: model.TokenRecoveryModeAuto}, found: true, wantSignals: 0, wantVerifies: 0, wantTaskID: 10},
 		{name: "manual queue already present", enabled: true, target: target, existing: model.TokenRecoveryTask{ID: 11, Status: model.TokenRecoveryStatusManualQueued, Mode: model.TokenRecoveryModeManual}, found: true, wantSignals: 0, wantVerifies: 0, wantTaskID: 11},
-		{name: "legacy terminal auto attempt", enabled: true, target: target, existing: model.TokenRecoveryTask{ID: 12, Status: model.TokenRecoveryStatusSucceeded, Mode: model.TokenRecoveryModeAuto}, found: true, wantSignals: 0, wantVerifies: 0, wantTaskID: 12},
+		{name: "legacy terminal auto attempt is verified for repository backfill", enabled: true, target: target, existing: model.TokenRecoveryTask{ID: 12, Status: model.TokenRecoveryStatusSucceeded, Mode: model.TokenRecoveryModeAuto}, found: true, verifyFile: cpaauthfiles.File{Name: "physical.json", AuthIndex: "7", Provider: "codex", AccountSnapshot: "person@example.com"}, wantSignals: 1, wantVerifies: 1, wantTaskID: 41},
 	}
 
 	for _, tc := range tests {

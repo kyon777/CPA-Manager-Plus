@@ -1,5 +1,7 @@
 package model
 
+const AutomaticRecoveryCooldownMS int64 = 24 * 60 * 60 * 1000
+
 const (
 	TokenRecoveryModeAuto   = "auto"
 	TokenRecoveryModeManual = "manual"
@@ -40,13 +42,23 @@ type TokenRecoveryTask struct {
 	Mode             string `json:"mode"`
 	LastErrorCode    string `json:"lastErrorCode,omitempty"`
 	LastErrorMessage string `json:"lastErrorMessage,omitempty"`
-	// AutoAttemptedAtMS is an immutable audit marker for the first automatic
-	// recovery cycle. Manual retries deliberately retain it so a later 401
-	// cannot silently create another automatic external acquisition.
+	// AutoAttemptedAtMS is the durable timestamp of the latest automatic
+	// recovery claim. Manual retries retain it, while a new automatic claim is
+	// allowed only after the rolling cooldown has elapsed.
 	AutoAttemptedAtMS int64 `json:"autoAttemptedAtMs,omitempty"`
 	LastSignalAtMS    int64 `json:"lastSignalAtMs"`
 	StartedAtMS       int64 `json:"startedAtMs,omitempty"`
 	CompletedAtMS     int64 `json:"completedAtMs,omitempty"`
 	CreatedAtMS       int64 `json:"createdAtMs"`
 	UpdatedAtMS       int64 `json:"updatedAtMs"`
+}
+
+// AutomaticRecoveryCoolingDown reports whether the latest automatic recovery
+// claim is still inside the rolling cooldown. A clock that is behind the
+// recorded attempt stays conservative and keeps the task cooled down.
+func (task TokenRecoveryTask) AutomaticRecoveryCoolingDown(nowMS int64) bool {
+	if task.AutoAttemptedAtMS <= 0 {
+		return false
+	}
+	return nowMS <= task.AutoAttemptedAtMS || nowMS-task.AutoAttemptedAtMS < AutomaticRecoveryCooldownMS
 }

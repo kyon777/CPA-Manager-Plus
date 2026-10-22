@@ -212,7 +212,7 @@ func TestServiceDoesNotFallbackWhenStoredAuthIndexMatchesRecordWithoutEmail(t *t
 	}
 }
 
-func TestServiceAutomaticFailureDoesNotPostAgainUntilManualRequest(t *testing.T) {
+func TestServiceAutomaticFailureDoesNotPostAgainDuringDailyCooldown(t *testing.T) {
 	core := newRecoveryCore(t, []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old","refresh_token":"old","id_token":"old"}`))
 	acquirer := &fakeAcquirer{err: errors.New("external failure")}
 	service, ctx, cancel := newRecoveryService(t, core.server.URL, cpaauthfiles.NewMutationCoordinator(), acquirer)

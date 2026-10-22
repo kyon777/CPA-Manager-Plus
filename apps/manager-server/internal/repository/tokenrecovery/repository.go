@@ -78,19 +78,25 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 		// There is already one recovery cycle in flight. Do not relabel a manual
 		// cycle as automatic, and do not enqueue a duplicate automatic cycle.
 		err = nil
-	} else if hasAutomaticAttempt(existing) {
-		if existing.AutoAttemptedAtMS <= 0 {
-			attemptedAt := firstPositive(existing.StartedAtMS, existing.CompletedAtMS, existing.CreatedAtMS, now)
-			_, err = tx.ExecContext(ctx, `update token_recovery_tasks set auto_attempted_at_ms = ?, updated_at_ms = ? where id = ?`, attemptedAt, now, existing.ID)
-		}
 	} else {
-		_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
-			status = ?, mode = ?, last_error_code = null, last_error_message = null,
-			account_email = case when account_email = '' and ? != '' then ? else account_email end,
-			auto_attempted_at_ms = 0, last_signal_at_ms = ?,
-			started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
-			model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryModeAuto,
-			normalized.AccountEmail, normalized.AccountEmail, seenAt, now, existing.ID)
+		attemptedAt := automaticAttemptedAt(existing, now)
+		if attemptedAt > 0 && (model.TokenRecoveryTask{AutoAttemptedAtMS: attemptedAt}).AutomaticRecoveryCoolingDown(now) {
+			// Old rows may have been created before the explicit timestamp existed.
+			// Backfill their historical automatic claim without extending cooldown.
+			if existing.AutoAttemptedAtMS <= 0 {
+				_, err = tx.ExecContext(ctx, `update token_recovery_tasks set auto_attempted_at_ms = ?, updated_at_ms = ? where id = ?`, attemptedAt, now, existing.ID)
+			}
+		} else {
+			// A new qualifying 401 after the cooldown creates a fresh automatic
+			// cycle. The worker claim, not this signal, records its attempt time.
+			_, err = tx.ExecContext(ctx, `update token_recovery_tasks set
+				status = ?, mode = ?, last_error_code = null, last_error_message = null,
+				account_email = case when account_email = '' and ? != '' then ? else account_email end,
+				auto_attempted_at_ms = 0, last_signal_at_ms = ?,
+				started_at_ms = null, completed_at_ms = null, updated_at_ms = ? where id = ?`,
+				model.TokenRecoveryStatusAutoQueued, model.TokenRecoveryModeAuto,
+				normalized.AccountEmail, normalized.AccountEmail, seenAt, now, existing.ID)
+		}
 	}
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
@@ -206,7 +212,7 @@ func (r *repository) ClaimNextQueued(ctx context.Context) (model.TokenRecoveryTa
 
 // ClaimNextEligible claims the oldest manual task and, only when permitted,
 // the oldest automatic task. It leaves paused automatic work durable and
-// untouched while the operator's one-shot switch is off.
+// untouched while the operator's automatic-recovery switch is off.
 func (r *repository) ClaimNextEligible(ctx context.Context, allowAutomatic bool) (model.TokenRecoveryTask, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -424,13 +430,16 @@ func isQueuedOrRunning(status string) bool {
 	}
 }
 
-func hasAutomaticAttempt(task model.TokenRecoveryTask) bool {
+func automaticAttemptedAt(task model.TokenRecoveryTask, fallback int64) int64 {
 	if task.AutoAttemptedAtMS > 0 {
-		return true
+		return task.AutoAttemptedAtMS
 	}
 	// Compatibility for tasks created before auto_attempted_at_ms existed:
-	// only a terminal task with auto mode proves an automatic cycle completed.
-	return task.Mode == model.TokenRecoveryModeAuto && !isQueuedOrRunning(task.Status)
+	// only a terminal auto task has historical automatic-attempt evidence.
+	if task.Mode != model.TokenRecoveryModeAuto || isQueuedOrRunning(task.Status) {
+		return 0
+	}
+	return firstPositive(task.StartedAtMS, task.CompletedAtMS, task.CreatedAtMS, fallback)
 }
 
 func firstPositive(values ...int64) int64 {

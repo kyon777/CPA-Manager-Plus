@@ -2,15 +2,17 @@ package tokenrecovery
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 )
 
-func TestSignalAutomaticDeduplicatesAndFailureRequiresManualRetry(t *testing.T) {
+func TestSignalAutomaticDeduplicatesFailureDuringDailyCooldown(t *testing.T) {
 	repo := newTestRepository(t)
 	target := model.TokenRecoveryTarget{
 		FileName: "Codex.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: 100,
@@ -46,7 +48,7 @@ func TestSignalAutomaticDeduplicatesAndFailureRequiresManualRetry(t *testing.T) 
 		t.Fatalf("third SignalAutomatic() error = %v", err)
 	}
 	if third.ID != first.ID || third.Status != model.TokenRecoveryStatusAutoFailedManualOnly {
-		t.Fatalf("automatic retry escaped manual-only state: %#v", third)
+		t.Fatalf("automatic retry escaped daily cooldown state: %#v", third)
 	}
 	manual, err := repo.RequestManual(context.Background(), target)
 	if err != nil {
@@ -85,7 +87,7 @@ func TestSignalAutomaticWithoutObservedAtDoesNotRequeueSucceededTask(t *testing.
 	}
 }
 
-func TestSignalAutomaticRecordsOneShotAttemptAcrossSuccessAndManualRetry(t *testing.T) {
+func TestSignalAutomaticRecordsAttemptAcrossSuccessAndManualRetry(t *testing.T) {
 	repo := newTestRepository(t)
 	target := model.TokenRecoveryTarget{
 		FileName: "codex.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: 100,
@@ -310,12 +312,94 @@ func TestFailRunningOnStartupNeverRequeuesInterruptedWork(t *testing.T) {
 	}
 }
 
+func TestSignalAutomaticRequeuesSucceededTaskAfterDailyCooldown(t *testing.T) {
+	repo, db := newTestRepositoryWithDB(t)
+	target := model.TokenRecoveryTarget{FileName: "codex.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex"}
+
+	queued, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() = %v", err)
+	}
+	claimed, ok, err := repo.ClaimNextQueued(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("ClaimNextQueued() = %#v, %t, %v", claimed, ok, err)
+	}
+	completed, err := repo.Complete(context.Background(), claimed.ID)
+	if err != nil {
+		t.Fatalf("Complete() = %v", err)
+	}
+
+	withinCooldown, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() within cooldown = %v", err)
+	}
+	if withinCooldown.Status != model.TokenRecoveryStatusSucceeded {
+		t.Fatalf("within-cooldown task = %#v, want succeeded", withinCooldown)
+	}
+
+	expiredAttemptAt := time.Now().Add(-24*time.Hour - time.Millisecond).UnixMilli()
+	if _, err := db.Exec(`update token_recovery_tasks set auto_attempted_at_ms = ? where id = ?`, expiredAttemptAt, completed.ID); err != nil {
+		t.Fatalf("expire auto attempt: %v", err)
+	}
+	requeued, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() after cooldown = %v", err)
+	}
+	if requeued.ID != queued.ID || requeued.Status != model.TokenRecoveryStatusAutoQueued || requeued.AutoAttemptedAtMS != 0 {
+		t.Fatalf("expired automatic task = %#v, want a fresh queued cycle", requeued)
+	}
+}
+
+func TestSignalAutomaticRequeuesFailedTaskAfterDailyCooldown(t *testing.T) {
+	repo, db := newTestRepositoryWithDB(t)
+	target := model.TokenRecoveryTarget{FileName: "failed.json", AuthIndex: "8", AccountEmail: "failed@example.com", Provider: "codex"}
+
+	queued, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() = %v", err)
+	}
+	claimed, ok, err := repo.ClaimNextQueued(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("ClaimNextQueued() = %#v, %t, %v", claimed, ok, err)
+	}
+	failed, err := repo.Fail(context.Background(), claimed.ID, "token_acquisition_failed", "external failure")
+	if err != nil {
+		t.Fatalf("Fail() = %v", err)
+	}
+
+	withinCooldown, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() within cooldown = %v", err)
+	}
+	if withinCooldown.Status != model.TokenRecoveryStatusAutoFailedManualOnly {
+		t.Fatalf("within-cooldown task = %#v, want failed terminal state", withinCooldown)
+	}
+
+	expiredAttemptAt := time.Now().Add(-24*time.Hour - time.Millisecond).UnixMilli()
+	if _, err := db.Exec(`update token_recovery_tasks set auto_attempted_at_ms = ? where id = ?`, expiredAttemptAt, failed.ID); err != nil {
+		t.Fatalf("expire auto attempt: %v", err)
+	}
+	requeued, err := repo.SignalAutomatic(context.Background(), target)
+	if err != nil {
+		t.Fatalf("SignalAutomatic() after cooldown = %v", err)
+	}
+	if requeued.ID != queued.ID || requeued.Status != model.TokenRecoveryStatusAutoQueued || requeued.AutoAttemptedAtMS != 0 {
+		t.Fatalf("expired failed automatic task = %#v, want a fresh queued cycle", requeued)
+	}
+}
+
 func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repository, _ := newTestRepositoryWithDB(t)
+	return repository
+}
+
+func newTestRepositoryWithDB(t *testing.T) (Repository, *sql.DB) {
 	t.Helper()
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "token-recovery.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return New(db)
+	return New(db), db
 }
