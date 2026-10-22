@@ -217,13 +217,15 @@ func fromExisting(
 		st,
 	)
 	proxyPoolStateRegistry := proxypoolstatesvc.New(st)
+	exitIPChecker := proxyreplacementsvc.NewExitIPChecker(cfg.ProxyExitIPCheckURL)
 	codexInspectionService := codexinspectionsvc.NewWithOptions(
 		st,
 		managerConfigService,
 		codexinspectionsvc.ServiceOptions{
 			AuthFileMutationCoordinator: authFileMutationCoordinator,
 			ReauthRecoveryNotifier:      automaticTokenRecoverySignal,
-			ProxyFailureReporter:        proxyPoolStateRegistry,
+			ProxyExitIPChecker:          exitIPChecker,
+			ProxyPoolState:              proxyPoolStateRegistry,
 		},
 	)
 	proxyReplacementService := proxyreplacementsvc.NewWithOptions(proxyreplacementsvc.Options{
@@ -236,7 +238,7 @@ func fromExisting(
 		Invalidator:         proxyService,
 		Rechecker:           codexInspectionService,
 		InspectionResults:   st.CodexInspections,
-		ExitIPChecker:       proxyreplacementsvc.NewExitIPChecker(cfg.ProxyExitIPCheckURL),
+		ExitIPChecker:       exitIPChecker,
 	})
 	credentialListService := credentiallistsvc.NewWithRecentRecoveryAndGlobalMetricsReader(
 		proxyService,

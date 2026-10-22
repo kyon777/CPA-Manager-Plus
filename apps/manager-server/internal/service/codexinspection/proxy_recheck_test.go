@@ -12,41 +12,9 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
-type proxyFailureReportCall struct {
+type proxyPoolStateCall struct {
 	proxyURL string
 	reason   string
-}
-
-type proxyFailureReporterRecorder struct {
-	mu           sync.Mutex
-	suspectCalls []proxyFailureReportCall
-	pendingCalls []proxyFailureReportCall
-}
-
-func (r *proxyFailureReporterRecorder) MarkSuspect(_ context.Context, proxyURL, reason string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.suspectCalls = append(r.suspectCalls, proxyFailureReportCall{proxyURL: proxyURL, reason: reason})
-	return nil
-}
-
-func (r *proxyFailureReporterRecorder) MarkPending(_ context.Context, proxyURL, reason string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pendingCalls = append(r.pendingCalls, proxyFailureReportCall{proxyURL: proxyURL, reason: reason})
-	return nil
-}
-
-func (r *proxyFailureReporterRecorder) pendingSnapshot() []proxyFailureReportCall {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]proxyFailureReportCall(nil), r.pendingCalls...)
-}
-
-func (r *proxyFailureReporterRecorder) suspectSnapshot() []proxyFailureReportCall {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]proxyFailureReportCall(nil), r.suspectCalls...)
 }
 
 type proxyInspectionRoundTripper func(*http.Request) (*http.Response, error)
@@ -55,7 +23,137 @@ func (fn proxyInspectionRoundTripper) RoundTrip(request *http.Request) (*http.Re
 	return fn(request)
 }
 
-func TestInspectSingleAccountMarksOnlyTransportProxyFailure(t *testing.T) {
+type exitIPCheckerRecorder struct {
+	mu      sync.Mutex
+	results map[string]model.ProxyExitIPCheckResult
+	calls   []string
+}
+
+func (r *exitIPCheckerRecorder) Check(_ context.Context, proxyURL string) model.ProxyExitIPCheckResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, proxyURL)
+	return r.results[proxyURL]
+}
+
+func (r *exitIPCheckerRecorder) snapshotCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+type proxyPoolStateControllerRecorder struct {
+	mu           sync.Mutex
+	suspectCalls []proxyPoolStateCall
+	restoreCalls []string
+}
+
+func (r *proxyPoolStateControllerRecorder) MarkSuspect(_ context.Context, proxyURL, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.suspectCalls = append(r.suspectCalls, proxyPoolStateCall{proxyURL: proxyURL, reason: reason})
+	return nil
+}
+
+func (r *proxyPoolStateControllerRecorder) Restore(_ context.Context, fingerprint string) (model.ProxyPoolState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.restoreCalls = append(r.restoreCalls, fingerprint)
+	return model.ProxyPoolState{Fingerprint: fingerprint, Status: model.ProxyPoolStatusNormal}, nil
+}
+
+func (r *proxyPoolStateControllerRecorder) suspects() []proxyPoolStateCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]proxyPoolStateCall(nil), r.suspectCalls...)
+}
+
+func (r *proxyPoolStateControllerRecorder) restores() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.restoreCalls...)
+}
+
+func TestApplyExitIPProxyEvidenceRequiresDirectFailure(t *testing.T) {
+	proxyURL := "http://proxy.example:8080"
+	baseAccount := account{
+		Key: "alice.json::7", FileName: "alice.json", DisplayAccount: "alice@example.com",
+		AuthIndex: "7", Provider: "codex", File: authFile{"proxy_url": proxyURL},
+	}
+	timeoutResult := model.CodexInspectionResult{
+		AccountKey: baseAccount.Key, FileName: baseAccount.FileName, Provider: baseAccount.Provider,
+		ErrorKind: "request_error", ErrorDetail: "context deadline exceeded",
+	}
+
+	tests := []struct {
+		name         string
+		result       model.ProxyExitIPCheckResult
+		wantSuspect  bool
+		wantChecks   int
+		wantSuspects int
+		wantRestores int
+	}{
+		{
+			name:       "healthy exit IP clears inferred signal",
+			result:     model.ProxyExitIPCheckResult{Outcome: model.ProxyExitIPOutcomeHealthy},
+			wantChecks: 1, wantRestores: 1,
+		},
+		{
+			name:        "direct exit IP failure marks proxy abnormal",
+			result:      model.ProxyExitIPCheckResult{Outcome: model.ProxyExitIPOutcomeProxyFailed, Reason: "proxy_connect_timeout"},
+			wantSuspect: true, wantChecks: 1, wantSuspects: 1,
+		},
+		{
+			name:       "inconclusive exit IP remains non abnormal",
+			result:     model.ProxyExitIPCheckResult{Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "ip_echo_timeout"},
+			wantChecks: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := &exitIPCheckerRecorder{results: map[string]model.ProxyExitIPCheckResult{proxyURL: tt.result}}
+			pool := &proxyPoolStateControllerRecorder{}
+			svc := NewWithOptions(nil, nil, ServiceOptions{
+				ProxyExitIPChecker: checker,
+				ProxyPoolState:     pool,
+			})
+			got := svc.applyExitIPProxyEvidence(context.Background(), []account{baseAccount}, []model.CodexInspectionResult{timeoutResult}, runLogger{})
+			if len(got) != 1 || got[0].ProxySuspect != tt.wantSuspect {
+				t.Fatalf("results=%#v, want ProxySuspect=%v", got, tt.wantSuspect)
+			}
+			if calls := checker.snapshotCalls(); len(calls) != tt.wantChecks {
+				t.Fatalf("checker calls=%#v, want count=%d", calls, tt.wantChecks)
+			}
+			if calls := pool.suspects(); len(calls) != tt.wantSuspects {
+				t.Fatalf("suspect calls=%#v, want count=%d", calls, tt.wantSuspects)
+			}
+			if calls := pool.restores(); len(calls) != tt.wantRestores {
+				t.Fatalf("restore calls=%#v, want count=%d", calls, tt.wantRestores)
+			}
+		})
+	}
+}
+
+func TestApplyExitIPProxyEvidenceDoesNotProbeHTTP401(t *testing.T) {
+	checker := &exitIPCheckerRecorder{}
+	svc := NewWithOptions(nil, nil, ServiceOptions{ProxyExitIPChecker: checker})
+	entry := account{
+		Key: "alice.json::7", FileName: "alice.json", Provider: "codex", AuthIndex: "7",
+		File: authFile{"proxy_url": "http://proxy.example:8080"},
+	}
+	got := svc.applyExitIPProxyEvidence(context.Background(), []account{entry}, []model.CodexInspectionResult{{
+		AccountKey: entry.Key, FileName: entry.FileName, Provider: entry.Provider,
+		StatusCode: intPtr(http.StatusUnauthorized), ErrorKind: "http_status", ErrorDetail: "expired",
+	}}, runLogger{})
+	if len(got) != 1 || got[0].ProxySuspect {
+		t.Fatalf("HTTP 401 result=%#v", got)
+	}
+	if calls := checker.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("HTTP 401 must not invoke exit-IP probe: %#v", calls)
+	}
+}
+
+func TestInspectSingleAccountNeverInfersProxyFailure(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -64,23 +162,17 @@ func TestInspectSingleAccountMarksOnlyTransportProxyFailure(t *testing.T) {
 		statusCode int
 		body       string
 		transport  error
-		want       bool
-		wantReason string
 	}{
 		{
 			name:       "management 502 request failed",
 			proxyURL:   "http://proxy.example:8080",
 			statusCode: http.StatusBadGateway,
 			body:       `{"error":"request failed"}`,
-			want:       true,
-			wantReason: "transport_502_request_failed",
 		},
 		{
-			name:       "transport timeout",
-			proxyURL:   "http://proxy.example:8080",
-			transport:  context.DeadlineExceeded,
-			want:       true,
-			wantReason: "transport_timeout",
+			name:      "transport timeout",
+			proxyURL:  "http://proxy.example:8080",
+			transport: context.DeadlineExceeded,
 		},
 		{
 			name:       "management unauthorized",
@@ -113,10 +205,9 @@ func TestInspectSingleAccountMarksOnlyTransportProxyFailure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reporter := &proxyFailureReporterRecorder{}
 			client, upstreamURL, cleanup := proxyInspectionTestClient(t, tt.statusCode, tt.body, tt.transport)
 			defer cleanup()
-			svc := NewWithOptions(nil, nil, ServiceOptions{ProxyFailureReporter: reporter}, client)
+			svc := NewWithOptions(nil, nil, ServiceOptions{}, client)
 			settings := model.DefaultCodexInspectionConfig()
 			settings.Retries = 0
 			result := svc.inspectSingleAccount(
@@ -133,19 +224,8 @@ func TestInspectSingleAccountMarksOnlyTransportProxyFailure(t *testing.T) {
 				},
 				runLogger{},
 			)
-			if result.ProxySuspect != tt.want {
-				t.Fatalf("ProxySuspect = %v, want %v; result=%#v", result.ProxySuspect, tt.want, result)
-			}
-			calls := reporter.pendingSnapshot()
-			if tt.want {
-				if len(calls) != 1 || calls[0].proxyURL != tt.proxyURL || calls[0].reason != tt.wantReason {
-					t.Fatalf("pending reporter calls = %#v, want URL=%q reason=%q", calls, tt.proxyURL, tt.wantReason)
-				}
-			} else if len(calls) != 0 {
-				t.Fatalf("unexpected pending proxy reports: %#v", calls)
-			}
-			if calls := reporter.suspectSnapshot(); len(calls) != 0 {
-				t.Fatalf("inferred inspection failure prematurely marked suspect: %#v", calls)
+			if result.ProxySuspect {
+				t.Fatalf("inspectSingleAccount inferred proxy abnormal without exit-IP proof: %#v", result)
 			}
 		})
 	}

@@ -77,7 +77,8 @@ type Service struct {
 	authFileMutations    *cpaauthfiles.MutationCoordinator
 	quotaSnapshots       quotaSnapshotWriter
 	reauthRecovery       ReauthRecoveryNotifier
-	proxyFailureReporter ProxyFailureReporter
+	proxyExitIPChecker   ProxyExitIPChecker
+	proxyPoolState       ProxyPoolStateController
 
 	mu                             sync.Mutex
 	cancelMu                       sync.Mutex
@@ -109,12 +110,17 @@ type ReauthRecoveryNotifier interface {
 	SignalAutomatic(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, error)
 }
 
-// ProxyFailureReporter receives only a live proxy URL while an inspection is
-// running. Implementations must persist a one-way fingerprint and a finite
-// reason code instead of retaining the credential-bearing URL.
-type ProxyFailureReporter interface {
-	MarkPending(context.Context, string, string) error
+// ProxyExitIPChecker is deliberately restricted to a fixed server-owned
+// exit-IP target. It never receives credentials or a browser-selected target.
+type ProxyExitIPChecker interface {
+	Check(context.Context, string) model.ProxyExitIPCheckResult
+}
+
+// ProxyPoolStateController receives a live URL only long enough to derive its
+// server-side fingerprint. It has no access to account/API response details.
+type ProxyPoolStateController interface {
 	MarkSuspect(context.Context, string, string) error
+	Restore(context.Context, string) (model.ProxyPoolState, error)
 }
 
 type ServiceOptions struct {
@@ -123,7 +129,8 @@ type ServiceOptions struct {
 	HeartbeatInterval           time.Duration
 	AuthFileMutationCoordinator *cpaauthfiles.MutationCoordinator
 	ReauthRecoveryNotifier      ReauthRecoveryNotifier
-	ProxyFailureReporter        ProxyFailureReporter
+	ProxyExitIPChecker          ProxyExitIPChecker
+	ProxyPoolState              ProxyPoolStateController
 }
 
 var inspectionOwnerSequence atomic.Uint64
@@ -373,7 +380,8 @@ func NewWithOptions(st *store.Store, managerConfigService *managerconfig.Service
 		authFileMutations:              authFileMutations,
 		quotaSnapshots:                 quotasnapshotsvc.New(st),
 		reauthRecovery:                 options.ReauthRecoveryNotifier,
-		proxyFailureReporter:           options.ProxyFailureReporter,
+		proxyExitIPChecker:             options.ProxyExitIPChecker,
+		proxyPoolState:                 options.ProxyPoolState,
 		ownerID:                        ownerID,
 		leaseDuration:                  leaseDuration,
 		heartbeatInterval:              heartbeatInterval,
@@ -615,6 +623,9 @@ func (s *Service) executeRun(ctx context.Context, req RunRequest, run model.Code
 	})
 
 	results := s.inspectAccounts(ctx, setup, settings, sampled, logger)
+	// Account API outcomes may nominate a bounded direct exit-IP check, but the
+	// direct probe is the only authority allowed to classify proxy abnormal.
+	results = s.applyExitIPProxyEvidence(ctx, sampled, results, logger)
 	if err := ctx.Err(); err != nil {
 		// Persist the partial probe set once, with a bounded budget, before the
 		// lifecycle transition below. Avoid a second full pass here: a large
@@ -1838,7 +1849,7 @@ func (s *Service) inspectSingleAccount(
 			"fileName":       item.FileName,
 			"displayAccount": item.DisplayAccount,
 		})
-		return s.markProxySuspect(ctx, item, base)
+		return base
 	}
 
 	var response apiCallResponse
@@ -1860,7 +1871,7 @@ func (s *Service) inspectSingleAccount(
 			"displayAccount": item.DisplayAccount,
 			"error":          err.Error(),
 		})
-		return s.markProxySuspect(ctx, item, base)
+		return base
 	}
 	if !response.HasStatusCode {
 		base.Action = "keep"
@@ -1942,7 +1953,7 @@ func (s *Service) inspectSingleAccount(
 		"usedPercent":    nullableFloat(decision.UsedPercent),
 		"isQuota":        decision.IsQuota,
 	})
-	return s.markProxySuspect(ctx, item, base)
+	return base
 }
 
 func (s *Service) requestCodexUsage(
