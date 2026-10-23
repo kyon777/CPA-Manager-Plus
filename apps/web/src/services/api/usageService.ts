@@ -667,6 +667,33 @@ export interface AccountBannedAuthFileDeleteResponse {
   failed: AccountBannedAuthFileDeleteItem[];
 }
 
+// Identity-only request/response types for exporting exactly the selected
+// original auth JSON objects. Raw credentials are returned only in records;
+// browser requests can never carry token or proxy fields.
+export interface AuthJsonExportTargetRequest {
+  clientKey: string;
+  fileName: string;
+  authIndex?: string;
+  accountEmail?: string;
+  provider: string;
+  runtimeId?: string;
+  accountId?: string;
+  accountSnapshot?: string;
+}
+
+export interface AuthJsonExportFailedItem {
+  clientKey: string;
+  fileName: string;
+  code: string;
+}
+
+export interface AuthJsonExportResponse {
+  requested: number;
+  exported: number;
+  records: Record<string, unknown>[];
+  failed: AuthJsonExportFailedItem[];
+}
+
 export interface CredentialRuntimeMetadataTarget {
   clientKey: string;
   fileName: string;
@@ -2561,6 +2588,17 @@ const accountBannedDeleteTargetPayload = (target: AccountBannedAuthFileDeleteTar
   ...(target.accountSnapshot ? { accountSnapshot: target.accountSnapshot } : {}),
 });
 
+const authJsonExportTargetPayload = (target: AuthJsonExportTargetRequest) => ({
+  clientKey: target.clientKey,
+  fileName: target.fileName,
+  ...(target.authIndex ? { authIndex: target.authIndex } : {}),
+  ...(target.accountEmail ? { accountEmail: target.accountEmail } : {}),
+  provider: target.provider,
+  ...(target.runtimeId ? { runtimeId: target.runtimeId } : {}),
+  ...(target.accountId ? { accountId: target.accountId } : {}),
+  ...(target.accountSnapshot ? { accountSnapshot: target.accountSnapshot } : {}),
+});
+
 const credentialRuntimeMetadataTargetPayload = (target: CredentialRuntimeMetadataTarget) => ({
   clientKey: target.clientKey,
   fileName: target.fileName,
@@ -3797,6 +3835,39 @@ export const usageServiceApi = {
       const response = await axios.post<AccountBannedAuthFileDeleteResponse>(
         buildUrl(base, '/v0/management/auth-files/delete-account-banned-batch'),
         { targets: targets.map(accountBannedDeleteTargetPayload) },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          ...optionalAbortSignal(signal),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  exportSelectedAuthFiles: async (
+    base: string,
+    managementKey: string | undefined,
+    targets: AuthJsonExportTargetRequest[],
+    signal?: AbortSignal
+  ): Promise<AuthJsonExportResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        requested: targets.length,
+        exported: 0,
+        records: [],
+        failed: targets.map((target) => ({
+          clientKey: target.clientKey,
+          fileName: target.fileName,
+          code: 'demo_mode',
+        })),
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<AuthJsonExportResponse>(
+        buildUrl(base, '/v0/management/auth-files/export-selected'),
+        { targets: targets.map(authJsonExportTargetPayload) },
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
