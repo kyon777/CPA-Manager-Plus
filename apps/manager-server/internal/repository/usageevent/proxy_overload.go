@@ -135,67 +135,7 @@ func recentProxyOverloadEvidenceBatch(
 	}
 	args = append(args, sinceMS, sinceMS, limit)
 
-	rows, err := tx.QueryContext(ctx, `with credential_targets(
-	request_index, auth_file_snapshot, auth_index, provider, workspace_id, member, project_id, identity_mode
-) as (
-	values `+strings.Join(values, ",")+`
-), snapshot_candidates as (
-	select
-		t.request_index,
-		e.id,
-		e.timestamp_ms,
-		e.failed,
-		coalesce(e.fail_status_code, 0) as fail_status_code,
-		coalesce(e.header_error_code, '') as header_error_code,
-		coalesce(e.fail_summary, '') as fail_summary
-	from credential_targets t
-	join usage_events e
-		on e.auth_file_snapshot collate nocase = t.auth_file_snapshot
-		and coalesce(e.auth_index, '') collate nocase = t.auth_index
-		and e.timestamp_ms >= ?
-		and `+latestRequestBatchedIdentityPredicate("t", "e")+`
-), legacy_source_candidates as (
-	select
-		t.request_index,
-		e.id,
-		e.timestamp_ms,
-		e.failed,
-		coalesce(e.fail_status_code, 0) as fail_status_code,
-		coalesce(e.header_error_code, '') as header_error_code,
-		coalesce(e.fail_summary, '') as fail_summary
-	from credential_targets t
-	join usage_events e
-		on coalesce(e.auth_file_snapshot, '') = ''
-		and e.source collate nocase = t.auth_file_snapshot
-		and coalesce(e.auth_index, '') collate nocase = t.auth_index
-		and e.timestamp_ms >= ?
-		and `+latestRequestBatchedIdentityPredicate("t", "e")+`
-), candidates as (
-	select * from snapshot_candidates
-	union all
-	select * from legacy_source_candidates
-), ranked as (
-	select
-		request_index,
-		failed,
-		fail_status_code,
-		header_error_code,
-		fail_summary,
-		row_number() over (
-			partition by request_index
-			order by timestamp_ms desc, id desc
-		) as row_number
-	from candidates
-)
-select
-	request_index,
-	failed,
-	fail_status_code,
-	header_error_code,
-	fail_summary
-from ranked
-where row_number <= ?
-order by request_index, row_number`, args...)
+	rows, err := tx.QueryContext(ctx, proxyOverloadEvidenceStatement(values), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +177,76 @@ order by request_index, row_number`, args...)
 		}
 	}
 	return result, nil
+}
+
+func proxyOverloadEvidenceStatement(values []string) string {
+	return `with credential_targets(
+	request_index, auth_file_snapshot, auth_index, provider, workspace_id, member, project_id, identity_mode
+) as (
+	values ` + strings.Join(values, ",") + `
+), snapshot_candidates as (
+	select
+		t.request_index,
+		e.id,
+		e.timestamp_ms,
+		e.failed,
+		coalesce(e.fail_status_code, 0) as fail_status_code,
+		coalesce(e.header_error_code, '') as header_error_code,
+		coalesce(e.fail_summary, '') as fail_summary
+	from credential_targets t
+	join usage_events e
+		on e.auth_file_snapshot collate nocase = t.auth_file_snapshot
+		and (
+			(e.auth_index is not null and e.auth_index collate nocase = t.auth_index)
+			or (e.auth_index is null and t.auth_index = '')
+		)
+		and e.timestamp_ms >= ?
+		and ` + latestRequestBatchedIdentityPredicate("t", "e") + `
+), legacy_source_candidates as (
+	select
+		t.request_index,
+		e.id,
+		e.timestamp_ms,
+		e.failed,
+		coalesce(e.fail_status_code, 0) as fail_status_code,
+		coalesce(e.header_error_code, '') as header_error_code,
+		coalesce(e.fail_summary, '') as fail_summary
+	from credential_targets t
+	join usage_events e
+		on (e.auth_file_snapshot is null or e.auth_file_snapshot = '')
+		and e.source collate nocase = t.auth_file_snapshot
+		and (
+			(e.auth_index is not null and e.auth_index collate nocase = t.auth_index)
+			or (e.auth_index is null and t.auth_index = '')
+		)
+		and e.timestamp_ms >= ?
+		and ` + latestRequestBatchedIdentityPredicate("t", "e") + `
+), candidates as (
+	select * from snapshot_candidates
+	union all
+	select * from legacy_source_candidates
+), ranked as (
+	select
+		request_index,
+		failed,
+		fail_status_code,
+		header_error_code,
+		fail_summary,
+		row_number() over (
+			partition by request_index
+			order by timestamp_ms desc, id desc
+		) as row_number
+	from candidates
+)
+select
+	request_index,
+	failed,
+	fail_status_code,
+	header_error_code,
+	fail_summary
+from ranked
+where row_number <= ?
+order by request_index, row_number`
 }
 
 func isExactServerOverloaded(failed bool, status int, headerCode, summary string) bool {

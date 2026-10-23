@@ -197,6 +197,52 @@ func TestSummaryForceRefreshBypassesCompletedCacheButJoinsInFlightWork(t *testin
 	}
 }
 
+func TestSummaryCallerCancellationDoesNotCancelSharedCalculation(t *testing.T) {
+	now := time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
+	blocked := make(chan struct{})
+	evidence := &fakeEvidenceReader{
+		items:   []store.ProxyOverloadEvidence{{RequestIndex: 0, Active: true}},
+		block:   blocked,
+		started: make(chan struct{}),
+	}
+	service := New(Options{
+		SetupResolver: fakeSetupResolver{setup: configuredSetup(), ok: true},
+		AuthFiles: &fakeInventoryReader{files: []cpaauthfiles.File{
+			testCodexFile("a.json", "1", "a@example.test", "workspace-a", "http://proxy.example:8080"),
+		}},
+		Evidence: evidence,
+		Now:      func() time.Time { return now },
+	})
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := service.Summary(cancelledCtx, false)
+		firstDone <- err
+	}()
+	<-evidence.started
+	cancel()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller error = %v, want context.Canceled", err)
+	}
+
+	joinedDone := make(chan error, 1)
+	go func() {
+		result, err := service.Summary(context.Background(), false)
+		if err == nil && result.ActiveAccountCount != 1 {
+			err = errors.New("joined caller received an incomplete summary")
+		}
+		joinedDone <- err
+	}()
+	close(blocked)
+	if err := <-joinedDone; err != nil {
+		t.Fatalf("joined caller: %v", err)
+	}
+	if got := evidence.callCount(); got != 1 {
+		t.Fatalf("shared calculation calls = %d, want 1", got)
+	}
+}
+
 func TestSummaryReturnsSafeUnavailableErrors(t *testing.T) {
 	cases := []struct {
 		name    string

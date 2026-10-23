@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,6 +184,43 @@ func TestRecentProxyOverloadEvidenceSplitsFiveHundredTargetBatches(t *testing.T)
 	}
 }
 
+func TestRecentProxyOverloadEvidenceQueryPlanUsesLatestRequestIndexes(t *testing.T) {
+	ctx := context.Background()
+	db := openProxyOverloadTestDB(t, true)
+	target := LatestAccountRequestQuery{
+		RequestIndex:     0,
+		AuthFileSnapshot: "plan.json",
+		AuthIndex:        "idx-plan",
+	}
+	cutoffMS := time.Now().Add(-72 * time.Hour).UnixMilli()
+	statement := "explain query plan " + proxyOverloadEvidenceStatement([]string{"(?, ?, ?, ?, ?, ?, ?, ?)"})
+	planRows, err := db.QueryContext(ctx, statement,
+		target.RequestIndex,
+		target.AuthFileSnapshot,
+		target.AuthIndex,
+		"", "", "", "", 0,
+		cutoffMS, cutoffMS, proxyOverloadEventLimit,
+	)
+	if err != nil {
+		t.Fatalf("explain bounded evidence query: %v", err)
+	}
+	defer planRows.Close()
+	var details []string
+	for planRows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := planRows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan query plan: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := planRows.Err(); err != nil {
+		t.Fatalf("iterate query plan: %v", err)
+	}
+	if !strings.Contains(strings.Join(details, "\n"), "idx_usage_events_latest_request_auth_file") {
+		t.Fatalf("bounded evidence query plan did not use latest-request auth-file index: %v", details)
+	}
+}
 func TestRecentProxyOverloadEvidenceFailsClosedWhenLatestRequestIndexesAreMissing(t *testing.T) {
 	ctx := context.Background()
 	db := openProxyOverloadTestDB(t, false)

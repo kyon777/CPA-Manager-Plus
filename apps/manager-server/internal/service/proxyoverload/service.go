@@ -139,6 +139,11 @@ func (s *Service) Summary(ctx context.Context, force bool) (Summary, error) {
 	s.inflight = flight
 	s.mu.Unlock()
 
+	go s.runSummaryFlight(flight)
+	return waitForSummary(ctx, flight)
+}
+
+func (s *Service) runSummaryFlight(flight *summaryFlight) {
 	workCtx, cancel := context.WithTimeout(context.Background(), s.workTimeout)
 	result, err := s.compute(workCtx)
 	cancel()
@@ -157,8 +162,6 @@ func (s *Service) Summary(ctx context.Context, force bool) (Summary, error) {
 	}
 	close(flight.done)
 	s.mu.Unlock()
-
-	return cloneSummary(result), err
 }
 
 func waitForSummary(ctx context.Context, flight *summaryFlight) (Summary, error) {
@@ -229,8 +232,12 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 	}
 
 	groups := make(map[string]*proxyAggregate)
-	for index, item := range activeByIndex {
-		if index < 0 || index >= len(filesByTarget) || !item.Active {
+	// Walk the projected inventory order rather than the map order: the first
+	// trimmed current URL must remain the stable display/copy value for a
+	// normalized proxy group.
+	for index := range filesByTarget {
+		item, ok := activeByIndex[index]
+		if !ok || !item.Active {
 			continue
 		}
 		result.ActiveAccountCount++
