@@ -108,6 +108,11 @@ type File struct {
 	Provider        string
 	AccountSnapshot string
 	AccountID       string
+	ProjectID       string
+	// ProxyURL is the projected current proxy value returned by CPA when
+	// include_proxy_url=1 is requested. It preserves the usual inventory
+	// string normalization while callers apply any grouping rules.
+	ProxyURL string
 	// AccountIDInvalid distinguishes an explicit but conflicting/malformed
 	// Codex account-id payload from a credential that simply has no account-id
 	// evidence. Both expose an empty AccountID, but only the former must make
@@ -1694,6 +1699,8 @@ func FromMap(file map[string]any) File {
 		Provider:               provider,
 		AccountSnapshot:        accountSnapshot,
 		AccountID:              accountID,
+		ProjectID:              stringField(file, "project_id", "projectId"),
+		ProxyURL:               stringField(file, "proxy_url", "proxyUrl", "proxy-url"),
 		AccountIDInvalid:       accountIDInvalid,
 		AccountSnapshotInvalid: accountSnapshotInvalid,
 		Disabled:               disabledField(file),

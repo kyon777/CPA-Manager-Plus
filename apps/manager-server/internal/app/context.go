@@ -30,6 +30,7 @@ import (
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	panelsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/panel"
 	proxysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxy"
+	proxyoverloadsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyoverload"
 	proxypoolstatesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxypoolstate"
 	proxyreplacementsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyreplacement"
 	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
@@ -83,6 +84,7 @@ type Context struct {
 	AuthFileMutationCoordinator        *cpaauthfiles.MutationCoordinator
 	QuotaCooldownRecoveryService       QuotaCooldownRecoveryService
 	ProxyService                       *proxysvc.Service
+	ProxyOverloadService               *proxyoverloadsvc.Service
 	ProxyReplacementService            *proxyreplacementsvc.Service
 	AuthFileBatchUploadService         *authfilesbatchsvc.Service
 	AuthFileExportService              *authfilesexportsvc.Service
@@ -218,6 +220,11 @@ func fromExisting(
 		authFileMutationCoordinator,
 		st,
 	)
+	proxyOverloadService := proxyoverloadsvc.New(proxyoverloadsvc.Options{
+		SetupResolver: managerConfigService,
+		AuthFiles:     authFiles,
+		Evidence:      st,
+	})
 	proxyPoolStateRegistry := proxypoolstatesvc.New(st)
 	exitIPChecker := proxyreplacementsvc.NewExitIPChecker(cfg.ProxyExitIPCheckURL)
 	codexInspectionService := codexinspectionsvc.NewWithOptions(
@@ -279,6 +286,7 @@ func fromExisting(
 		AccountProcessingPolicyService: accountProcessingPolicyService,
 		AuthFileMutationCoordinator:    authFileMutationCoordinator,
 		ProxyService:                   proxyService,
+		ProxyOverloadService:           proxyOverloadService,
 		ProxyReplacementService:        proxyReplacementService,
 		AuthFileBatchUploadService: authfilesbatchsvc.NewWithInventoryInvalidator(
 			managerConfigService,

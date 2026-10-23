@@ -3,17 +3,21 @@ package monitoring
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyoverload"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -253,6 +257,167 @@ func executeAuthorizedMonitoringRequest(t *testing.T, path, body string) *httpte
 	recorder := httptest.NewRecorder()
 	handler.Handle(recorder, req)
 	return recorder
+}
+
+func TestProxyOverloadSummaryRequiresPanelAuthorization(t *testing.T) {
+	handler, _, _ := newProxyOverloadSummaryHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/v0/management/monitoring/proxy-overload-summary", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, request)
+
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("unauthorized request unexpectedly succeeded: %s", recorder.Body.String())
+	}
+}
+
+func TestProxyOverloadSummaryRejectsNonGET(t *testing.T) {
+	handler, adminKey, _ := newProxyOverloadSummaryHandler(t)
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/monitoring/proxy-overload-summary", nil)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, request)
+
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestProxyOverloadSummaryRejectsUnknownQuery(t *testing.T) {
+	handler, adminKey, inventory := newProxyOverloadSummaryHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/v0/management/monitoring/proxy-overload-summary?hours=1", nil)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if inventory.calls != 0 {
+		t.Fatalf("unknown query invoked summary inventory %d times", inventory.calls)
+	}
+}
+
+func TestProxyOverloadSummaryReturnsNoStoreAndAggregateOnly(t *testing.T) {
+	handler, adminKey, _ := newProxyOverloadSummaryHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/v0/management/monitoring/proxy-overload-summary", nil)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got, want := recorder.Header().Get("Cache-Control"), "no-store"; got != want {
+		t.Fatalf("Cache-Control = %q, want %q", got, want)
+	}
+	body := recorder.Body.String()
+	for _, secret := range []string{
+		"alice@example.test",
+		"secret-file.json",
+		"raw_json",
+		"fail_body",
+		"trace-secret",
+		"token-secret",
+	} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("aggregate response leaked %q: %s", secret, body)
+		}
+	}
+	var result proxyoverload.Summary
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if len(result.Proxies) != 1 || result.Proxies[0].OverloadedAccountCount != 1 {
+		t.Fatalf("summary = %#v", result)
+	}
+}
+
+func TestProxyOverloadSummaryForceRefreshBypassesCompletedCache(t *testing.T) {
+	handler, adminKey, inventory := newProxyOverloadSummaryHandler(t)
+
+	for _, target := range []string{
+		"/v0/management/monitoring/proxy-overload-summary",
+		"/v0/management/monitoring/proxy-overload-summary",
+		"/v0/management/monitoring/proxy-overload-summary?refresh=1",
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Header.Set("Authorization", "Bearer "+adminKey)
+		recorder := httptest.NewRecorder()
+		handler.Handle(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body = %s", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	if inventory.calls != 2 {
+		t.Fatalf("inventory calls = %d, want cache hit then forced refresh", inventory.calls)
+	}
+}
+
+type proxyOverloadHandlerSetupResolver struct{}
+
+func (proxyOverloadHandlerSetupResolver) ResolveSetup(context.Context) (store.Setup, bool, error) {
+	return store.Setup{CPAUpstreamURL: "http://cpa.example.test", ManagementKey: "manager-key"}, true, nil
+}
+
+type proxyOverloadHandlerInventory struct {
+	calls int
+}
+
+func (inventory *proxyOverloadHandlerInventory) FetchWithProxyURLs(context.Context, string, string) ([]cpaauthfiles.File, error) {
+	inventory.calls++
+	return []cpaauthfiles.File{{
+		Name:            "secret-file.json",
+		AuthIndex:       "idx-1",
+		Provider:        "codex",
+		AccountSnapshot: "alice@example.test",
+		AccountID:       "workspace-a",
+		ProxyURL:        "http://proxy.example:8080",
+	}}, nil
+}
+
+type proxyOverloadHandlerEvidence struct{}
+
+func (proxyOverloadHandlerEvidence) RecentProxyOverloadEvidence(
+	context.Context,
+	[]store.LatestAccountRequestQuery,
+	int64,
+	int,
+) ([]store.ProxyOverloadEvidence, error) {
+	return []store.ProxyOverloadEvidence{{
+		RequestIndex:     0,
+		Active:           true,
+		ServerOverloaded: true,
+	}}, nil
+}
+
+func newProxyOverloadSummaryHandler(t *testing.T) (*Handler, string, *proxyOverloadHandlerInventory) {
+	t.Helper()
+	st := newHandlerTestStore(t)
+	const adminKey = "cpamp_proxy_summary_key"
+	credential, err := security.NewAdminCredential(adminKey, "test")
+	if err != nil {
+		t.Fatalf("create admin credential: %v", err)
+	}
+	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
+		t.Fatalf("save admin credential: %v", err)
+	}
+	inventory := &proxyOverloadHandlerInventory{}
+	summaryService := proxyoverload.New(proxyoverload.Options{
+		SetupResolver: proxyOverloadHandlerSetupResolver{},
+		AuthFiles:     inventory,
+		Evidence:      proxyOverloadHandlerEvidence{},
+		Now: func() time.Time {
+			return time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	return &Handler{App: &app.Context{
+		AdminAuthService:     adminauthsvc.New(config.Config{}, st),
+		ProxyOverloadService: summaryService,
+	}}, adminKey, inventory
 }
 
 func newHandlerTestStore(t testing.TB) *store.Store {

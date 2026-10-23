@@ -602,3 +602,15 @@ quota accounting.
 - Preserve the endpoint, `cpaauthfiles` single-record extractor,
   `authfilesexport` service, identity-only web target builder, result modal,
   locale keys, and their tests during every future upstream merge/update.
+
+## 2026-10-23：独立代理过载统计（必须保留）
+
+这是 CPAM-only 的只读诊断二改，后续“更新 CPAM”合并上游时必须保留，不能改写为 CPA Core 功能，也不能触碰计费、Credits、额度、调度、巡检或优先级 worker。
+
+- 凭证列表工具栏保留原有“代理 IP 筛选/保存代理池”，另外提供独立“代理过载统计”按钮和弹窗；两条功能的状态、接口和 UI 不得互相替换。
+- 统计范围固定为当前 CPA 清单中最近 72 小时有请求的账号，不按启用/禁用筛选；每个账号只检查最新 9 条请求，并按账号当前 `proxy_url` 归属。`proxy_url` 仅去除首尾空白及末尾连续 `/` 用于分组，展示/复制保留该组第一个当前原始 URL。
+- 每次计算只允许一次 `GET /v0/management/auth-files?include_proxy_url=1` 投影清单；禁止扫描原始认证 JSON、`/download`、`credential-runtime-metadata`、逐账号 CPA 请求或浏览器端聚合。CPA 清单失败必须安全失败，不能回退到文件扫描。
+- SQLite 只读路径 `RecentProxyOverloadEvidence` 按最多 500 个目标分批（5000 个账号最多约 10 次集合查询），要求最新请求索引存在；禁止 N+1、写入/迁移 `usage_events` 或返回账号、文件名、邮箱、原始错误体、Trace、Token。
+- “服务过载”精确条件固定为 `failed=true`、HTTP `502`，且 `header_error_code` 精确（不区分大小写）为 `server_is_overloaded`，或 `fail_summary` 含有 ASCII 边界完整 token `server_is_overloaded`。普通 502、EOF、500、503、429、407、401、`not_server_is_overloaded` 均不得计入。
+- 服务端仅返回代理级聚合：活跃账号数、无代理数、代理数、过载账号数、每代理有/无过载及比例；响应 `Cache-Control: no-store`，错误只返回静态安全类别。进程内完整结果缓存 15 秒并共享进行中的计算；首次打开和用户点击“刷新统计”才请求，不能接入凭证列表自动刷新轮询。
+- 前端弹窗筛选、全选当前可见代理、LF 分隔复制均为本地操作；刷新失败时保留上一份完整表格。打开弹窗不得触发 `loadFiles`、history、window-usage、runtime metadata、额度或 Header 请求；关闭/连接切换只取消该统计请求。

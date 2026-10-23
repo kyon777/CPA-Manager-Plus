@@ -12,6 +12,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/middleware"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/response"
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyoverload"
 )
 
 type Handler struct {
@@ -24,6 +25,10 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := strings.TrimRight(r.URL.Path, "/")
+	if path == "/v0/management/monitoring/proxy-overload-summary" {
+		h.handleProxyOverloadSummary(w, r)
+		return
+	}
 	if path == "/v0/management/monitoring/header-snapshots" {
 		h.handleHeaderSnapshots(w, r)
 		return
@@ -65,6 +70,60 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleProxyOverloadSummary(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		response.MethodNotAllowed(w)
+		return
+	}
+
+	refresh, err := parseProxyOverloadSummaryRefresh(r)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err)
+		return
+	}
+	if h.App.ProxyOverloadService == nil {
+		response.Error(w, http.StatusServiceUnavailable, proxyoverload.ErrUnavailable)
+		return
+	}
+
+	result, err := h.App.ProxyOverloadService.Summary(r.Context(), refresh)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// The browser abandoned its own wait. The shared service calculation,
+			// if any, remains available to other callers and must not be reported
+			// as a misleading panel error.
+			return
+		}
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, proxyoverload.ErrIndexMaintenancePending) {
+			status = http.StatusConflict
+		}
+		response.Error(w, status, publicProxyOverloadSummaryError(err))
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func parseProxyOverloadSummaryRefresh(r *http.Request) (bool, error) {
+	query := r.URL.Query()
+	if len(query) == 0 {
+		return false, nil
+	}
+	values, ok := query["refresh"]
+	if !ok || len(query) != 1 || len(values) != 1 || values[0] != "1" {
+		return false, errors.New("unsupported proxy overload summary query")
+	}
+	return true, nil
+}
+
+func publicProxyOverloadSummaryError(err error) error {
+	if errors.Is(err, proxyoverload.ErrIndexMaintenancePending) {
+		return errors.New("database index maintenance is incomplete; proxy overload statistics are temporarily unavailable")
+	}
+	return proxyoverload.ErrUnavailable
 }
 
 func (h *Handler) handleAccountHistory(w http.ResponseWriter, r *http.Request) {

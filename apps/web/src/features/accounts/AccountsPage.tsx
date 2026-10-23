@@ -100,6 +100,7 @@ import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/compo
 import { AuthJsonPasteModal } from '@/features/authFiles/components/AuthJsonPasteModal';
 import { AuthJsonExportResultModal } from '@/features/accounts/components/AuthJsonExportResultModal';
 import { ProxyFilterModal } from '@/features/accounts/components/ProxyFilterModal';
+import { ProxyOverloadSummaryModal } from '@/features/accounts/components/ProxyOverloadSummaryModal';
 import { ProxyReplacementModal } from '@/features/accounts/components/ProxyReplacementModal';
 import { OAuthExcludedCard } from '@/features/authFiles/components/OAuthExcludedCard';
 import {
@@ -353,6 +354,7 @@ import {
   type MonitoringAccountRecentIndexItem,
   type MonitoringAccountWindowUsageItem,
   type QuotaCooldownInfo,
+  type ProxyOverloadSummaryResponse,
   type TokenRecoveryBatchTargetRequest,
   type TokenRecoveryTargetRequest,
   type CredentialRuntimeMetadataItem,
@@ -1730,6 +1732,13 @@ export function AccountsPage() {
   const [proxyFilterLoading, setProxyFilterLoading] = useState(false);
   const [proxyFilterSaving, setProxyFilterSaving] = useState(false);
   const [proxyFilterError, setProxyFilterError] = useState('');
+  const [proxyOverloadSummaryOpen, setProxyOverloadSummaryOpen] = useState(false);
+  const [proxyOverloadSummary, setProxyOverloadSummary] = useState<ProxyOverloadSummaryResponse | null>(
+    null
+  );
+  const [proxyOverloadSummaryLoading, setProxyOverloadSummaryLoading] = useState(false);
+  const [proxyOverloadSummaryRefreshing, setProxyOverloadSummaryRefreshing] = useState(false);
+  const [proxyOverloadSummaryError, setProxyOverloadSummaryError] = useState('');
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const codexReauthBaselineRef = useRef<AccountDirectReauthBaseline | null>(null);
   const inspectionCodexReauthBaselineRef = useRef<{
@@ -1849,6 +1858,7 @@ export function AccountsPage() {
   const detailEventsAutoLoadKeyRef = useRef<string | null>(null);
   const quotaCooldownRequestIdRef = useRef(0);
   const accountHistoryAutoAbortRef = useRef<AbortController | null>(null);
+  const proxyOverloadSummaryAbortRef = useRef<AbortController | null>(null);
   const accountHistoryTargetAbortRef = useRef<AbortController | null>(null);
   const accountRecentIndexAbortRef = useRef<AbortController | null>(null);
   const visibleAccountRecentIndexAbortRef = useRef<AbortController | null>(null);
@@ -1986,6 +1996,13 @@ export function AccountsPage() {
     setProxyFilterOpen(false);
     setProxyFilterURLs([]);
     setProxyFilterError('');
+    proxyOverloadSummaryAbortRef.current?.abort();
+    proxyOverloadSummaryAbortRef.current = null;
+    setProxyOverloadSummaryOpen(false);
+    setProxyOverloadSummary(null);
+    setProxyOverloadSummaryLoading(false);
+    setProxyOverloadSummaryRefreshing(false);
+    setProxyOverloadSummaryError('');
     setCodexReauthTarget(null);
     codexReauthBaselineRef.current = null;
     inspectionCodexReauthBaselineRef.current = null;
@@ -2536,6 +2553,7 @@ export function AccountsPage() {
       accountRecentAnomalyIndexAbortRef.current?.abort();
       accountWindowUsageAbortRef.current?.abort();
       listWindowUsageAbortRef.current?.abort();
+      proxyOverloadSummaryAbortRef.current?.abort();
     },
     []
   );
@@ -2785,6 +2803,67 @@ export function AccountsPage() {
       setProxyFilterLoading(false);
     }
   }, [managerRequestScope, showNotification, t]);
+
+  const loadProxyOverloadSummary = useCallback(
+    async (force: boolean) => {
+      if (!managerRequestScope) {
+        const message = t('accounts.proxy_overload_unavailable');
+        setProxyOverloadSummaryError(message);
+        return;
+      }
+
+      proxyOverloadSummaryAbortRef.current?.abort();
+      const controller = new AbortController();
+      proxyOverloadSummaryAbortRef.current = controller;
+      setProxyOverloadSummaryError('');
+      if (force) {
+        setProxyOverloadSummaryRefreshing(true);
+      } else {
+        setProxyOverloadSummaryLoading(true);
+      }
+
+      try {
+        const response = await monitoringAnalyticsApi.getProxyOverloadSummary(
+          managerRequestScope.apiBase,
+          managerRequestScope.managementKey,
+          force,
+          controller.signal
+        );
+        if (controller.signal.aborted || proxyOverloadSummaryAbortRef.current !== controller) return;
+        setProxyOverloadSummary(response);
+      } catch {
+        if (controller.signal.aborted || proxyOverloadSummaryAbortRef.current !== controller) return;
+        // Keep upstream/network details out of the panel. The API endpoint
+        // already maps maintenance and upstream failures to safe categories;
+        // the list UI only needs a stable retry hint.
+        setProxyOverloadSummaryError(t('accounts.proxy_overload_unavailable'));
+      } finally {
+        if (proxyOverloadSummaryAbortRef.current === controller) {
+          proxyOverloadSummaryAbortRef.current = null;
+          setProxyOverloadSummaryLoading(false);
+          setProxyOverloadSummaryRefreshing(false);
+        }
+      }
+    },
+    [managerRequestScope, t]
+  );
+
+  const openProxyOverloadSummary = useCallback(() => {
+    if (!managerRequestScope) {
+      showNotification(t('accounts.proxy_overload_unavailable'), 'error');
+      return;
+    }
+    setProxyOverloadSummaryOpen(true);
+    void loadProxyOverloadSummary(false);
+  }, [loadProxyOverloadSummary, managerRequestScope, showNotification, t]);
+
+  const closeProxyOverloadSummary = useCallback(() => {
+    proxyOverloadSummaryAbortRef.current?.abort();
+    proxyOverloadSummaryAbortRef.current = null;
+    setProxyOverloadSummaryLoading(false);
+    setProxyOverloadSummaryRefreshing(false);
+    setProxyOverloadSummaryOpen(false);
+  }, []);
 
   const saveProxyFilterURLs = useCallback(
     async (urls: string[]): Promise<string[]> => {
@@ -9482,6 +9561,18 @@ export function AccountsPage() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={openProxyOverloadSummary}
+              disabled={disableControls || !managerRequestScope}
+              title={managerRequestScope ? undefined : t('accounts.proxy_overload_unavailable')}
+            >
+              <IconChartLine size={15} />
+              {t('accounts.proxy_overload_button')}
+            </Button>
+          ) : null}
+          {!hasSelection && !isSelectionMode ? (
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => void queuePageTokenRecovery(pageRecoveryCandidates)}
               disabled={
                 disableControls ||
@@ -12097,6 +12188,24 @@ export function AccountsPage() {
           showNotification(
             copied
               ? t('accounts.proxy_filter_copied')
+              : t('notification.copy_failed', { defaultValue: 'Copy failed' }),
+            copied ? 'success' : 'error'
+          );
+        }}
+      />
+      <ProxyOverloadSummaryModal
+        open={proxyOverloadSummaryOpen}
+        loading={proxyOverloadSummaryLoading}
+        refreshing={proxyOverloadSummaryRefreshing}
+        result={proxyOverloadSummary}
+        error={proxyOverloadSummaryError}
+        onClose={closeProxyOverloadSummary}
+        onRefresh={() => void loadProxyOverloadSummary(true)}
+        onCopy={async (text) => {
+          const copied = await copyToClipboard(text);
+          showNotification(
+            copied
+              ? t('accounts.proxy_overload_copied')
               : t('notification.copy_failed', { defaultValue: 'Copy failed' }),
             copied ? 'success' : 'error'
           );

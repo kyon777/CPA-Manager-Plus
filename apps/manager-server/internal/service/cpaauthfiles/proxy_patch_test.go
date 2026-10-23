@@ -96,6 +96,39 @@ func TestFetchWithProxyURLsRequestsProxyProjection(t *testing.T) {
 	}
 }
 
+func TestFetchWithProxyURLsParsesProjectedProxyAndProjectID(t *testing.T) {
+	var includeProxyURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		includeProxyURL = r.URL.Query().Get("include_proxy_url")
+		_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{
+			"name":       "alpha.json",
+			"provider":   "codex",
+			"auth_index": "i-1",
+			"project_id": "org-1",
+			"proxy_url":  " http://proxy.example:8080/ ",
+			"account":    "member@example.test",
+		}}})
+	}))
+	defer server.Close()
+
+	files, err := New(server.Client()).FetchWithProxyURLs(context.Background(), server.URL, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := includeProxyURL, "1"; got != want {
+		t.Fatalf("include_proxy_url = %q, want %q", got, want)
+	}
+	if got, want := len(files), 1; got != want {
+		t.Fatalf("file count = %d, want %d", got, want)
+	}
+	if got, want := files[0].ProxyURL, "http://proxy.example:8080/"; got != want {
+		t.Fatalf("ProxyURL = %q, want %q", got, want)
+	}
+	if got, want := files[0].ProjectID, "org-1"; got != want {
+		t.Fatalf("ProjectID = %q, want %q", got, want)
+	}
+}
+
 func TestResolveProxyURLMutationTargetRequestsProxyProjection(t *testing.T) {
 	requests := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
