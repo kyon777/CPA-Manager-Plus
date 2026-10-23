@@ -107,6 +107,7 @@ type AccountWindowUsageQuery = usageevent.AccountWindowUsageQuery
 type AccountWindowModelStat = usageevent.AccountWindowModelStat
 type LatestAccountRequestQuery = usageevent.LatestAccountRequestQuery
 type LatestAccountRequest = usageevent.LatestAccountRequest
+type ProxyOverloadEvidence = usageevent.ProxyOverloadEvidence
 type UsageRollupCheckpoint = usagerollup.Checkpoint
 type UsageRollupCatchUpResult = usagerollup.CatchUpResult
 type AccountHistoryRollupRow = usagerollup.AccountHistoryRow
@@ -916,6 +917,15 @@ func (s *Store) AccountHistoryRollupRows(ctx context.Context, accountKeys []stri
 
 func (s *Store) RecentAccountRequests(ctx context.Context, targets []LatestAccountRequestQuery, limit int) ([]LatestAccountRequest, error) {
 	return s.UsageEvents.RecentAccountRequests(ctx, targets, limit)
+}
+
+func (s *Store) RecentProxyOverloadEvidence(
+	ctx context.Context,
+	targets []LatestAccountRequestQuery,
+	sinceMS int64,
+	perCredentialLimit int,
+) ([]ProxyOverloadEvidence, error) {
+	return s.UsageEvents.RecentProxyOverloadEvidence(ctx, targets, sinceMS, perCredentialLimit)
 }
 
 func (s *Store) DashboardHourlyRollupRows(ctx context.Context, fromMS, toMS int64) ([]DashboardHourlyRollupRow, error) {
