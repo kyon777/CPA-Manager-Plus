@@ -9,6 +9,7 @@ import (
 	apikeyaliascontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/apikeyalias"
 	authfilesbanneddeletecontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesbanneddelete"
 	authfilesbatchcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesbatch"
+	authfilesexportcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesexport"
 	automationcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/automation"
 	codexinspectioncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/codexinspection"
 	credentiallistcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/credentiallist"
@@ -60,6 +61,10 @@ func New(appCtx *app.Context) http.Handler {
 		App:     appCtx,
 		Service: appCtx.AccountBannedAuthFileDeleteService,
 	}
+	authFileExportHandler := &authfilesexportcontroller.Handler{
+		App:     appCtx,
+		Service: appCtx.AuthFileExportService,
+	}
 	proxyHandler := &proxycontroller.Handler{App: appCtx}
 	proxyFilterHandler := &proxyfiltercontroller.Handler{App: appCtx}
 	proxyReplacementHandler := &proxyreplacementcontroller.Handler{App: appCtx, Service: appCtx.ProxyReplacementService}
@@ -83,7 +88,7 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
 	mux.HandleFunc("/favicon.ico", panelHandler.Favicon)
 	mux.HandleFunc("/apple-touch-icon.png", panelHandler.AppleTouchIcon)
-	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, credentialListHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, authFileBatchUploadHandler, authFileBannedDeleteHandler, proxyReplacementHandler, serverErrorPriorityHandler, managerConfigHandler, proxyHandler))
+	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, credentialListHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, authFileBatchUploadHandler, authFileBannedDeleteHandler, authFileExportHandler, proxyReplacementHandler, serverErrorPriorityHandler, managerConfigHandler, proxyHandler))
 
 	return middleware.Recovery(middleware.RequestLogger(mux))
 }
@@ -103,6 +108,7 @@ func rootHandler(
 	quotaSnapshotHandler *quotasnapshotcontroller.Handler,
 	authFileBatchUploadHandler *authfilesbatchcontroller.Handler,
 	authFileBannedDeleteHandler *authfilesbanneddeletecontroller.Handler,
+	authFileExportHandler *authfilesexportcontroller.Handler,
 	proxyReplacementHandler *proxyreplacementcontroller.Handler,
 	serverErrorPriorityHandler *servererrorprioritycontroller.Handler,
 	managerConfigHandler *managerconfigcontroller.Handler,
@@ -156,6 +162,10 @@ func rootHandler(
 		}
 		if strings.TrimRight(r.URL.Path, "/") == "/v0/management/auth-files/delete-account-banned-batch" {
 			middleware.WithCORS(appCtx.Config, authFileBannedDeleteHandler.Handle)(w, r)
+			return
+		}
+		if strings.TrimRight(r.URL.Path, "/") == "/v0/management/auth-files/export-selected" {
+			middleware.WithCORS(appCtx.Config, authFileExportHandler.Handle)(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/v0/management/proxy-replacements") {

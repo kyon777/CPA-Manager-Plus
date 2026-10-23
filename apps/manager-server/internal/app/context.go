@@ -16,6 +16,7 @@ import (
 	apikeyaliassvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/apikeyalias"
 	authfilesbanneddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbanneddelete"
 	authfilesbatchsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbatch"
+	authfilesexportsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesexport"
 	automationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/automation"
 	bootstrapsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
 	codexinspectionsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/codexinspection"
@@ -84,6 +85,7 @@ type Context struct {
 	ProxyService                       *proxysvc.Service
 	ProxyReplacementService            *proxyreplacementsvc.Service
 	AuthFileBatchUploadService         *authfilesbatchsvc.Service
+	AuthFileExportService              *authfilesexportsvc.Service
 	AccountBannedAuthFileDeleteService *authfilesbanneddeletesvc.Service
 	PanelService                       *panelsvc.Service
 	AutomationRuntimeService           AutomationRuntimeService
@@ -282,6 +284,10 @@ func fromExisting(
 			managerConfigService,
 			proxyService,
 		),
+		AuthFileExportService: authfilesexportsvc.NewWithOptions(authfilesexportsvc.Options{
+			SetupResolver: managerConfigService,
+			AuthFiles:     authFiles,
+		}),
 		AccountBannedAuthFileDeleteService: authfilesbanneddeletesvc.NewWithOptions(authfilesbanneddeletesvc.Options{
 			SetupResolver:       managerConfigService,
 			Recovery:            tokenRecoveryService,
