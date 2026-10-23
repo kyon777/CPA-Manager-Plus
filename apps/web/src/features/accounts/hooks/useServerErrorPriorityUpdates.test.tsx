@@ -43,16 +43,21 @@ describe('useServerErrorPriorityUpdates', () => {
     active = true,
     documentVisible = true,
     hasLoaded = true,
+    pollingEnabled = true,
+    managerRequestScope = SCOPE,
   }: {
     active?: boolean;
     documentVisible?: boolean;
     hasLoaded?: boolean;
+    pollingEnabled?: boolean;
+    managerRequestScope?: typeof SCOPE;
   }) {
     useServerErrorPriorityUpdates({
       active,
       documentVisible,
       hasLoaded,
-      managerRequestScope: SCOPE,
+      pollingEnabled,
+      managerRequestScope,
       onUpdates,
     });
     useEffect(() => undefined, []);
@@ -103,6 +108,85 @@ describe('useServerErrorPriorityUpdates', () => {
       { completedAtMs: 2_000_000_000_000, id: 42 },
       expect.any(AbortSignal)
     );
+  });
+
+  it('preserves the acknowledged cursor while polling is paused, then resumes from it', async () => {
+    mocks.listServerErrorPriorityDemotionUpdates
+      .mockResolvedValueOnce({
+        items: [UPDATE],
+        nextCursor: { completedAtMs: UPDATE.completedAtMs, id: UPDATE.id },
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        nextCursor: { completedAtMs: UPDATE.completedAtMs + 1, id: UPDATE.id + 1 },
+      });
+
+    await act(async () => {
+      renderer = create(<Harness />);
+      await flush();
+    });
+    expect(mocks.listServerErrorPriorityDemotionUpdates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      renderer?.update(<Harness pollingEnabled={false} />);
+      await flush();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flush();
+    });
+    expect(mocks.listServerErrorPriorityDemotionUpdates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      renderer?.update(<Harness pollingEnabled />);
+      await flush();
+    });
+    expect(mocks.listServerErrorPriorityDemotionUpdates).toHaveBeenLastCalledWith(
+      SCOPE.apiBase,
+      SCOPE.managementKey,
+      { completedAtMs: UPDATE.completedAtMs, id: UPDATE.id },
+      expect.any(AbortSignal)
+    );
+  });
+
+  it('resets the cursor when the manager scope changes while polling is paused', async () => {
+    const replacementScope = {
+      apiBase: 'http://manager-b.local:18317',
+      managementKey: 'manager-key-b',
+    };
+    mocks.listServerErrorPriorityDemotionUpdates.mockResolvedValue({
+      items: [UPDATE],
+      nextCursor: { completedAtMs: UPDATE.completedAtMs, id: UPDATE.id },
+    });
+
+    await act(async () => {
+      renderer = create(<Harness />);
+      await flush();
+    });
+    expect(mocks.listServerErrorPriorityDemotionUpdates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      renderer?.update(
+        <Harness pollingEnabled={false} managerRequestScope={replacementScope} />
+      );
+      await flush();
+    });
+    expect(mocks.listServerErrorPriorityDemotionUpdates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      renderer?.update(<Harness pollingEnabled managerRequestScope={replacementScope} />);
+      await flush();
+    });
+    expect(mocks.listServerErrorPriorityDemotionUpdates).toHaveBeenLastCalledWith(
+      replacementScope.apiBase,
+      replacementScope.managementKey,
+      expect.objectContaining({ id: 0 }),
+      expect.any(AbortSignal)
+    );
+    const latestRequest = mocks.listServerErrorPriorityDemotionUpdates.mock.calls[
+      mocks.listServerErrorPriorityDemotionUpdates.mock.calls.length - 1
+    ]?.[2] as { completedAtMs: number };
+    expect(latestRequest.completedAtMs).not.toBe(UPDATE.completedAtMs);
   });
 
   it('does not poll when the list is inactive, hidden, or not loaded', async () => {

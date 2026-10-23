@@ -13,6 +13,7 @@ export type UseServerErrorPriorityUpdatesOptions = {
   active: boolean;
   documentVisible: boolean;
   hasLoaded: boolean;
+  pollingEnabled?: boolean;
   managerRequestScope?: ApiClientRequestScope;
   onUpdates: (updates: readonly ServerErrorPriorityDemotionUpdate[]) => void;
 };
@@ -49,15 +50,18 @@ export const useServerErrorPriorityUpdates = ({
   active,
   documentVisible,
   hasLoaded,
+  pollingEnabled = true,
   managerRequestScope,
   onUpdates,
 }: UseServerErrorPriorityUpdatesOptions): void => {
   const apiBase = managerRequestScope?.apiBase.trim() ?? '';
   const managementKey = managerRequestScope?.managementKey ?? '';
-  const enabled = active && documentVisible && hasLoaded && Boolean(apiBase && managementKey);
+  const transportReady = active && documentVisible && hasLoaded && Boolean(apiBase && managementKey);
+  const enabled = transportReady && pollingEnabled;
   const scopeKey = useMemo(() => `${apiBase}\u0000${managementKey}`, [apiBase, managementKey]);
   const updatesRef = useRef(onUpdates);
   const cursorRef = useRef<ServerErrorPriorityDemotionCursor | null>(null);
+  const cursorScopeRef = useRef<string | null>(null);
   const generationRef = useRef(0);
   const activeRequestRef = useRef<{ generation: number; controller: AbortController } | null>(null);
 
@@ -106,7 +110,16 @@ export const useServerErrorPriorityUpdates = ({
     const generation = generationRef.current;
     activeRequestRef.current?.controller.abort();
     activeRequestRef.current = null;
-    cursorRef.current = enabled ? initialCursor() : null;
+
+    if (cursorScopeRef.current !== scopeKey) {
+      cursorScopeRef.current = scopeKey;
+      cursorRef.current = null;
+    }
+    if (!transportReady) {
+      cursorRef.current = null;
+      return;
+    }
+    if (!cursorRef.current) cursorRef.current = initialCursor();
     if (!enabled) return;
 
     void poll(generation);
@@ -121,5 +134,5 @@ export const useServerErrorPriorityUpdates = ({
         activeRequestRef.current = null;
       }
     };
-  }, [enabled, poll, scopeKey]);
+  }, [enabled, poll, scopeKey, transportReady]);
 };

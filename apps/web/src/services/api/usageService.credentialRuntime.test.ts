@@ -126,4 +126,26 @@ describe('credential runtime manager API', () => {
     );
     expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('access_token');
   });
+
+  it('exports selected auth JSON with identity fields only', async () => {
+    const target = {
+      ...TARGET,
+      runtimeId: 'runtime-a',
+      accountId: 'account-a',
+      accountSnapshot: 'person@example.com',
+    };
+
+    await usageServiceApi.exportSelectedAuthFiles(BASE, KEY, [target]);
+
+    expect(postSpy).toHaveBeenCalledWith(
+      'http://manager.local:18317/v0/management/auth-files/export-selected',
+      { targets: [target] },
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer manager-key' },
+        timeout: 240_000,
+      })
+    );
+    expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('access_token');
+    expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('proxy_url');
+  });
 });

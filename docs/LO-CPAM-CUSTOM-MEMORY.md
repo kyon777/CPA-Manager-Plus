@@ -526,3 +526,79 @@ demotion execution.
   mutable Header timestamps or percentages changed. This prevents the
   `account-window-usage` cancel/restart storm and preserves responsive list
   controls under high traffic.
+
+## 2026-10-22: Accounts-list live-refresh gate
+
+This customization is CPAM-only. It controls only browser-side display reads;
+it must never alter CPA Core, `cli-proxy-api`, credential files, proxies,
+request routing, scheduler behavior, `usage_events`, Credits, billing/pricing,
+quota mutation, Token Acquisition, token recovery, inspection execution, or
+server-error priority-demotion execution.
+
+- The credential-list toolbar owns the browser-local preference
+  `accountsPage.liveRefreshEnabled`, defaulting to `true`. It persists per
+  browser and shows a compact frozen-snapshot indicator when off.
+- When disabled, only passive Accounts UI reads stop: the visible-page
+  10-second recent-nine request index, visible-page 60-second history/window
+  projections, conditional 30-second global recent-sort index, passive
+  Header/inspection refresh, and the UI projection of completed priority
+  demotions. In-flight display reads are aborted or invalidated so a late
+  response cannot redraw a frozen list.
+- Initial/context reads (page, filter, sort, connection changes) and the
+  explicit toolbar refresh remain one-shot reads while frozen. Re-enabling
+  performs one bounded catch-up for the visible page and, only when sorted by
+  recent request, the global compact index. It must not call a quota refresh,
+  CPA write, Token Acquisition, recovery, or Provider API.
+- `useServerErrorPriorityUpdates` accepts a separate `pollingEnabled` gate.
+  A user pause retains only the last acknowledged tuple cursor and resumes from
+  it; an inactive/hidden/unloaded lifecycle or Manager-scope change resets the
+  cursor. Preserve its existing AbortController, single-flight, and strict
+  identity/priority guards.
+- Future upstream merges must retain this control and its tests. Do not turn
+  it into a backend scheduler switch or couple it to billing, quota, account
+  health, automatic recovery, or any CPAM/CPA mutation path.
+
+## 2026-10-23: Copy selected authorization-file JSON
+
+This customization is CPAM-only. It must never modify, restart, rebuild, or
+reconfigure CPA Core / `cli-proxy-api`; it must not modify credential files,
+proxies, request routing, scheduling, inspection, Token Acquisition,
+automatic recovery, priority policies, `usage_events`, Credits, billing, or
+quota accounting.
+
+- The Accounts floating selection toolbar's **More** menu contains **Copy
+  authorization file data**, immediately before the existing batch-download
+  action. Batch download and every other action remain intact.
+- The browser submits only the minimum identity tuple to the authenticated
+  Manager endpoint `POST /v0/management/auth-files/export-selected`:
+  `clientKey`, `fileName`, `authIndex`, `accountEmail`, `provider`, `runtimeId`,
+  `accountId`, and `accountSnapshot`. It must never send raw authorization
+  JSON, tokens, headers, secrets, or `proxy_url`.
+- The endpoint is handled by CPAM before the generic CPA management proxy,
+  requires normal panel authorization, and sends `Cache-Control: no-store` on
+  every response. It accepts a strict whitelist-only JSON request; unknown or
+  duplicate request fields are rejected.
+- Manager resolves the saved CPA setup itself, snapshots CPA auth-file
+  inventory once, identity-verifies every logical selection, de-duplicates
+  physical source-file reads, and limits those reads to **8** concurrent jobs.
+  It permits at most **300** logical selections and refuses final record arrays
+  larger than **48 MiB**. It makes no mutation, cache invalidation, database
+  write, scheduler call, or raw-credential log entry.
+- A selected member of a shared JSON array must export exactly that one
+  verified object, never its siblings. Ambiguous, missing, malformed,
+  runtime-only, or identity-mismatched sources produce only a safe
+  `fileName + fixed error code` outcome.
+- The normal UI serializes only returned `records` as one top-level JSON
+  array and copies it directly to the clipboard. It does not trigger
+  `loadFiles`, quota refresh, history, recent-request, window-usage,
+  inspection, recovery, or priority requests. An in-flight guard prevents
+  duplicate export clicks.
+- On partial success the clipboard still receives successful records while the
+  result dialog retains only safe failure names/codes. Raw JSON is retained in
+  browser memory only when clipboard writing fails; the fallback dialog offers
+  retry-copy/download and clears the JSON state when it closes or retry-copy
+  succeeds. Do not add localStorage, URL state, analytics, logs, or SQLite
+  persistence for this data.
+- Preserve the endpoint, `cpaauthfiles` single-record extractor,
+  `authfilesexport` service, identity-only web target builder, result modal,
+  locale keys, and their tests during every future upstream merge/update.

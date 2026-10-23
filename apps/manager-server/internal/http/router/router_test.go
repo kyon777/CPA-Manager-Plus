@@ -14,6 +14,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	authfilesbanneddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbanneddelete"
+	authfilesexportsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesexport"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	credentialruntimesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialruntime"
 	proxyreplacementsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyreplacement"
@@ -165,6 +166,48 @@ func TestRouterRoutesAccountBannedDeleteBeforeCoreManagementProxy(t *testing.T) 
 	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"deleted"`)) {
 		t.Fatalf("route status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
+}
+
+func TestRouterRoutesSelectedAuthExportBeforeCoreManagementProxy(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "router-auth-export.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const adminKey = "cpamp_router_auth_export"
+	credential, err := security.NewAdminCredential(adminKey, "test")
+	if err != nil {
+		t.Fatalf("new admin credential: %v", err)
+	}
+	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
+		t.Fatalf("save admin credential: %v", err)
+	}
+	appContext := &app.Context{
+		Config:           config.Config{CORSOrigins: []string{"*"}},
+		AdminAuthService: adminauthsvc.New(config.Config{}, st),
+		AuthFileExportService: authfilesexportsvc.NewWithOptions(authfilesexportsvc.Options{
+			SetupResolver: routerCredentialRuntimeSetupResolver{baseURL: "http://cpa.example.test"},
+			AuthFiles:     routerExportAuthFiles{},
+		}),
+	}
+	handler := New(appContext)
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/export-selected", bytes.NewBufferString(`{"targets":[{"clientKey":"row-a","fileName":"a.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex","runtimeId":"runtime-a"}]}`))
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"records"`)) || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("route status=%d headers=%#v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+}
+
+type routerExportAuthFiles struct{}
+
+func (routerExportAuthFiles) Fetch(context.Context, string, string) ([]cpaauthfiles.File, error) {
+	return []cpaauthfiles.File{{ID: "runtime-a", Name: "a.json", AuthIndex: "7", Provider: "codex", AccountSnapshot: "person@example.com"}}, nil
+}
+
+func (routerExportAuthFiles) Download(context.Context, string, string, string) ([]byte, error) {
+	return []byte(`{"auth_index":"7","email":"person@example.com","refresh_token":"rt-for-copy"}`), nil
 }
 
 func TestRouterRoutesProxyReplacementBeforeCoreManagementProxy(t *testing.T) {

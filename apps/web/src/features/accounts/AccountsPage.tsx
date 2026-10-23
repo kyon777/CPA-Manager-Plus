@@ -74,6 +74,7 @@ import {
 import { getScopedQuotaState } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
+import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -97,6 +98,7 @@ import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderS
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
 import { AuthJsonPasteModal } from '@/features/authFiles/components/AuthJsonPasteModal';
+import { AuthJsonExportResultModal } from '@/features/accounts/components/AuthJsonExportResultModal';
 import { ProxyFilterModal } from '@/features/accounts/components/ProxyFilterModal';
 import { ProxyReplacementModal } from '@/features/accounts/components/ProxyReplacementModal';
 import { OAuthExcludedCard } from '@/features/authFiles/components/OAuthExcludedCard';
@@ -147,6 +149,7 @@ import {
 } from '@/features/accounts/model/accountRows';
 import { isEnabledProxyFilterCredential } from '@/features/accounts/model/proxyFilter';
 import { buildProxyReplacementTargets } from '@/features/accounts/model/proxyReplacementTargets';
+import { buildAuthJsonExportTargets } from '@/features/accounts/model/authJsonExportTargets';
 import { applyServerErrorPriorityUpdates } from '@/features/accounts/model/serverErrorPriorityUpdates';
 import {
   buildInspectionCodexQuotaState,
@@ -237,6 +240,7 @@ import {
   formatQuotaResetDisplay,
   formatQuotaResetRelative,
   formatQuotaResetTooltipParams,
+  formatTimestamp,
   getAccountQuotaLifecycleBarOverride,
   getAccountSortFieldOption,
   getProviderLabel,
@@ -339,6 +343,7 @@ import {
   type AccountActionCandidate,
   type AccountQuotaSnapshotObservationInput,
   type AccountQuotaSnapshotWriteEntry,
+  type AuthJsonExportFailedItem,
   type AccountQuotaSnapshotWindow,
   type MonitoringAnalyticsAccountStatRow,
   type MonitoringAnalyticsEventRow,
@@ -391,6 +396,7 @@ import {
 import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { copyToClipboard } from '@/utils/clipboard';
+import { downloadBlob } from '@/utils/download';
 import {
   buildUsageHeaderSnapshotLookup,
   getHeaderSnapshotErrorCode,
@@ -462,6 +468,7 @@ const VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS = 10_000;
 const GLOBAL_ACCOUNT_RECENT_INDEX_REFRESH_MS = 30_000;
 const PAGE_ACCOUNT_HISTORY_REFRESH_MS = 60_000;
 const PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS = 60_000;
+const MAX_AUTH_JSON_EXPORT_TARGETS = 300;
 const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u0000';
 const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
 const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
@@ -546,6 +553,15 @@ type AccountQuotaRefreshOutcome =
   | { status: 'ignored' };
 
 type AccountHistoryLoadOutcome = { status: 'success' } | { status: 'error'; error: string };
+
+type AuthJsonExportDialogState = {
+  requested: number;
+  exported: number;
+  failed: AuthJsonExportFailedItem[];
+  // Raw authorization JSON is kept only when the clipboard API rejects the
+  // write, and is discarded immediately when the fallback dialog closes.
+  fallbackJson?: string;
+};
 
 type CodexResetCreditRequestEntry = {
   promise: Promise<CodexResetCreditsData | null>;
@@ -1484,6 +1500,21 @@ export function AccountsPage() {
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
   );
+  const [liveRefreshEnabled, setLiveRefreshEnabled] = useLocalStorage<boolean>(
+    'accountsPage.liveRefreshEnabled',
+    true
+  );
+  const liveRefreshEnabledRef = useRef(liveRefreshEnabled);
+  liveRefreshEnabledRef.current = liveRefreshEnabled;
+  const latestListEvidenceAtMsRef = useRef<number | null>(null);
+  const [frozenListEvidenceAtMs, setFrozenListEvidenceAtMs] = useState<number | null>(null);
+  const accountsLivePollingEnabled =
+    activeView === 'accounts' && documentVisible && liveRefreshEnabled;
+  const recordListEvidenceRead = useCallback(() => {
+    const observedAtMs = Date.now();
+    latestListEvidenceAtMsRef.current = observedAtMs;
+    if (!liveRefreshEnabledRef.current) setFrozenListEvidenceAtMs(observedAtMs);
+  }, []);
   const prioritySyncFilesRef = useRef<AuthFileItem[]>(files);
   prioritySyncFilesRef.current = files;
   const handleServerErrorPriorityUpdates = useCallback(
@@ -1689,6 +1720,10 @@ export function AccountsPage() {
   );
   const oauthEditorConnectionFingerprintRef = useRef(connectionFingerprint);
   const [authJsonPasteOpen, setAuthJsonPasteOpen] = useState(false);
+  const [authJsonExportSubmitting, setAuthJsonExportSubmitting] = useState(false);
+  const [authJsonExportResult, setAuthJsonExportResult] =
+    useState<AuthJsonExportDialogState | null>(null);
+  const authJsonExportSubmittingRef = useRef(false);
   const [proxyFilterOpen, setProxyFilterOpen] = useState(false);
   const [proxyFilterSessionID, setProxyFilterSessionID] = useState(0);
   const [proxyFilterURLs, setProxyFilterURLs] = useState<string[]>([]);
@@ -2481,6 +2516,8 @@ export function AccountsPage() {
     setDetailEventsRefreshing(false);
     setDetailEventsAppending(false);
     setDetailEventsError('');
+    latestListEvidenceAtMsRef.current = null;
+    setFrozenListEvidenceAtMs(null);
     setSuppressedInspectionResultKeys(readCompletedAccountReauthResultKeys(connectionFingerprint));
   }, [
     connectionFingerprint,
@@ -2537,6 +2574,7 @@ export function AccountsPage() {
     ]);
     setAccountHistoryAutoRefreshRevision((current) => current + 1);
     setRecentIndexRefreshRevision((current) => current + 1);
+    setVisibleRecentIndexRefreshRevision((current) => current + 1);
     setListWindowUsageRefreshRevision((current) => current + 1);
   }, [
     credentialEvidenceScopeKey,
@@ -2566,6 +2604,7 @@ export function AccountsPage() {
     active: activeView === 'accounts',
     documentVisible,
     hasLoaded,
+    pollingEnabled: liveRefreshEnabled,
     managerRequestScope,
     onUpdates: handleServerErrorPriorityUpdates,
   });
@@ -2574,12 +2613,56 @@ export function AccountsPage() {
       canLoadHeaderSnapshots ? loadHeaderSnapshots() : Promise.resolve(),
       canLoadInspectionSummary ? loadInspectionSummaryAndSynchronize() : Promise.resolve(),
     ]);
+    if (canLoadHeaderSnapshots || canLoadInspectionSummary) recordListEvidenceRead();
   }, [
     canLoadHeaderSnapshots,
     canLoadInspectionSummary,
     loadHeaderSnapshots,
     loadInspectionSummaryAndSynchronize,
+    recordListEvidenceRead,
   ]);
+
+  const setAccountsLiveRefresh = useCallback(
+    (enabled: boolean) => {
+      setLiveRefreshEnabled(enabled);
+      if (!enabled) {
+        // Stop the passive streams immediately instead of allowing a response
+        // that began just before the switch changed to redraw the frozen list.
+        // Manual detail/history actions use separate controllers and remain
+        // available while the list is frozen.
+        accountRecentIndexPendingRefreshRef.current = false;
+        accountRecentIndexAbortRef.current?.abort();
+        accountRecentIndexAbortRef.current = null;
+        visibleAccountRecentIndexPendingRefreshRef.current = false;
+        visibleAccountRecentIndexAbortRef.current?.abort();
+        visibleAccountRecentIndexAbortRef.current = null;
+        accountHistoryAutoPendingRefreshRef.current = false;
+        accountHistoryAutoAbortRef.current?.abort();
+        accountHistoryAutoAbortRef.current = null;
+        listWindowUsagePendingRefreshRef.current = false;
+        listWindowUsageAbortRef.current?.abort();
+        listWindowUsageAbortRef.current = null;
+        headerSnapshotRequestGenerationRef.current += 1;
+        invalidateInspectionSummaryRequest();
+        setFrozenListEvidenceAtMs(latestListEvidenceAtMsRef.current);
+        return;
+      }
+      setFrozenListEvidenceAtMs(null);
+      setVisibleRecentIndexRefreshRevision((current) => current + 1);
+      setAccountHistoryAutoRefreshRevision((current) => current + 1);
+      setListWindowUsageRefreshRevision((current) => current + 1);
+      if (accountSort.key === 'recent') {
+        setGlobalRecentIndexRefreshRevision((current) => current + 1);
+      }
+      void refreshPassiveAccountsEvidence();
+    },
+    [
+      accountSort.key,
+      invalidateInspectionSummaryRequest,
+      refreshPassiveAccountsEvidence,
+      setLiveRefreshEnabled,
+    ]
+  );
 
   useHeaderRefresh(refreshActiveWorkspace);
 
@@ -2620,9 +2703,9 @@ export function AccountsPage() {
   useEffect(() => {
     const regainedVisibility = documentVisible && !previousDocumentVisibleRef.current;
     previousDocumentVisibleRef.current = documentVisible;
-    if (!regainedVisibility || activeView !== 'accounts') return;
+    if (!regainedVisibility || activeView !== 'accounts' || !liveRefreshEnabled) return;
     void refreshPassiveAccountsEvidence();
-  }, [activeView, documentVisible, refreshPassiveAccountsEvidence]);
+  }, [activeView, documentVisible, liveRefreshEnabled, refreshPassiveAccountsEvidence]);
 
   useInterval(
     () => {
@@ -2630,6 +2713,7 @@ export function AccountsPage() {
     },
     activeView === 'accounts' &&
       documentVisible &&
+      liveRefreshEnabled &&
       (canLoadHeaderSnapshots || canLoadInspectionSummary)
       ? PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS
       : null
@@ -4912,6 +4996,10 @@ export function AccountsPage() {
     () => Array.from(new Set(selectedTargetFiles.map((file) => file.name))),
     [selectedTargetFiles]
   );
+  const selectedAuthJsonExportTargets = useMemo(
+    () => buildAuthJsonExportTargets(selectedTargetFiles),
+    [selectedTargetFiles]
+  );
   const selectedProxyReplacementTargets = useMemo(
     () => buildProxyReplacementTargets(selectedTargetFiles),
     [selectedTargetFiles]
@@ -6653,6 +6741,7 @@ export function AccountsPage() {
           if (item.row_key) next.set(item.row_key, item);
         });
       });
+      recordListEvidenceRead();
       // The global index can reorder thousands of rows. Keep it interruptible
       // so typing, scrolling and toolbar clicks win over a 30s sort refresh.
       startTransition(() => {
@@ -6683,6 +6772,7 @@ export function AccountsPage() {
     featureAvailability.requestMonitoringAvailable,
     managementKey,
     accountRecentIndexAutoContextKey,
+    recordListEvidenceRead,
   ]);
 
   useEffect(() => {
@@ -6756,6 +6846,7 @@ export function AccountsPage() {
           if (item.row_key) next.set(item.row_key, item);
         });
       });
+      recordListEvidenceRead();
       setVisibleAccountRecentIndexByRowKey((current) =>
         hasEquivalentRecentIndexMap(current, next) ? current : next
       );
@@ -6781,6 +6872,7 @@ export function AccountsPage() {
     featureAvailability.managerServiceBase,
     featureAvailability.requestMonitoringAvailable,
     managementKey,
+    recordListEvidenceRead,
     visibleAccountRecentIndexAutoContextKey,
     visibleAccountRecentIndexTargets,
   ]);
@@ -7098,6 +7190,7 @@ export function AccountsPage() {
           });
           return next;
         });
+        recordListEvidenceRead();
         entries.forEach((entry) => {
           const requestVersion = requestVersions.get(entry.rowKey);
           if (accountHistoryRequestVersionsRef.current.get(entry.rowKey) !== requestVersion) {
@@ -7167,6 +7260,7 @@ export function AccountsPage() {
       featureAvailability.requestMonitoringAvailable,
       managementKey,
       managerConnectionFingerprint,
+      recordListEvidenceRead,
       t,
     ]
   );
@@ -7828,6 +7922,7 @@ export function AccountsPage() {
       setListWindowUsageByKey(
         buildAccountWindowUsageByKey(queryTargets, response.items ?? [])
       );
+      recordListEvidenceRead();
     } catch {
       if (isCurrentRequest()) {
         const previousContext = listWindowUsageQueryContextRef.current;
@@ -7864,6 +7959,7 @@ export function AccountsPage() {
     managerStorageAvailable,
     pageRows,
     listWindowUsageAutoContextKey,
+    recordListEvidenceRead,
   ]);
 
   useEffect(() => {
@@ -7887,7 +7983,7 @@ export function AccountsPage() {
     () => {
       setVisibleRecentIndexRefreshRevision((current) => current + 1);
     },
-    activeView === 'accounts' && documentVisible && pageRows.length > 0
+    accountsLivePollingEnabled && pageRows.length > 0
       ? VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS
       : null
   );
@@ -7897,7 +7993,7 @@ export function AccountsPage() {
       setAccountHistoryAutoRefreshRevision((current) => current + 1);
       setListWindowUsageRefreshRevision((current) => current + 1);
     },
-    activeView === 'accounts' && documentVisible && pageRows.length > 0
+    accountsLivePollingEnabled && pageRows.length > 0
       ? PAGE_ACCOUNT_HISTORY_REFRESH_MS
       : null
   );
@@ -7906,7 +8002,7 @@ export function AccountsPage() {
     () => {
       setGlobalRecentIndexRefreshRevision((current) => current + 1);
     },
-    activeView === 'accounts' && documentVisible && accountSort.key === 'recent' && rows.length > 0
+    accountsLivePollingEnabled && accountSort.key === 'recent' && rows.length > 0
       ? GLOBAL_ACCOUNT_RECENT_INDEX_REFRESH_MS
       : null
   );
@@ -8576,6 +8672,122 @@ export function AccountsPage() {
     [batchPatchFields, showNotification, t]
   );
 
+  const handleSelectedAuthJsonExport = useCallback(async () => {
+    if (authJsonExportSubmittingRef.current) return;
+    if (!managerRequestScope || !managerStorageAvailable) {
+      showNotification(t('auth_files.export_unavailable'), 'error');
+      return;
+    }
+
+    const targets = selectedAuthJsonExportTargets;
+    if (targets.length === 0) {
+      showNotification(t('auth_files.export_no_supported_targets'), 'warning');
+      return;
+    }
+    if (targets.length > MAX_AUTH_JSON_EXPORT_TARGETS) {
+      showNotification(
+        t('auth_files.export_target_limit', { count: MAX_AUTH_JSON_EXPORT_TARGETS }),
+        'warning'
+      );
+      return;
+    }
+
+    authJsonExportSubmittingRef.current = true;
+    setAuthJsonExportSubmitting(true);
+    showNotification(t('auth_files.export_preparing', { count: targets.length }), 'info');
+    try {
+      const response = await usageServiceApi.exportSelectedAuthFiles(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey,
+        targets
+      );
+      const records = Array.isArray(response.records) ? response.records : [];
+      const failed = Array.isArray(response.failed) ? response.failed : [];
+      const requested = Number.isFinite(response.requested)
+        ? Math.max(0, Math.trunc(response.requested))
+        : targets.length;
+      // The serialized object is intentionally a local ephemeral value on the
+      // normal clipboard path. It enters React state only after clipboard
+      // failure, where the fallback dialog owns it until it closes.
+      const exportedJson = records.length > 0 ? JSON.stringify(records, null, 2) : '';
+
+      if (!exportedJson) {
+        setAuthJsonExportResult({
+          requested,
+          exported: 0,
+          failed,
+        });
+        showNotification(t('auth_files.export_no_records'), 'warning');
+        return;
+      }
+
+      const copied = await copyToClipboard(exportedJson);
+      if (!copied) {
+        setAuthJsonExportResult({
+          requested,
+          exported: records.length,
+          failed,
+          fallbackJson: exportedJson,
+        });
+        showNotification(t('auth_files.export_copy_failed'), 'error');
+        return;
+      }
+
+      if (failed.length > 0) {
+        // The successfully copied JSON must not be retained by the partial
+        // failure summary. Only file names and fixed safe error codes render.
+        setAuthJsonExportResult({
+          requested,
+          exported: records.length,
+          failed,
+        });
+        showNotification(
+          t('auth_files.export_copy_partial', {
+            success: records.length,
+            failed: failed.length,
+          }),
+          'warning'
+        );
+        return;
+      }
+
+      showNotification(t('auth_files.export_copy_success', { count: records.length }), 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message.trim() : '';
+      showNotification(message || t('auth_files.export_failed'), 'error');
+    } finally {
+      authJsonExportSubmittingRef.current = false;
+      setAuthJsonExportSubmitting(false);
+    }
+  }, [managerRequestScope, managerStorageAvailable, selectedAuthJsonExportTargets, showNotification, t]);
+
+  const handleAuthJsonExportRetryCopy = useCallback(async () => {
+    const fallbackJson = authJsonExportResult?.fallbackJson;
+    if (!fallbackJson) return;
+
+    const copied = await copyToClipboard(fallbackJson);
+    if (!copied) {
+      showNotification(t('auth_files.export_copy_failed'), 'error');
+      return;
+    }
+
+    const exported = authJsonExportResult?.exported ?? 0;
+    setAuthJsonExportResult(null);
+    showNotification(t('auth_files.export_copy_success', { count: exported }), 'success');
+  }, [authJsonExportResult, showNotification, t]);
+
+  const handleAuthJsonExportDownload = useCallback(() => {
+    const fallbackJson = authJsonExportResult?.fallbackJson;
+    if (!fallbackJson) return;
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadBlob({
+      filename: `cpam-selected-auth-${timestamp}.json`,
+      blob: new Blob([fallbackJson], { type: 'application/json;charset=utf-8' }),
+    });
+    showNotification(t('auth_files.export_download_started'), 'success');
+  }, [authJsonExportResult, showNotification, t]);
+
   const copyTextWithNotification = useCallback(
     async (text: string) => {
       const copied = await copyToClipboard(text);
@@ -9231,6 +9443,25 @@ export function AccountsPage() {
               {t('accounts.selection_mode_enter')}
             </Button>
           ) : null}
+          {!hasSelection && !isSelectionMode ? (
+            <div className={styles.liveRefreshControl}>
+              <ToggleSwitch
+                checked={liveRefreshEnabled}
+                onChange={setAccountsLiveRefresh}
+                ariaLabel={t('accounts.live_refresh')}
+                label={t('accounts.live_refresh')}
+              />
+              {!liveRefreshEnabled ? (
+                <span className={styles.liveRefreshFrozen} title={t('accounts.live_refresh_hint')}>
+                  {frozenListEvidenceAtMs
+                    ? t('accounts.live_refresh_frozen_at', {
+                        time: formatTimestamp(frozenListEvidenceAtMs, i18n.language, true),
+                      })
+                    : t('accounts.live_refresh_frozen')}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           {showSelectionControls ? renderSelectionControls() : null}
           <div className={styles.batchDisplayToggle}>{renderAccountDisplayToggle()}</div>
           {!hasSelection && !isSelectionMode ? (
@@ -9324,6 +9555,17 @@ export function AccountsPage() {
       .join(', ');
     const deletePreviewNames = selectedFileNames.slice(0, 6);
     const moreItems: DropdownMenuItem[] = [
+      {
+        key: 'copy-auth-json',
+        label: t('auth_files.export_selected_json'),
+        icon: <IconCopy size={15} />,
+        onClick: () => void handleSelectedAuthJsonExport(),
+        disabled:
+          disableControls ||
+          !managerStorageAvailable ||
+          authJsonExportSubmitting ||
+          selectedAuthJsonExportTargets.length === 0,
+      },
       {
         key: 'download',
         label: t('auth_files.batch_download'),
@@ -9481,6 +9723,7 @@ export function AccountsPage() {
               triggerLabel={t('accounts.batch_more')}
               triggerIcon={<IconMoreVertical size={16} />}
               triggerClassName={styles.floatingBatchMore}
+              disabled={authJsonExportSubmitting}
             />
           </div>
         </div>
@@ -11810,6 +12053,20 @@ export function AccountsPage() {
           if (!authJsonPasteSaving) setAuthJsonPasteOpen(false);
         }}
         onSave={handleSavePastedAuthJson}
+      />
+      <AuthJsonExportResultModal
+        open={authJsonExportResult !== null}
+        requested={authJsonExportResult?.requested ?? 0}
+        exported={authJsonExportResult?.exported ?? 0}
+        failed={authJsonExportResult?.failed ?? []}
+        fallbackJson={authJsonExportResult?.fallbackJson}
+        onClose={() => setAuthJsonExportResult(null)}
+        onRetryCopy={
+          authJsonExportResult?.fallbackJson ? () => void handleAuthJsonExportRetryCopy() : undefined
+        }
+        onDownload={
+          authJsonExportResult?.fallbackJson ? handleAuthJsonExportDownload : undefined
+        }
       />
       <ProxyFilterModal
         open={proxyFilterOpen}

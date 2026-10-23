@@ -6605,6 +6605,20 @@ button.accountRecoveryStatus {
   min-width: 0;
 }
 
+.liveRefreshControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.liveRefreshFrozen {
+  color: var(--color-warning);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .statusStack {
   gap: 3px;
   max-width: 100%;
@@ -6893,6 +6907,16 @@ button.accountRecoveryStatus {
     :global(.btn),
     :global(.select-trigger) {
       width: 100%;
+    }
+
+    .liveRefreshControl {
+      align-items: flex-start;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+
+    .liveRefreshFrozen {
+      white-space: normal;
     }
   }
 
