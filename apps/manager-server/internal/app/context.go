@@ -224,6 +224,7 @@ func fromExisting(
 		SetupResolver: managerConfigService,
 		AuthFiles:     authFiles,
 		Evidence:      st,
+		ProxySettings: st,
 	})
 	proxyPoolStateRegistry := proxypoolstatesvc.New(st)
 	exitIPChecker := proxyreplacementsvc.NewExitIPChecker(cfg.ProxyExitIPCheckURL)

@@ -61,6 +61,9 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusInternalServerError, err)
 			return
 		}
+		if h.App.ProxyOverloadService != nil {
+			h.App.ProxyOverloadService.Invalidate()
+		}
 		response.JSON(w, http.StatusOK, saved)
 	default:
 		response.MethodNotAllowed(w)

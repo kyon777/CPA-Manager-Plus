@@ -334,6 +334,9 @@ func TestProxyOverloadSummaryReturnsNoStoreAndAggregateOnly(t *testing.T) {
 	if len(result.Proxies) != 1 || result.Proxies[0].OverloadedAccountCount != 1 {
 		t.Fatalf("summary = %#v", result)
 	}
+	if !result.SavedProxyListAvailable || result.SavedProxyCount != 0 || result.ObservedSavedProxyCount != 0 || result.UnobservedProxyCount != 0 || len(result.UnobservedProxies) != 0 {
+		t.Fatalf("saved proxy aggregate fields = %#v", result)
+	}
 }
 
 func TestProxyOverloadSummaryForceRefreshBypassesCompletedCache(t *testing.T) {
@@ -410,6 +413,7 @@ func newProxyOverloadSummaryHandler(t *testing.T) (*Handler, string, *proxyOverl
 		SetupResolver: proxyOverloadHandlerSetupResolver{},
 		AuthFiles:     inventory,
 		Evidence:      proxyOverloadHandlerEvidence{},
+		ProxySettings: st,
 		Now: func() time.Time {
 			return time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
 		},
