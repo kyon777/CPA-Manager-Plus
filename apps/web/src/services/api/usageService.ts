@@ -1411,6 +1411,11 @@ export interface ProxyOverloadSummaryResponse {
   proxy_count: number;
   overloaded_account_count: number;
   proxies: ProxyOverloadSummaryRow[];
+  saved_proxy_list_available?: boolean;
+  saved_proxy_count?: number;
+  observed_saved_proxy_count?: number;
+  unobserved_proxy_count?: number;
+  unobserved_proxies?: string[];
 }
 
 export interface MonitoringAccountLatestRequest {
@@ -5053,6 +5058,11 @@ export const monitoringAnalyticsApi = {
         missing_proxy_account_count: 0,
         proxy_count: 1,
         overloaded_account_count: 0,
+        saved_proxy_list_available: true,
+        saved_proxy_count: 1,
+        observed_saved_proxy_count: 1,
+        unobserved_proxy_count: 0,
+        unobserved_proxies: [],
         proxies: [
           {
             proxy_url: 'http://demo-proxy.example:8080',

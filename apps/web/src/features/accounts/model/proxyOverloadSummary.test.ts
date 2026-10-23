@@ -6,6 +6,8 @@ import {
   selectAllVisibleProxyKeys,
   sortProxyOverloadRows,
   toggleProxyOverloadSelection,
+  unobservedProxyRows,
+  visibleProxyOverloadRows,
 } from './proxyOverloadSummary';
 
 const rows: ProxyOverloadSummaryRow[] = [
@@ -71,5 +73,37 @@ describe('proxyOverloadSummary model', () => {
       'http://same:8080/',
       'http://same:8080////',
     ]);
+  });
+
+  it('sorts observed rows by success rate while retaining default ordering for ties', () => {
+    expect(sortProxyOverloadRows(rows, 'success-desc').map((row) => row.proxy_url)).toEqual([
+      'http://healthy-b:8080',
+      'http://healthy-a:8080',
+      'http://loaded:8080',
+    ]);
+    expect(sortProxyOverloadRows(rows, 'success-asc').map((row) => row.proxy_url)).toEqual([
+      'http://loaded:8080',
+      'http://healthy-b:8080',
+      'http://healthy-a:8080',
+    ]);
+  });
+
+  it('keeps saved proxies without recent requests in a separate selectable view', () => {
+    const unobserved = unobservedProxyRows([
+      ' http://never-used-a:8080/ ',
+      'http://never-used-a:8080',
+      'http://never-used-b:8080///',
+    ]);
+    expect(unobserved).toEqual([
+      { proxy_url: 'http://never-used-a:8080' },
+      { proxy_url: 'http://never-used-b:8080' },
+    ]);
+    expect(visibleProxyOverloadRows(rows, unobserved, 'unobserved')).toEqual(unobserved);
+    expect(visibleProxyOverloadRows(rows, unobserved, 'zero')).toEqual([rows[1], rows[2]]);
+
+    const selected = selectAllVisibleProxyKeys(unobserved);
+    expect(proxyURLsForCopy(unobserved, selected)).toBe(
+      'http://never-used-a:8080\nhttp://never-used-b:8080'
+    );
   });
 });
