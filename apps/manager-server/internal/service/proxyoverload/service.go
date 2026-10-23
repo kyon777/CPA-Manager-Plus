@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -46,10 +47,15 @@ type EvidenceReader interface {
 	) ([]store.ProxyOverloadEvidence, error)
 }
 
+type ProxySettingsReader interface {
+	LoadProxyFilterSettings(context.Context) (store.ProxyFilterSettings, bool, error)
+}
+
 type Options struct {
 	SetupResolver SetupResolver
 	AuthFiles     AuthFileInventoryReader
 	Evidence      EvidenceReader
+	ProxySettings ProxySettingsReader
 	Now           func() time.Time
 	WorkTimeout   time.Duration
 }
@@ -62,6 +68,11 @@ type Summary struct {
 	ProxyCount               int        `json:"proxy_count"`
 	OverloadedAccountCount   int        `json:"overloaded_account_count"`
 	Proxies                  []ProxyRow `json:"proxies"`
+	SavedProxyListAvailable  bool       `json:"saved_proxy_list_available"`
+	SavedProxyCount          int        `json:"saved_proxy_count"`
+	ObservedSavedProxyCount  int        `json:"observed_saved_proxy_count"`
+	UnobservedProxyCount     int        `json:"unobserved_proxy_count"`
+	UnobservedProxies        []string   `json:"unobserved_proxies"`
 }
 
 type ProxyRow struct {
@@ -78,21 +89,24 @@ type cachedSummary struct {
 }
 
 type summaryFlight struct {
-	done   chan struct{}
-	result Summary
-	err    error
+	done       chan struct{}
+	result     Summary
+	err        error
+	generation uint64
 }
 
 type Service struct {
 	setupResolver SetupResolver
 	authFiles     AuthFileInventoryReader
 	evidence      EvidenceReader
+	proxySettings ProxySettingsReader
 	now           func() time.Time
 	workTimeout   time.Duration
 
-	mu       sync.Mutex
-	cache    *cachedSummary
-	inflight *summaryFlight
+	mu         sync.Mutex
+	generation uint64
+	cache      *cachedSummary
+	inflight   *summaryFlight
 }
 
 func New(options Options) *Service {
@@ -108,9 +122,22 @@ func New(options Options) *Service {
 		setupResolver: options.SetupResolver,
 		authFiles:     options.AuthFiles,
 		evidence:      options.Evidence,
+		proxySettings: options.ProxySettings,
 		now:           now,
 		workTimeout:   workTimeout,
 	}
+}
+
+// Invalidate discards the completed cache and prevents an older in-flight
+// calculation from writing stale saved-proxy settings back into it.
+func (s *Service) Invalidate() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.generation++
+	s.cache = nil
+	s.mu.Unlock()
 }
 
 // Summary returns a complete, current-proxy aggregate. A client cancellation
@@ -126,16 +153,17 @@ func (s *Service) Summary(ctx context.Context, force bool) (Summary, error) {
 
 	now := s.now()
 	s.mu.Lock()
+	generation := s.generation
 	if !force && s.cache != nil && now.Sub(s.cache.completedAt) >= 0 && now.Sub(s.cache.completedAt) < summaryCacheTTL {
 		result := cloneSummary(s.cache.result)
 		s.mu.Unlock()
 		return result, nil
 	}
-	if flight := s.inflight; flight != nil {
+	if flight := s.inflight; flight != nil && flight.generation == generation {
 		s.mu.Unlock()
 		return waitForSummary(ctx, flight)
 	}
-	flight := &summaryFlight{done: make(chan struct{})}
+	flight := &summaryFlight{done: make(chan struct{}), generation: generation}
 	s.inflight = flight
 	s.mu.Unlock()
 
@@ -151,7 +179,7 @@ func (s *Service) runSummaryFlight(flight *summaryFlight) {
 	s.mu.Lock()
 	flight.result = cloneSummary(result)
 	flight.err = err
-	if err == nil {
+	if err == nil && flight.generation == s.generation {
 		s.cache = &cachedSummary{
 			result:      cloneSummary(result),
 			completedAt: s.now(),
@@ -185,6 +213,7 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, ErrUnavailable
 	}
+	savedProxyURLs, savedProxyListAvailable := s.readSavedProxyURLs(ctx)
 
 	targets := make([]store.LatestAccountRequestQuery, 0, len(files))
 	filesByTarget := make([]cpaauthfiles.File, 0, len(files))
@@ -198,12 +227,14 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 	}
 	now := s.now()
 	result := Summary{
-		GeneratedAtMS: now.UnixMilli(),
-		WindowStartMS: now.Add(-summaryWindow).UnixMilli(),
-		Proxies:       []ProxyRow{},
+		GeneratedAtMS:           now.UnixMilli(),
+		WindowStartMS:           now.Add(-summaryWindow).UnixMilli(),
+		Proxies:                 []ProxyRow{},
+		SavedProxyListAvailable: savedProxyListAvailable,
+		UnobservedProxies:       []string{},
 	}
 	if len(targets) == 0 {
-		return result, nil
+		return decorateSavedProxyDifference(result, savedProxyURLs), nil
 	}
 
 	evidence, err := s.evidence.RecentProxyOverloadEvidence(
@@ -285,7 +316,50 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 		return leftKey < rightKey
 	})
 	result.ProxyCount = len(result.Proxies)
-	return result, nil
+	return decorateSavedProxyDifference(result, savedProxyURLs), nil
+}
+
+func (s *Service) readSavedProxyURLs(ctx context.Context) ([]string, bool) {
+	if s.proxySettings == nil {
+		return nil, false
+	}
+	settings, present, err := s.proxySettings.LoadProxyFilterSettings(ctx)
+	if err != nil {
+		return nil, false
+	}
+	if !present {
+		return []string{}, true
+	}
+	return model.NormalizeProxyFilterURLs(settings.URLs), true
+}
+
+func decorateSavedProxyDifference(result Summary, savedProxyURLs []string) Summary {
+	if !result.SavedProxyListAvailable {
+		return result
+	}
+	savedProxyURLs = model.NormalizeProxyFilterURLs(savedProxyURLs)
+	result.SavedProxyCount = len(savedProxyURLs)
+	observed := make(map[string]struct{}, len(result.Proxies))
+	for _, row := range result.Proxies {
+		key, _ := normalizeProxyURL(row.ProxyURL)
+		if key != "" {
+			observed[key] = struct{}{}
+		}
+	}
+	result.UnobservedProxies = make([]string, 0, len(savedProxyURLs))
+	for _, savedURL := range savedProxyURLs {
+		key, _ := normalizeProxyURL(savedURL)
+		if key == "" {
+			continue
+		}
+		if _, exists := observed[key]; exists {
+			result.ObservedSavedProxyCount++
+			continue
+		}
+		result.UnobservedProxies = append(result.UnobservedProxies, savedURL)
+	}
+	result.UnobservedProxyCount = len(result.UnobservedProxies)
+	return result
 }
 
 type proxyAggregate struct {
@@ -328,8 +402,12 @@ func normalizeProxyURL(value string) (key, displayURL string) {
 
 func cloneSummary(value Summary) Summary {
 	value.Proxies = append([]ProxyRow(nil), value.Proxies...)
+	value.UnobservedProxies = append([]string(nil), value.UnobservedProxies...)
 	if value.Proxies == nil {
 		value.Proxies = []ProxyRow{}
+	}
+	if value.UnobservedProxies == nil {
+		value.UnobservedProxies = []string{}
 	}
 	return value
 }
