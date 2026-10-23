@@ -27,6 +27,8 @@ import type {
 import type {
   AccountActionCandidatesResponse,
   AccountBannedAuthFileDeleteResponse,
+  AuthJsonExportResponse,
+  AuthJsonExportTargetRequest,
   AccountQuotaSnapshotWriteEntry,
   CodexInspectionResult,
   CodexInspectionRun,
@@ -583,6 +585,18 @@ const { mocks } = vi.hoisted(() => {
         skipped: [],
         failed: [],
       })),
+      exportSelectedAuthFiles: vi.fn<
+        (
+          _base: string,
+          _managementKey: string | undefined,
+          _targets: AuthJsonExportTargetRequest[]
+        ) => Promise<AuthJsonExportResponse>
+      >(async () => ({
+        requested: 1,
+        exported: 1,
+        records: [{ type: 'codex', email: 'codex@example.com' }],
+        failed: [],
+      })),
       panelFeatureAvailability: {
         checking: false,
         managerServiceBase: 'http://manager.local:18317',
@@ -607,6 +621,16 @@ const { mocks } = vi.hoisted(() => {
         requestScope?: { apiBase: string; managementKey: string };
         onClose: () => void;
         onSuccess?: () => void | Promise<void>;
+      },
+      lastAuthJsonExportProps: null as null | {
+        open: boolean;
+        requested: number;
+        exported: number;
+        failed: Array<{ clientKey: string; fileName: string; code: string }>;
+        fallbackJson?: string;
+        onClose: () => void;
+        onRetryCopy?: () => void;
+        onDownload?: () => void;
       },
       localInspection: null as null | Record<string, unknown>,
       lastHealthWorkspaceProps: null as null | {
@@ -894,6 +918,22 @@ vi.mock('@/features/authFiles/components/AuthJsonPasteModal', () => ({
   AuthJsonPasteModal: () => null,
 }));
 
+vi.mock('@/features/accounts/components/AuthJsonExportResultModal', () => ({
+  AuthJsonExportResultModal: (props: {
+    open: boolean;
+    requested: number;
+    exported: number;
+    failed: Array<{ clientKey: string; fileName: string; code: string }>;
+    fallbackJson?: string;
+    onClose: () => void;
+    onRetryCopy?: () => void;
+    onDownload?: () => void;
+  }) => {
+    mocks.lastAuthJsonExportProps = props;
+    return props.open ? <div data-auth-json-export-open="true" /> : null;
+  },
+}));
+
 vi.mock('@/features/authFiles/components/OAuthExcludedCard', () => ({
   OAuthExcludedCard: (props: { onAdd: () => void; onEdit: (provider: string) => void }) => (
     <div>
@@ -1002,6 +1042,7 @@ vi.mock('@/services/api', () => ({
     listAccountActionCandidates: mocks.listAccountActionCandidates,
     requestTokenRecoveryManualBatch: mocks.requestTokenRecoveryManualBatch,
     deleteAccountBannedAuthFilesBatch: mocks.deleteAccountBannedAuthFilesBatch,
+    exportSelectedAuthFiles: mocks.exportSelectedAuthFiles,
   },
   authFilesApi: {
     resetQuota: mocks.resetQuota,
@@ -1517,6 +1558,13 @@ describe('AccountsPage replacement flows', () => {
       skipped: [],
       failed: [],
     });
+    mocks.exportSelectedAuthFiles.mockReset();
+    mocks.exportSelectedAuthFiles.mockResolvedValue({
+      requested: 1,
+      exported: 1,
+      records: [{ type: 'codex', email: 'codex@example.com' }],
+      failed: [],
+    });
     vi.mocked(accountQuotaSnapshotApi.write).mockReset();
     vi.mocked(accountQuotaSnapshotApi.write).mockImplementation(
       async (_base, _managementKey, entries) => ({
@@ -1576,6 +1624,7 @@ describe('AccountsPage replacement flows', () => {
     mocks.lastExcludedEditorProps = null;
     mocks.lastAliasEditorProps = null;
     mocks.lastCodexReauthProps = null;
+    mocks.lastAuthJsonExportProps = null;
     mocks.lastHealthWorkspaceProps = null;
     mocks.localInspection = null;
   });
@@ -5536,6 +5585,183 @@ describe('AccountsPage replacement flows', () => {
       expect(mocks.deselectAll).toHaveBeenCalledTimes(1);
     }
   );
+
+  it('exports selected auth JSON through an identity-only Manager Server request without account refreshes', async () => {
+    mocks.selectedFiles = new Set(['codex.json\u0000auth-1']);
+    mocks.selectionCount = 1;
+    mocks.exportSelectedAuthFiles.mockResolvedValue({
+      requested: 1,
+      exported: 1,
+      records: [
+        {
+          type: 'codex',
+          email: 'codex@example.com',
+          refresh_token: 'raw-auth-json-returned-by-server-only',
+        },
+      ],
+      failed: [],
+    });
+    const renderer = await renderAccountsPage();
+    mocks.loadFiles.mockClear();
+    mocks.getAccountHistory.mockClear();
+    mocks.getAccountWindowUsage.mockClear();
+    mocks.getAccountRecentIndex.mockClear();
+    vi.mocked(copyToClipboard).mockClear();
+
+    await act(async () => {
+      await findBatchMoreItem(renderer, 'copy-auth-json').onClick();
+    });
+
+    expect(mocks.exportSelectedAuthFiles).toHaveBeenCalledExactlyOnceWith(
+      'http://manager.local:18317',
+      'manager-key',
+      [
+        {
+          clientKey: 'codex.json\u0000auth-1',
+          fileName: 'codex.json',
+          provider: 'codex',
+          authIndex: 'auth-1',
+          accountEmail: 'codex@example.com',
+          accountSnapshot: 'codex@example.com',
+        },
+      ]
+    );
+    expect(JSON.stringify(mocks.exportSelectedAuthFiles.mock.calls[0]?.[2])).not.toContain(
+      'refresh_token'
+    );
+    expect(copyToClipboard).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify(
+        [
+          {
+            type: 'codex',
+            email: 'codex@example.com',
+            refresh_token: 'raw-auth-json-returned-by-server-only',
+          },
+        ],
+        null,
+        2
+      )
+    );
+    expect(mocks.loadFiles).not.toHaveBeenCalled();
+    expect(mocks.getAccountHistory).not.toHaveBeenCalled();
+    expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
+    expect(mocks.getAccountRecentIndex).not.toHaveBeenCalled();
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.export_copy_success:1',
+      'success'
+    );
+  });
+
+  it('prevents a duplicate export request while a selected auth JSON export is in flight', async () => {
+    mocks.selectedFiles = new Set(['codex.json\u0000auth-1']);
+    mocks.selectionCount = 1;
+    const pending = createDeferred<AuthJsonExportResponse>();
+    mocks.exportSelectedAuthFiles.mockReturnValueOnce(pending.promise);
+    const renderer = await renderAccountsPage();
+    const exportItem = findBatchMoreItem(renderer, 'copy-auth-json');
+
+    await act(async () => {
+      exportItem.onClick();
+      await Promise.resolve();
+    });
+
+    expect(mocks.exportSelectedAuthFiles).toHaveBeenCalledTimes(1);
+    expect(
+      renderer.root
+        .findAllByType(DropdownMenu)
+        .find((node) => node.props.ariaLabel === 'accounts.batch_more')?.props.disabled
+    ).toBe(true);
+
+    await act(async () => {
+      exportItem.onClick();
+      await Promise.resolve();
+    });
+    expect(mocks.exportSelectedAuthFiles).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pending.resolve({
+        requested: 1,
+        exported: 1,
+        records: [{ type: 'codex', email: 'codex@example.com' }],
+        failed: [],
+      });
+      await Promise.resolve();
+    });
+  });
+
+  it('retains exported auth JSON only in the fallback modal after clipboard failure and clears it on close', async () => {
+    mocks.selectedFiles = new Set(['codex.json\u0000auth-1']);
+    mocks.selectionCount = 1;
+    mocks.exportSelectedAuthFiles.mockResolvedValue({
+      requested: 2,
+      exported: 1,
+      records: [{ type: 'codex', email: 'codex@example.com', refresh_token: 'fallback-only' }],
+      failed: [
+        {
+          clientKey: 'other.json\u0000auth-2',
+          fileName: 'other.json',
+          code: 'credential_not_found',
+        },
+      ],
+    });
+    vi.mocked(copyToClipboard).mockResolvedValue(false);
+    const renderer = await renderAccountsPage();
+    mocks.loadFiles.mockClear();
+
+    await act(async () => {
+      await findBatchMoreItem(renderer, 'copy-auth-json').onClick();
+    });
+
+    expect(mocks.lastAuthJsonExportProps).toMatchObject({
+      open: true,
+      requested: 2,
+      exported: 1,
+      fallbackJson: expect.stringContaining('fallback-only'),
+      failed: [
+        expect.objectContaining({ fileName: 'other.json', code: 'credential_not_found' }),
+      ],
+    });
+    expect(mocks.loadFiles).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.lastAuthJsonExportProps?.onClose();
+    });
+
+    expect(mocks.lastAuthJsonExportProps).toMatchObject({ open: false });
+    expect(mocks.lastAuthJsonExportProps?.fallbackJson).toBeUndefined();
+  });
+
+  it('retries a clipboard fallback without re-exporting or refreshing the account list', async () => {
+    mocks.selectedFiles = new Set(['codex.json\u0000auth-1']);
+    mocks.selectionCount = 1;
+    mocks.exportSelectedAuthFiles.mockResolvedValue({
+      requested: 1,
+      exported: 1,
+      records: [{ type: 'codex', email: 'codex@example.com', refresh_token: 'retry-only' }],
+      failed: [],
+    });
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const renderer = await renderAccountsPage();
+    mocks.loadFiles.mockClear();
+
+    await act(async () => {
+      await findBatchMoreItem(renderer, 'copy-auth-json').onClick();
+    });
+    const fallbackJson = mocks.lastAuthJsonExportProps?.fallbackJson;
+    expect(fallbackJson).toContain('retry-only');
+    mocks.exportSelectedAuthFiles.mockClear();
+    vi.mocked(copyToClipboard).mockClear();
+
+    await act(async () => {
+      await mocks.lastAuthJsonExportProps?.onRetryCopy?.();
+    });
+
+    expect(copyToClipboard).toHaveBeenCalledExactlyOnceWith(fallbackJson);
+    expect(mocks.exportSelectedAuthFiles).not.toHaveBeenCalled();
+    expect(mocks.loadFiles).not.toHaveBeenCalled();
+    expect(mocks.lastAuthJsonExportProps).toMatchObject({ open: false });
+    expect(mocks.lastAuthJsonExportProps?.fallbackJson).toBeUndefined();
+  });
 
   it('patches Codex websockets through auth-index aware batch fields', async () => {
     mocks.selectedFiles = new Set(['codex.json\u0000auth-1']);

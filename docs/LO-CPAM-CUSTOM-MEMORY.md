@@ -557,3 +557,48 @@ server-error priority-demotion execution.
 - Future upstream merges must retain this control and its tests. Do not turn
   it into a backend scheduler switch or couple it to billing, quota, account
   health, automatic recovery, or any CPAM/CPA mutation path.
+
+## 2026-10-23: Copy selected authorization-file JSON
+
+This customization is CPAM-only. It must never modify, restart, rebuild, or
+reconfigure CPA Core / `cli-proxy-api`; it must not modify credential files,
+proxies, request routing, scheduling, inspection, Token Acquisition,
+automatic recovery, priority policies, `usage_events`, Credits, billing, or
+quota accounting.
+
+- The Accounts floating selection toolbar's **More** menu contains **Copy
+  authorization file data**, immediately before the existing batch-download
+  action. Batch download and every other action remain intact.
+- The browser submits only the minimum identity tuple to the authenticated
+  Manager endpoint `POST /v0/management/auth-files/export-selected`:
+  `clientKey`, `fileName`, `authIndex`, `accountEmail`, `provider`, `runtimeId`,
+  `accountId`, and `accountSnapshot`. It must never send raw authorization
+  JSON, tokens, headers, secrets, or `proxy_url`.
+- The endpoint is handled by CPAM before the generic CPA management proxy,
+  requires normal panel authorization, and sends `Cache-Control: no-store` on
+  every response. It accepts a strict whitelist-only JSON request; unknown or
+  duplicate request fields are rejected.
+- Manager resolves the saved CPA setup itself, snapshots CPA auth-file
+  inventory once, identity-verifies every logical selection, de-duplicates
+  physical source-file reads, and limits those reads to **8** concurrent jobs.
+  It permits at most **300** logical selections and refuses final record arrays
+  larger than **48 MiB**. It makes no mutation, cache invalidation, database
+  write, scheduler call, or raw-credential log entry.
+- A selected member of a shared JSON array must export exactly that one
+  verified object, never its siblings. Ambiguous, missing, malformed,
+  runtime-only, or identity-mismatched sources produce only a safe
+  `fileName + fixed error code` outcome.
+- The normal UI serializes only returned `records` as one top-level JSON
+  array and copies it directly to the clipboard. It does not trigger
+  `loadFiles`, quota refresh, history, recent-request, window-usage,
+  inspection, recovery, or priority requests. An in-flight guard prevents
+  duplicate export clicks.
+- On partial success the clipboard still receives successful records while the
+  result dialog retains only safe failure names/codes. Raw JSON is retained in
+  browser memory only when clipboard writing fails; the fallback dialog offers
+  retry-copy/download and clears the JSON state when it closes or retry-copy
+  succeeds. Do not add localStorage, URL state, analytics, logs, or SQLite
+  persistence for this data.
+- Preserve the endpoint, `cpaauthfiles` single-record extractor,
+  `authfilesexport` service, identity-only web target builder, result modal,
+  locale keys, and their tests during every future upstream merge/update.

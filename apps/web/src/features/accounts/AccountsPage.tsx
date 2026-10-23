@@ -98,6 +98,7 @@ import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderS
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
 import { AuthJsonPasteModal } from '@/features/authFiles/components/AuthJsonPasteModal';
+import { AuthJsonExportResultModal } from '@/features/accounts/components/AuthJsonExportResultModal';
 import { ProxyFilterModal } from '@/features/accounts/components/ProxyFilterModal';
 import { ProxyReplacementModal } from '@/features/accounts/components/ProxyReplacementModal';
 import { OAuthExcludedCard } from '@/features/authFiles/components/OAuthExcludedCard';
@@ -148,6 +149,7 @@ import {
 } from '@/features/accounts/model/accountRows';
 import { isEnabledProxyFilterCredential } from '@/features/accounts/model/proxyFilter';
 import { buildProxyReplacementTargets } from '@/features/accounts/model/proxyReplacementTargets';
+import { buildAuthJsonExportTargets } from '@/features/accounts/model/authJsonExportTargets';
 import { applyServerErrorPriorityUpdates } from '@/features/accounts/model/serverErrorPriorityUpdates';
 import {
   buildInspectionCodexQuotaState,
@@ -341,6 +343,7 @@ import {
   type AccountActionCandidate,
   type AccountQuotaSnapshotObservationInput,
   type AccountQuotaSnapshotWriteEntry,
+  type AuthJsonExportFailedItem,
   type AccountQuotaSnapshotWindow,
   type MonitoringAnalyticsAccountStatRow,
   type MonitoringAnalyticsEventRow,
@@ -393,6 +396,7 @@ import {
 import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { copyToClipboard } from '@/utils/clipboard';
+import { downloadBlob } from '@/utils/download';
 import {
   buildUsageHeaderSnapshotLookup,
   getHeaderSnapshotErrorCode,
@@ -464,6 +468,7 @@ const VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS = 10_000;
 const GLOBAL_ACCOUNT_RECENT_INDEX_REFRESH_MS = 30_000;
 const PAGE_ACCOUNT_HISTORY_REFRESH_MS = 60_000;
 const PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS = 60_000;
+const MAX_AUTH_JSON_EXPORT_TARGETS = 300;
 const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u0000';
 const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
 const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
@@ -548,6 +553,15 @@ type AccountQuotaRefreshOutcome =
   | { status: 'ignored' };
 
 type AccountHistoryLoadOutcome = { status: 'success' } | { status: 'error'; error: string };
+
+type AuthJsonExportDialogState = {
+  requested: number;
+  exported: number;
+  failed: AuthJsonExportFailedItem[];
+  // Raw authorization JSON is kept only when the clipboard API rejects the
+  // write, and is discarded immediately when the fallback dialog closes.
+  fallbackJson?: string;
+};
 
 type CodexResetCreditRequestEntry = {
   promise: Promise<CodexResetCreditsData | null>;
@@ -1706,6 +1720,10 @@ export function AccountsPage() {
   );
   const oauthEditorConnectionFingerprintRef = useRef(connectionFingerprint);
   const [authJsonPasteOpen, setAuthJsonPasteOpen] = useState(false);
+  const [authJsonExportSubmitting, setAuthJsonExportSubmitting] = useState(false);
+  const [authJsonExportResult, setAuthJsonExportResult] =
+    useState<AuthJsonExportDialogState | null>(null);
+  const authJsonExportSubmittingRef = useRef(false);
   const [proxyFilterOpen, setProxyFilterOpen] = useState(false);
   const [proxyFilterSessionID, setProxyFilterSessionID] = useState(0);
   const [proxyFilterURLs, setProxyFilterURLs] = useState<string[]>([]);
@@ -4976,6 +4994,10 @@ export function AccountsPage() {
   );
   const selectedFileNames = useMemo(
     () => Array.from(new Set(selectedTargetFiles.map((file) => file.name))),
+    [selectedTargetFiles]
+  );
+  const selectedAuthJsonExportTargets = useMemo(
+    () => buildAuthJsonExportTargets(selectedTargetFiles),
     [selectedTargetFiles]
   );
   const selectedProxyReplacementTargets = useMemo(
@@ -8650,6 +8672,122 @@ export function AccountsPage() {
     [batchPatchFields, showNotification, t]
   );
 
+  const handleSelectedAuthJsonExport = useCallback(async () => {
+    if (authJsonExportSubmittingRef.current) return;
+    if (!managerRequestScope || !managerStorageAvailable) {
+      showNotification(t('auth_files.export_unavailable'), 'error');
+      return;
+    }
+
+    const targets = selectedAuthJsonExportTargets;
+    if (targets.length === 0) {
+      showNotification(t('auth_files.export_no_supported_targets'), 'warning');
+      return;
+    }
+    if (targets.length > MAX_AUTH_JSON_EXPORT_TARGETS) {
+      showNotification(
+        t('auth_files.export_target_limit', { count: MAX_AUTH_JSON_EXPORT_TARGETS }),
+        'warning'
+      );
+      return;
+    }
+
+    authJsonExportSubmittingRef.current = true;
+    setAuthJsonExportSubmitting(true);
+    showNotification(t('auth_files.export_preparing', { count: targets.length }), 'info');
+    try {
+      const response = await usageServiceApi.exportSelectedAuthFiles(
+        managerRequestScope.apiBase,
+        managerRequestScope.managementKey,
+        targets
+      );
+      const records = Array.isArray(response.records) ? response.records : [];
+      const failed = Array.isArray(response.failed) ? response.failed : [];
+      const requested = Number.isFinite(response.requested)
+        ? Math.max(0, Math.trunc(response.requested))
+        : targets.length;
+      // The serialized object is intentionally a local ephemeral value on the
+      // normal clipboard path. It enters React state only after clipboard
+      // failure, where the fallback dialog owns it until it closes.
+      const exportedJson = records.length > 0 ? JSON.stringify(records, null, 2) : '';
+
+      if (!exportedJson) {
+        setAuthJsonExportResult({
+          requested,
+          exported: 0,
+          failed,
+        });
+        showNotification(t('auth_files.export_no_records'), 'warning');
+        return;
+      }
+
+      const copied = await copyToClipboard(exportedJson);
+      if (!copied) {
+        setAuthJsonExportResult({
+          requested,
+          exported: records.length,
+          failed,
+          fallbackJson: exportedJson,
+        });
+        showNotification(t('auth_files.export_copy_failed'), 'error');
+        return;
+      }
+
+      if (failed.length > 0) {
+        // The successfully copied JSON must not be retained by the partial
+        // failure summary. Only file names and fixed safe error codes render.
+        setAuthJsonExportResult({
+          requested,
+          exported: records.length,
+          failed,
+        });
+        showNotification(
+          t('auth_files.export_copy_partial', {
+            success: records.length,
+            failed: failed.length,
+          }),
+          'warning'
+        );
+        return;
+      }
+
+      showNotification(t('auth_files.export_copy_success', { count: records.length }), 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message.trim() : '';
+      showNotification(message || t('auth_files.export_failed'), 'error');
+    } finally {
+      authJsonExportSubmittingRef.current = false;
+      setAuthJsonExportSubmitting(false);
+    }
+  }, [managerRequestScope, managerStorageAvailable, selectedAuthJsonExportTargets, showNotification, t]);
+
+  const handleAuthJsonExportRetryCopy = useCallback(async () => {
+    const fallbackJson = authJsonExportResult?.fallbackJson;
+    if (!fallbackJson) return;
+
+    const copied = await copyToClipboard(fallbackJson);
+    if (!copied) {
+      showNotification(t('auth_files.export_copy_failed'), 'error');
+      return;
+    }
+
+    const exported = authJsonExportResult?.exported ?? 0;
+    setAuthJsonExportResult(null);
+    showNotification(t('auth_files.export_copy_success', { count: exported }), 'success');
+  }, [authJsonExportResult, showNotification, t]);
+
+  const handleAuthJsonExportDownload = useCallback(() => {
+    const fallbackJson = authJsonExportResult?.fallbackJson;
+    if (!fallbackJson) return;
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadBlob({
+      filename: `cpam-selected-auth-${timestamp}.json`,
+      blob: new Blob([fallbackJson], { type: 'application/json;charset=utf-8' }),
+    });
+    showNotification(t('auth_files.export_download_started'), 'success');
+  }, [authJsonExportResult, showNotification, t]);
+
   const copyTextWithNotification = useCallback(
     async (text: string) => {
       const copied = await copyToClipboard(text);
@@ -9418,6 +9556,17 @@ export function AccountsPage() {
     const deletePreviewNames = selectedFileNames.slice(0, 6);
     const moreItems: DropdownMenuItem[] = [
       {
+        key: 'copy-auth-json',
+        label: t('auth_files.export_selected_json'),
+        icon: <IconCopy size={15} />,
+        onClick: () => void handleSelectedAuthJsonExport(),
+        disabled:
+          disableControls ||
+          !managerStorageAvailable ||
+          authJsonExportSubmitting ||
+          selectedAuthJsonExportTargets.length === 0,
+      },
+      {
         key: 'download',
         label: t('auth_files.batch_download'),
         icon: <IconDownload size={15} />,
@@ -9574,6 +9723,7 @@ export function AccountsPage() {
               triggerLabel={t('accounts.batch_more')}
               triggerIcon={<IconMoreVertical size={16} />}
               triggerClassName={styles.floatingBatchMore}
+              disabled={authJsonExportSubmitting}
             />
           </div>
         </div>
@@ -11903,6 +12053,20 @@ export function AccountsPage() {
           if (!authJsonPasteSaving) setAuthJsonPasteOpen(false);
         }}
         onSave={handleSavePastedAuthJson}
+      />
+      <AuthJsonExportResultModal
+        open={authJsonExportResult !== null}
+        requested={authJsonExportResult?.requested ?? 0}
+        exported={authJsonExportResult?.exported ?? 0}
+        failed={authJsonExportResult?.failed ?? []}
+        fallbackJson={authJsonExportResult?.fallbackJson}
+        onClose={() => setAuthJsonExportResult(null)}
+        onRetryCopy={
+          authJsonExportResult?.fallbackJson ? () => void handleAuthJsonExportRetryCopy() : undefined
+        }
+        onDownload={
+          authJsonExportResult?.fallbackJson ? handleAuthJsonExportDownload : undefined
+        }
       />
       <ProxyFilterModal
         open={proxyFilterOpen}
