@@ -1,7 +1,7 @@
 # 批量复制授权文件 JSON：设计
 
 - 日期：2026-10-23
-- 状态：已确认设计，待规格审阅
+- 状态：已确认设计与规格；实施计划见 `docs/superpowers/plans/2026-10-23-batch-copy-auth-json-export.md`
 - 范围：仅 CPA Manager Plus（CPAM）
 - 不触碰：CPA Core、`cli-proxy-api`、账号调度、计费、额度采集、窗口用量、历史请求、优先级、巡检与自动更新。
 
