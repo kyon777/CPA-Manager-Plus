@@ -74,6 +74,7 @@ import {
 import { getScopedQuotaState } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
+import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -237,6 +238,7 @@ import {
   formatQuotaResetDisplay,
   formatQuotaResetRelative,
   formatQuotaResetTooltipParams,
+  formatTimestamp,
   getAccountQuotaLifecycleBarOverride,
   getAccountSortFieldOption,
   getProviderLabel,
@@ -1484,6 +1486,21 @@ export function AccountsPage() {
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
   );
+  const [liveRefreshEnabled, setLiveRefreshEnabled] = useLocalStorage<boolean>(
+    'accountsPage.liveRefreshEnabled',
+    true
+  );
+  const liveRefreshEnabledRef = useRef(liveRefreshEnabled);
+  liveRefreshEnabledRef.current = liveRefreshEnabled;
+  const latestListEvidenceAtMsRef = useRef<number | null>(null);
+  const [frozenListEvidenceAtMs, setFrozenListEvidenceAtMs] = useState<number | null>(null);
+  const accountsLivePollingEnabled =
+    activeView === 'accounts' && documentVisible && liveRefreshEnabled;
+  const recordListEvidenceRead = useCallback(() => {
+    const observedAtMs = Date.now();
+    latestListEvidenceAtMsRef.current = observedAtMs;
+    if (!liveRefreshEnabledRef.current) setFrozenListEvidenceAtMs(observedAtMs);
+  }, []);
   const prioritySyncFilesRef = useRef<AuthFileItem[]>(files);
   prioritySyncFilesRef.current = files;
   const handleServerErrorPriorityUpdates = useCallback(
@@ -2481,6 +2498,8 @@ export function AccountsPage() {
     setDetailEventsRefreshing(false);
     setDetailEventsAppending(false);
     setDetailEventsError('');
+    latestListEvidenceAtMsRef.current = null;
+    setFrozenListEvidenceAtMs(null);
     setSuppressedInspectionResultKeys(readCompletedAccountReauthResultKeys(connectionFingerprint));
   }, [
     connectionFingerprint,
@@ -2537,6 +2556,7 @@ export function AccountsPage() {
     ]);
     setAccountHistoryAutoRefreshRevision((current) => current + 1);
     setRecentIndexRefreshRevision((current) => current + 1);
+    setVisibleRecentIndexRefreshRevision((current) => current + 1);
     setListWindowUsageRefreshRevision((current) => current + 1);
   }, [
     credentialEvidenceScopeKey,
@@ -2566,6 +2586,7 @@ export function AccountsPage() {
     active: activeView === 'accounts',
     documentVisible,
     hasLoaded,
+    pollingEnabled: liveRefreshEnabled,
     managerRequestScope,
     onUpdates: handleServerErrorPriorityUpdates,
   });
@@ -2574,12 +2595,56 @@ export function AccountsPage() {
       canLoadHeaderSnapshots ? loadHeaderSnapshots() : Promise.resolve(),
       canLoadInspectionSummary ? loadInspectionSummaryAndSynchronize() : Promise.resolve(),
     ]);
+    if (canLoadHeaderSnapshots || canLoadInspectionSummary) recordListEvidenceRead();
   }, [
     canLoadHeaderSnapshots,
     canLoadInspectionSummary,
     loadHeaderSnapshots,
     loadInspectionSummaryAndSynchronize,
+    recordListEvidenceRead,
   ]);
+
+  const setAccountsLiveRefresh = useCallback(
+    (enabled: boolean) => {
+      setLiveRefreshEnabled(enabled);
+      if (!enabled) {
+        // Stop the passive streams immediately instead of allowing a response
+        // that began just before the switch changed to redraw the frozen list.
+        // Manual detail/history actions use separate controllers and remain
+        // available while the list is frozen.
+        accountRecentIndexPendingRefreshRef.current = false;
+        accountRecentIndexAbortRef.current?.abort();
+        accountRecentIndexAbortRef.current = null;
+        visibleAccountRecentIndexPendingRefreshRef.current = false;
+        visibleAccountRecentIndexAbortRef.current?.abort();
+        visibleAccountRecentIndexAbortRef.current = null;
+        accountHistoryAutoPendingRefreshRef.current = false;
+        accountHistoryAutoAbortRef.current?.abort();
+        accountHistoryAutoAbortRef.current = null;
+        listWindowUsagePendingRefreshRef.current = false;
+        listWindowUsageAbortRef.current?.abort();
+        listWindowUsageAbortRef.current = null;
+        headerSnapshotRequestGenerationRef.current += 1;
+        invalidateInspectionSummaryRequest();
+        setFrozenListEvidenceAtMs(latestListEvidenceAtMsRef.current);
+        return;
+      }
+      setFrozenListEvidenceAtMs(null);
+      setVisibleRecentIndexRefreshRevision((current) => current + 1);
+      setAccountHistoryAutoRefreshRevision((current) => current + 1);
+      setListWindowUsageRefreshRevision((current) => current + 1);
+      if (accountSort.key === 'recent') {
+        setGlobalRecentIndexRefreshRevision((current) => current + 1);
+      }
+      void refreshPassiveAccountsEvidence();
+    },
+    [
+      accountSort.key,
+      invalidateInspectionSummaryRequest,
+      refreshPassiveAccountsEvidence,
+      setLiveRefreshEnabled,
+    ]
+  );
 
   useHeaderRefresh(refreshActiveWorkspace);
 
@@ -2620,9 +2685,9 @@ export function AccountsPage() {
   useEffect(() => {
     const regainedVisibility = documentVisible && !previousDocumentVisibleRef.current;
     previousDocumentVisibleRef.current = documentVisible;
-    if (!regainedVisibility || activeView !== 'accounts') return;
+    if (!regainedVisibility || activeView !== 'accounts' || !liveRefreshEnabled) return;
     void refreshPassiveAccountsEvidence();
-  }, [activeView, documentVisible, refreshPassiveAccountsEvidence]);
+  }, [activeView, documentVisible, liveRefreshEnabled, refreshPassiveAccountsEvidence]);
 
   useInterval(
     () => {
@@ -2630,6 +2695,7 @@ export function AccountsPage() {
     },
     activeView === 'accounts' &&
       documentVisible &&
+      liveRefreshEnabled &&
       (canLoadHeaderSnapshots || canLoadInspectionSummary)
       ? PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS
       : null
@@ -6653,6 +6719,7 @@ export function AccountsPage() {
           if (item.row_key) next.set(item.row_key, item);
         });
       });
+      recordListEvidenceRead();
       // The global index can reorder thousands of rows. Keep it interruptible
       // so typing, scrolling and toolbar clicks win over a 30s sort refresh.
       startTransition(() => {
@@ -6683,6 +6750,7 @@ export function AccountsPage() {
     featureAvailability.requestMonitoringAvailable,
     managementKey,
     accountRecentIndexAutoContextKey,
+    recordListEvidenceRead,
   ]);
 
   useEffect(() => {
@@ -6756,6 +6824,7 @@ export function AccountsPage() {
           if (item.row_key) next.set(item.row_key, item);
         });
       });
+      recordListEvidenceRead();
       setVisibleAccountRecentIndexByRowKey((current) =>
         hasEquivalentRecentIndexMap(current, next) ? current : next
       );
@@ -6781,6 +6850,7 @@ export function AccountsPage() {
     featureAvailability.managerServiceBase,
     featureAvailability.requestMonitoringAvailable,
     managementKey,
+    recordListEvidenceRead,
     visibleAccountRecentIndexAutoContextKey,
     visibleAccountRecentIndexTargets,
   ]);
@@ -7098,6 +7168,7 @@ export function AccountsPage() {
           });
           return next;
         });
+        recordListEvidenceRead();
         entries.forEach((entry) => {
           const requestVersion = requestVersions.get(entry.rowKey);
           if (accountHistoryRequestVersionsRef.current.get(entry.rowKey) !== requestVersion) {
@@ -7167,6 +7238,7 @@ export function AccountsPage() {
       featureAvailability.requestMonitoringAvailable,
       managementKey,
       managerConnectionFingerprint,
+      recordListEvidenceRead,
       t,
     ]
   );
@@ -7828,6 +7900,7 @@ export function AccountsPage() {
       setListWindowUsageByKey(
         buildAccountWindowUsageByKey(queryTargets, response.items ?? [])
       );
+      recordListEvidenceRead();
     } catch {
       if (isCurrentRequest()) {
         const previousContext = listWindowUsageQueryContextRef.current;
@@ -7864,6 +7937,7 @@ export function AccountsPage() {
     managerStorageAvailable,
     pageRows,
     listWindowUsageAutoContextKey,
+    recordListEvidenceRead,
   ]);
 
   useEffect(() => {
@@ -7887,7 +7961,7 @@ export function AccountsPage() {
     () => {
       setVisibleRecentIndexRefreshRevision((current) => current + 1);
     },
-    activeView === 'accounts' && documentVisible && pageRows.length > 0
+    accountsLivePollingEnabled && pageRows.length > 0
       ? VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS
       : null
   );
@@ -7897,7 +7971,7 @@ export function AccountsPage() {
       setAccountHistoryAutoRefreshRevision((current) => current + 1);
       setListWindowUsageRefreshRevision((current) => current + 1);
     },
-    activeView === 'accounts' && documentVisible && pageRows.length > 0
+    accountsLivePollingEnabled && pageRows.length > 0
       ? PAGE_ACCOUNT_HISTORY_REFRESH_MS
       : null
   );
@@ -7906,7 +7980,7 @@ export function AccountsPage() {
     () => {
       setGlobalRecentIndexRefreshRevision((current) => current + 1);
     },
-    activeView === 'accounts' && documentVisible && accountSort.key === 'recent' && rows.length > 0
+    accountsLivePollingEnabled && accountSort.key === 'recent' && rows.length > 0
       ? GLOBAL_ACCOUNT_RECENT_INDEX_REFRESH_MS
       : null
   );
@@ -9230,6 +9304,25 @@ export function AccountsPage() {
               <IconCheck size={15} />
               {t('accounts.selection_mode_enter')}
             </Button>
+          ) : null}
+          {!hasSelection && !isSelectionMode ? (
+            <div className={styles.liveRefreshControl}>
+              <ToggleSwitch
+                checked={liveRefreshEnabled}
+                onChange={setAccountsLiveRefresh}
+                ariaLabel={t('accounts.live_refresh')}
+                label={t('accounts.live_refresh')}
+              />
+              {!liveRefreshEnabled ? (
+                <span className={styles.liveRefreshFrozen} title={t('accounts.live_refresh_hint')}>
+                  {frozenListEvidenceAtMs
+                    ? t('accounts.live_refresh_frozen_at', {
+                        time: formatTimestamp(frozenListEvidenceAtMs, i18n.language, true),
+                      })
+                    : t('accounts.live_refresh_frozen')}
+                </span>
+              ) : null}
+            </div>
           ) : null}
           {showSelectionControls ? renderSelectionControls() : null}
           <div className={styles.batchDisplayToggle}>{renderAccountDisplayToggle()}</div>

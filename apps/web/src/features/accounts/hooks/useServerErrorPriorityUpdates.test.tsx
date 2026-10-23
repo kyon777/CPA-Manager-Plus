@@ -183,11 +183,10 @@ describe('useServerErrorPriorityUpdates', () => {
       expect.objectContaining({ id: 0 }),
       expect.any(AbortSignal)
     );
-    expect(
-      (mocks.listServerErrorPriorityDemotionUpdates.mock.calls.at(-1)?.[2] as {
-        completedAtMs: number;
-      }).completedAtMs
-    ).not.toBe(UPDATE.completedAtMs);
+    const latestRequest = mocks.listServerErrorPriorityDemotionUpdates.mock.calls[
+      mocks.listServerErrorPriorityDemotionUpdates.mock.calls.length - 1
+    ]?.[2] as { completedAtMs: number };
+    expect(latestRequest.completedAtMs).not.toBe(UPDATE.completedAtMs);
   });
 
   it('does not poll when the list is inactive, hidden, or not loaded', async () => {

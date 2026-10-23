@@ -447,6 +447,7 @@ const { mocks } = vi.hoisted(() => {
         active: boolean;
         documentVisible: boolean;
         hasLoaded: boolean;
+        pollingEnabled?: boolean;
         onUpdates: (updates: readonly ServerErrorPriorityDemotionUpdate[]) => void;
       },
       lastAuthFilesDataOptions: null as null | {
@@ -749,6 +750,7 @@ vi.mock('@/features/accounts/hooks/useServerErrorPriorityUpdates', () => ({
     active: boolean;
     documentVisible: boolean;
     hasLoaded: boolean;
+    pollingEnabled?: boolean;
     onUpdates: (updates: readonly ServerErrorPriorityDemotionUpdate[]) => void;
   }) => {
     mocks.lastServerErrorPriorityUpdatesOptions = options;
@@ -1175,6 +1177,14 @@ const findInputByAriaLabel = (renderer: ReactTestRenderer, label: string) => {
     .find((node) => node.props['aria-label'] === label);
   if (!input) throw new Error(`Input not found: ${label}`);
   return input;
+};
+
+const findAccountsLiveRefreshToggle = (renderer: ReactTestRenderer) => {
+  const toggle = renderer.root
+    .findAllByType(ToggleSwitch)
+    .find((node) => node.props.ariaLabel === 'accounts.live_refresh');
+  if (!toggle) throw new Error('Accounts live refresh toggle not found');
+  return toggle;
 };
 
 const mountedAccountsRenderers = new Set<ReactTestRenderer>();
@@ -3922,6 +3932,126 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(3);
     expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
     expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(7);
+  });
+
+  it('freezes passive list evidence until list live refresh is restored', async () => {
+    vi.useFakeTimers();
+    const browserEvents = new EventTarget();
+    const localStorageValues = new Map<string, string>();
+    const createStorage = (values: Map<string, string>) => ({
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+    vi.stubGlobal('window', {
+      location: { hash: '' },
+      history: { state: null },
+      localStorage: createStorage(localStorageValues),
+      sessionStorage: createStorage(new Map<string, string>()),
+      addEventListener: browserEvents.addEventListener.bind(browserEvents),
+      removeEventListener: browserEvents.removeEventListener.bind(browserEvents),
+    });
+    const file = makeCodexFile('live-toggle.json', 'auth-live-toggle', 'live-toggle@example.com');
+    mocks.files = [file];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    const now = Date.now();
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      windows: [
+        {
+          id: 'five-hour',
+          label: 'Five hours',
+          usedPercent: 40,
+          resetLabel: new Date(now + 3 * 3600 * 1000).toISOString(),
+          resetAtMs: now + 3 * 3600 * 1000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 5 * 3600,
+          modelScope: CODEX_MAIN_SCOPE,
+        },
+      ],
+    });
+
+    let renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const liveRefreshToggle = findAccountsLiveRefreshToggle(renderer);
+    expect(liveRefreshToggle.props.checked).toBe(true);
+    await act(async () => {
+      liveRefreshToggle.props.onChange(false);
+      await flushPromises();
+    });
+
+    expect(localStorageValues.get('accountsPage.liveRefreshEnabled')).toBe('false');
+    expect(treeText(renderer)).toContain('accounts.live_refresh_frozen');
+    expect(mocks.lastServerErrorPriorityUpdatesOptions?.pollingEnabled).toBe(false);
+
+    await act(async () => {
+      renderer.unmount();
+    });
+    mountedAccountsRenderers.delete(renderer);
+    renderer = await renderAccountsPage();
+    await flushPromises();
+    expect(findAccountsLiveRefreshToggle(renderer).props.checked).toBe(false);
+
+    const frozenCounts = {
+      recent: mocks.getAccountRecentIndex.mock.calls.length,
+      history: mocks.getAccountHistory.mock.calls.length,
+      window: mocks.getAccountWindowUsage.mock.calls.length,
+      headers: mocks.getHeaderSnapshots.mock.calls.length,
+      inspection: mocks.listCodexInspectionRuns.mock.calls.length,
+    };
+    expect(frozenCounts.window).toBeGreaterThan(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+      await flushPromises();
+    });
+
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(frozenCounts.recent);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(frozenCounts.history);
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(frozenCounts.window);
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(frozenCounts.headers);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(frozenCounts.inspection);
+    expect(mocks.resetQuota).not.toHaveBeenCalled();
+    expect(mocks.requestTokenRecoveryManualBatch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'common.refresh').props.onClick();
+      await flushPromises();
+    });
+    expect(mocks.lastServerErrorPriorityUpdatesOptions?.pollingEnabled).toBe(false);
+    expect(mocks.getAccountRecentIndex.mock.calls.length).toBeGreaterThan(frozenCounts.recent);
+    expect(mocks.getAccountHistory.mock.calls.length).toBeGreaterThan(frozenCounts.history);
+    expect(mocks.getAccountWindowUsage.mock.calls.length).toBeGreaterThan(frozenCounts.window);
+
+    const resumeCounts = {
+      recent: mocks.getAccountRecentIndex.mock.calls.length,
+      history: mocks.getAccountHistory.mock.calls.length,
+      window: mocks.getAccountWindowUsage.mock.calls.length,
+      headers: mocks.getHeaderSnapshots.mock.calls.length,
+      inspection: mocks.listCodexInspectionRuns.mock.calls.length,
+    };
+    await act(async () => {
+      findAccountsLiveRefreshToggle(renderer).props.onChange(true);
+      await flushPromises();
+    });
+
+    expect(localStorageValues.get('accountsPage.liveRefreshEnabled')).toBe('true');
+    expect(treeText(renderer)).not.toContain('accounts.live_refresh_frozen');
+    expect(mocks.lastServerErrorPriorityUpdatesOptions?.pollingEnabled).toBe(true);
+    expect(mocks.getAccountRecentIndex.mock.calls.length).toBeGreaterThan(resumeCounts.recent);
+    expect(mocks.getAccountHistory.mock.calls.length).toBeGreaterThan(resumeCounts.history);
+    expect(mocks.getAccountWindowUsage.mock.calls.length).toBeGreaterThan(resumeCounts.window);
+    expect(mocks.getHeaderSnapshots.mock.calls.length).toBeGreaterThan(resumeCounts.headers);
+    expect(mocks.listCodexInspectionRuns.mock.calls.length).toBeGreaterThan(
+      resumeCounts.inspection
+    );
   });
 
   it('does not restart an in-flight current-page history request, then refreshes it on the next interval', async () => {
