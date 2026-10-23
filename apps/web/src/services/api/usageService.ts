@@ -1368,6 +1368,24 @@ export interface MonitoringAccountHistoryCheckpoint {
   processed: number;
 }
 
+export interface ProxyOverloadSummaryRow {
+  proxy_url: string;
+  active_account_count: number;
+  overloaded_account_count: number;
+  non_overloaded_account_count: number;
+  overloaded_rate: number;
+}
+
+export interface ProxyOverloadSummaryResponse {
+  generated_at_ms: number;
+  window_start_ms: number;
+  active_account_count: number;
+  missing_proxy_account_count: number;
+  proxy_count: number;
+  overloaded_account_count: number;
+  proxies: ProxyOverloadSummaryRow[];
+}
+
 export interface MonitoringAccountLatestRequest {
   timestamp_ms: number;
   failed: boolean;
@@ -4949,6 +4967,46 @@ export const credentialListApi = {
 };
 
 export const monitoringAnalyticsApi = {
+  getProxyOverloadSummary: async (
+    base: string,
+    managementKey: string | undefined,
+    refresh = false,
+    signal?: AbortSignal
+  ): Promise<ProxyOverloadSummaryResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      const generatedAtMs = Date.now();
+      return {
+        generated_at_ms: generatedAtMs,
+        window_start_ms: generatedAtMs - 72 * 60 * 60 * 1000,
+        active_account_count: 2,
+        missing_proxy_account_count: 0,
+        proxy_count: 1,
+        overloaded_account_count: 0,
+        proxies: [
+          {
+            proxy_url: 'http://demo-proxy.example:8080',
+            active_account_count: 2,
+            overloaded_account_count: 0,
+            non_overloaded_account_count: 2,
+            overloaded_rate: 0,
+          },
+        ],
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<ProxyOverloadSummaryResponse>(
+        buildUrl(base, '/v0/management/monitoring/proxy-overload-summary'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          ...(refresh ? { params: { refresh: 1 } } : {}),
+          signal,
+        }
+      );
+      return response.data;
+    });
+  },
   getHeaderSnapshots: async (
     base: string,
     managementKey: string | undefined,
