@@ -614,3 +614,35 @@ quota accounting.
 - “服务过载”精确条件固定为 `failed=true`、HTTP `502`，且 `header_error_code` 精确（不区分大小写）为 `server_is_overloaded`，或 `fail_summary` 含有 ASCII 边界完整 token `server_is_overloaded`。普通 502、EOF、500、503、429、407、401、`not_server_is_overloaded` 均不得计入。
 - 服务端仅返回代理级聚合：活跃账号数、无代理数、代理数、过载账号数、每代理有/无过载及比例；响应 `Cache-Control: no-store`，错误只返回静态安全类别。进程内完整结果缓存 15 秒并共享进行中的计算；首次打开和用户点击“刷新统计”才请求，不能接入凭证列表自动刷新轮询。
 - 前端弹窗筛选、全选当前可见代理、LF 分隔复制均为本地操作；刷新失败时保留上一份完整表格。打开弹窗不得触发 `loadFiles`、history、window-usage、runtime metadata、额度或 Header 请求；关闭/连接切换只取消该统计请求。
+
+
+## 2026-10-23: Saved-proxy overload difference and success-rate sort
+
+This CPAM-only extension must be preserved during every future upstream merge.
+It is display-only and must never change CPA Core, cli-proxy-api, credential
+files, request routing, scheduling, inspection, Token Acquisition, recovery,
+usage_events, Credits, billing/pricing, quota accounting, or priority work.
+Future merges must retain it together with the pre-existing selected
+authorization-file JSON export flow.
+
+- After the existing one-shot CPA `auth-files?include_proxy_url=1` inventory
+  projection and set-based SQLite evidence aggregation, read the Manager
+  Server's saved proxy URL list exactly once. Never scan raw credential JSON,
+  download files, call credential-runtime-metadata, use one request per proxy,
+  or add CPA Core reads/writes.
+- Normalize saved and observed URLs by trimming whitespace and trailing `/`.
+  `unobserved_proxies` means a saved URL has no active account with a request
+  in the last 72 hours; it is not a failure, 502, disabled, or health verdict.
+  If the saved list cannot be read, return `saved_proxy_list_available=false`
+  and never represent the unknown result as zero.
+- Keep the API fields `saved_proxy_count`, `observed_saved_proxy_count`,
+  `unobserved_proxy_count`, and `unobserved_proxies`. The modal's `unobserved`
+  view supports local select-all and LF copy only; it must not mutate the
+  proxy pool, replace a proxy, rerun inspection, or change account state.
+- Success rate is strictly `non_overloaded_account_count / active_account_count`
+  (zero denominator renders `0%`). Its column sorts locally ascending or
+  descending; ties retain the prior deterministic aggregate order. Sorting,
+  filtering, selecting, and copying must not refresh or make network requests.
+- A successful saved-list write must invalidate the 15-second proxy-overload
+  cache. Older in-flight generations must not repopulate that cache after the
+  invalidation. This only affects the read-only statistic.
