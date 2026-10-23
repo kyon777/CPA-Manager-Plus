@@ -526,3 +526,34 @@ demotion execution.
   mutable Header timestamps or percentages changed. This prevents the
   `account-window-usage` cancel/restart storm and preserves responsive list
   controls under high traffic.
+
+## 2026-10-22: Accounts-list live-refresh gate
+
+This customization is CPAM-only. It controls only browser-side display reads;
+it must never alter CPA Core, `cli-proxy-api`, credential files, proxies,
+request routing, scheduler behavior, `usage_events`, Credits, billing/pricing,
+quota mutation, Token Acquisition, token recovery, inspection execution, or
+server-error priority-demotion execution.
+
+- The credential-list toolbar owns the browser-local preference
+  `accountsPage.liveRefreshEnabled`, defaulting to `true`. It persists per
+  browser and shows a compact frozen-snapshot indicator when off.
+- When disabled, only passive Accounts UI reads stop: the visible-page
+  10-second recent-nine request index, visible-page 60-second history/window
+  projections, conditional 30-second global recent-sort index, passive
+  Header/inspection refresh, and the UI projection of completed priority
+  demotions. In-flight display reads are aborted or invalidated so a late
+  response cannot redraw a frozen list.
+- Initial/context reads (page, filter, sort, connection changes) and the
+  explicit toolbar refresh remain one-shot reads while frozen. Re-enabling
+  performs one bounded catch-up for the visible page and, only when sorted by
+  recent request, the global compact index. It must not call a quota refresh,
+  CPA write, Token Acquisition, recovery, or Provider API.
+- `useServerErrorPriorityUpdates` accepts a separate `pollingEnabled` gate.
+  A user pause retains only the last acknowledged tuple cursor and resumes from
+  it; an inactive/hidden/unloaded lifecycle or Manager-scope change resets the
+  cursor. Preserve its existing AbortController, single-flight, and strict
+  identity/priority guards.
+- Future upstream merges must retain this control and its tests. Do not turn
+  it into a backend scheduler switch or couple it to billing, quota, account
+  health, automatic recovery, or any CPAM/CPA mutation path.

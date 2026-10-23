@@ -28,7 +28,7 @@
 - Modify: `apps/web/src/features/accounts/hooks/useServerErrorPriorityUpdates.ts`
 - Modify: `apps/web/src/features/accounts/hooks/useServerErrorPriorityUpdates.test.tsx`
 
-- [ ] **Step 1: Extend the hook test harness with the new passive-poll gate and write the failing resume test.**
+- [x] **Step 1: Extend the hook test harness with the new passive-poll gate and write the failing resume test.**
 
   In `useServerErrorPriorityUpdates.test.tsx`, add `pollingEnabled = true` to `Harness` and forward it to the hook. Then add this test after the current immediate-poll test:
 
@@ -70,11 +70,11 @@
   });
   ```
 
-- [ ] **Step 2: Write the failing scope-change test.**
+- [x] **Step 2: Write the failing scope-change test.**
 
   Allow `Harness` to accept `managerRequestScope`, then add a test which pauses at `{ completedAtMs: UPDATE.completedAtMs, id: UPDATE.id }`, changes only the Manager API base while still paused, and resumes. Assert the first resumed cursor has `id: 0` and does not equal `UPDATE.completedAtMs`; this proves credentials/scopes never inherit an old cursor.
 
-- [ ] **Step 3: Run the focused hook test and verify the new tests fail.**
+- [x] **Step 3: Run the focused hook test and verify the new tests fail.**
 
   Run:
 
@@ -84,7 +84,7 @@
 
   Expected: the new test fails because the current hook clears `cursorRef.current` whenever its `enabled` state becomes false.
 
-- [ ] **Step 4: Add a separate `pollingEnabled` option and make cursor lifetime explicit.**
+- [x] **Step 4: Add a separate `pollingEnabled` option and make cursor lifetime explicit.**
 
   In `useServerErrorPriorityUpdates.ts`, extend the options type:
 
@@ -128,7 +128,7 @@
 
   Keep the existing generation check, AbortController behavior, single-flight guard, five-second initial lookback, and tuple `normalizedCursor` validation. A user pause therefore aborts an unconfirmed request but retains the last **confirmed** cursor; a changed Manager scope or an inactive/hidden/unloaded page does not.
 
-- [ ] **Step 5: Run the focused hook test and commit the isolated hook change.**
+- [x] **Step 5: Run the focused hook test and commit the isolated hook change.**
 
   Run:
 
@@ -146,7 +146,7 @@
 - Modify: `apps/web/src/features/accounts/AccountsPage.tsx`
 - Modify: `apps/web/src/features/accounts/AccountsPage.test.tsx`
 
-- [ ] **Step 1: Add failing Accounts-page tests for the off state.**
+- [x] **Step 1: Add failing Accounts-page tests for the off state.**
 
   In the existing fake-timer Accounts tests, add a helper that finds the new switch by `aria-label: 'accounts.live_refresh'`. Add these assertions:
 
@@ -172,7 +172,7 @@
 
   Add a second test that turns the switch back on while the sort is `recent`, flushes promises, and asserts exactly one new visible `recent_limit: 9` request plus one global request with `recent_limit === undefined`; it must also resume history/window/header reads once, without calling `refreshQuotaRows`, `accountQuotaSnapshotApi.write`, or a Token-recovery API.
 
-- [ ] **Step 2: Add the persisted state and a zero-fan-out freshness marker.**
+- [x] **Step 2: Add the persisted state and a zero-fan-out freshness marker.**
 
   Import `useLocalStorage` and `formatTimestamp`. Near existing page state, add:
 
@@ -201,7 +201,7 @@
 
   Call `recordListEvidenceRead()` only after a successful Manager read commits current data in `loadVisibleAccountRecentIndex`, `loadAccountHistory`, `loadListWindowUsage`, and the successful passive Header/inspection completion path. Do not store a running timestamp in React state: that would force a full 50-card rerender every ten seconds and defeat the performance work.
 
-- [ ] **Step 3: Add one toggle handler that freezes only browser display polling.**
+- [x] **Step 3: Add one toggle handler that freezes only browser display polling.**
 
   Implement:
 
@@ -228,7 +228,7 @@
 
   This handler must not call quota-refresh functions, Token Acquisition, credential mutation, Provider APIs, or any CPA write route.
 
-- [ ] **Step 4: Gate only passive reads; preserve explicit context and manual behavior.**
+- [x] **Step 4: Gate only passive reads; preserve explicit context and manual behavior.**
 
   Apply `accountsLivePollingEnabled` to:
 
@@ -242,7 +242,7 @@
 
   In `refreshAccountsWorkspace`, increment `visibleRecentIndexRefreshRevision` together with the existing explicit history/global/window revisions. This makes the existing top-level manual `刷新` button pull a current-page nine-request snapshot even when the switch is off, without toggling it back on.
 
-- [ ] **Step 5: Run the Accounts tests to verify the intended failure is now fixed.**
+- [x] **Step 5: Run the Accounts tests to verify the intended failure is now fixed.**
 
   Run:
 
@@ -252,7 +252,7 @@
 
   Expected: timer suppression and resume tests pass; existing 10/30/60-second behavior remains unchanged when no stored preference exists.
 
-- [ ] **Step 6: Commit the polling-boundary behavior.**
+- [x] **Step 6: Commit the polling-boundary behavior.**
 
   ```powershell
   git add apps/web/src/features/accounts/AccountsPage.tsx apps/web/src/features/accounts/AccountsPage.test.tsx
@@ -270,7 +270,7 @@
 - Modify: `apps/web/src/i18n/locales/zh-TW.json`
 - Modify: `apps/web/src/i18n/locales/ru.json`
 
-- [ ] **Step 1: Write UI/persistence tests before rendering the control.**
+- [x] **Step 1: Write UI/persistence tests before rendering the control.**
 
   Add a test that renders the default page, finds the `ToggleSwitch` labelled `accounts.live_refresh`, and asserts `checked === true`. Toggle it off, then assert:
 
@@ -281,7 +281,7 @@
 
   Unmount and render a second Accounts page in the same test; assert the switch remains false. Toggle it on and assert the stored value is `true` and the frozen badge is absent.
 
-- [ ] **Step 2: Add localized labels in all shipped locales.**
+- [x] **Step 2: Add localized labels in all shipped locales.**
 
   In the `accounts` object of each locale, add exactly these keys:
 
@@ -294,7 +294,7 @@
 
   Use faithful English, Traditional Chinese, and Russian equivalents in their corresponding files. Do not alter existing `refresh_quota`, `refresh_history`, or monitoring auto-refresh labels.
 
-- [ ] **Step 3: Render the control in the idle batch toolbar.**
+- [x] **Step 3: Render the control in the idle batch toolbar.**
 
   In `renderBatchBar`, when there is no selection and selection mode is off, render:
 
@@ -323,7 +323,7 @@
 
   Keep the existing selection controls, proxy filter, current-page token update, banned deletion, quota refresh, and view-mode controls untouched. The new control controls *display reads only* and must never disable unrelated action buttons.
 
-- [ ] **Step 4: Add responsive styles without altering the batch toolbar layout contract.**
+- [x] **Step 4: Add responsive styles without altering the batch toolbar layout contract.**
 
   Add `.liveRefreshControl` and `.liveRefreshFrozen` beside existing `.batchActions` rules:
 
@@ -345,7 +345,7 @@
 
   In the existing mobile `.batchActions` section, allow `.liveRefreshControl` to use full width and wrap its label rather than forcing horizontal overflow. Reuse only existing theme variables present in `AccountsPage.module.scss`.
 
-- [ ] **Step 5: Run focused UI/localization tests and commit.**
+- [x] **Step 5: Run focused UI/localization tests and commit.**
 
   Run:
 
@@ -361,7 +361,7 @@
 - Modify: `docs/LO-CPAM-CUSTOM-MEMORY.md`
 - Modify: `docs/superpowers/plans/2026-10-22-accounts-live-refresh-toggle.md` (check off completed tasks during execution)
 
-- [ ] **Step 1: Add a durable memory entry.**
+- [x] **Step 1: Add a durable memory entry.**
 
   Append a dated `2026-10-22` section stating:
 
@@ -371,7 +371,7 @@
   - priority cursor must survive only a user pause and reset on scope/lifecycle invalidation;
   - no CPA Core, billing, Credits, auth-file, proxy, scheduler, quota mutation, or Token Acquisition behavior may be changed in a future merge.
 
-- [ ] **Step 2: Run the complete relevant verification suite.**
+- [x] **Step 2: Run the complete relevant verification suite.**
 
   Run:
 
@@ -387,7 +387,7 @@
 
   Expected: all tests/type-check/build succeed; lint has no errors; diff check is clean; no file exists outside CPAM web/docs scope.
 
-- [ ] **Step 3: Inspect boundary-sensitive diff and commit memory.**
+- [x] **Step 3: Inspect boundary-sensitive diff and commit memory.**
 
   Run:
 
