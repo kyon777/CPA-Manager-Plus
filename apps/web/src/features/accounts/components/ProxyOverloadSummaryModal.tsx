@@ -8,8 +8,12 @@ import {
   proxyURLsForCopy,
   selectAllVisibleProxyKeys,
   sortProxyOverloadRows,
+  successRateForProxy,
   toggleProxyOverloadSelection,
+  unobservedProxyRows,
   type ProxyOverloadFilter,
+  type ProxyOverloadSuccessSort,
+  type ProxyURLRow,
 } from '@/features/accounts/model/proxyOverloadSummary';
 import type { ProxyOverloadSummaryResponse } from '@/services/api/usageService';
 import styles from './ProxyOverloadSummaryModal.module.scss';
@@ -42,16 +46,37 @@ export function ProxyOverloadSummaryModal({
 }: ProxyOverloadSummaryModalProps) {
   const { t } = useTranslation();
   const [filter, setFilter] = useState<ProxyOverloadFilter>('all');
+  const [successSort, setSuccessSort] = useState<ProxyOverloadSuccessSort>(null);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [copying, setCopying] = useState(false);
+  const savedListAvailable = result?.saved_proxy_list_available === true;
 
   useEffect(() => {
     setFilter('all');
+    setSuccessSort(null);
     setSelected(new Set());
   }, [result?.generated_at_ms]);
 
-  const sortedRows = useMemo(() => sortProxyOverloadRows(result?.proxies ?? []), [result?.proxies]);
-  const visibleRows = useMemo(() => filterProxyOverloadRows(sortedRows, filter), [filter, sortedRows]);
+  useEffect(() => {
+    if (!savedListAvailable && filter === 'unobserved') {
+      setFilter('all');
+    }
+  }, [filter, savedListAvailable]);
+
+  const sortedObservedRows = useMemo(
+    () => sortProxyOverloadRows(result?.proxies ?? [], successSort),
+    [result?.proxies, successSort]
+  );
+  const observedRows = useMemo(
+    () => (filter === 'unobserved' ? [] : filterProxyOverloadRows(sortedObservedRows, filter)),
+    [filter, sortedObservedRows]
+  );
+  const unobservedRows = useMemo(
+    () => unobservedProxyRows(result?.unobserved_proxies ?? []),
+    [result?.unobserved_proxies]
+  );
+  const visibleRows: readonly ProxyURLRow[] =
+    filter === 'unobserved' ? unobservedRows : observedRows;
   const selectedVisibleCount = visibleRows.filter((row) => selected.has(row.proxy_url)).length;
   const allVisibleSelected = visibleRows.length > 0 && selectedVisibleCount === visibleRows.length;
   const selectedProxyURLs = proxyURLsForCopy(visibleRows, selected);
@@ -79,6 +104,20 @@ export function ProxyOverloadSummaryModal({
   const setActiveFilter = (next: ProxyOverloadFilter) => {
     setFilter(next);
   };
+
+  const toggleSuccessSort = () => {
+    setSuccessSort((current) => (current === 'success-desc' ? 'success-asc' : 'success-desc'));
+  };
+
+  const filters: ProxyOverloadFilter[] = savedListAvailable
+    ? ['all', 'zero', 'overloaded', 'unobserved']
+    : ['all', 'zero', 'overloaded'];
+  const successAriaSort =
+    successSort === 'success-asc'
+      ? 'ascending'
+      : successSort === 'success-desc'
+        ? 'descending'
+        : 'none';
 
   return (
     <Modal
@@ -113,11 +152,43 @@ export function ProxyOverloadSummaryModal({
         {result ? (
           <>
             <div className={styles.summary} aria-live="polite">
-              <span>{t('accounts.proxy_overload_active', { count: result.active_account_count })}</span>
-              <span>{t('accounts.proxy_overload_missing', { count: result.missing_proxy_account_count })}</span>
+              <span>
+                {t('accounts.proxy_overload_active', { count: result.active_account_count })}
+              </span>
+              <span>
+                {t('accounts.proxy_overload_missing', {
+                  count: result.missing_proxy_account_count,
+                })}
+              </span>
               <span>{t('accounts.proxy_overload_proxy_count', { count: result.proxy_count })}</span>
-              <span>{t('accounts.proxy_overload_accounts', { count: result.overloaded_account_count })}</span>
+              <span>
+                {t('accounts.proxy_overload_accounts', { count: result.overloaded_account_count })}
+              </span>
+              {savedListAvailable ? (
+                <>
+                  <span>
+                    {t('accounts.proxy_overload_saved_count', {
+                      count: result.saved_proxy_count ?? 0,
+                    })}
+                  </span>
+                  <span>
+                    {t('accounts.proxy_overload_observed_saved_count', {
+                      count: result.observed_saved_proxy_count ?? 0,
+                    })}
+                  </span>
+                  <span>
+                    {t('accounts.proxy_overload_unobserved_count', {
+                      count: result.unobserved_proxy_count ?? unobservedRows.length,
+                    })}
+                  </span>
+                </>
+              ) : null}
             </div>
+            {!savedListAvailable ? (
+              <p className={styles.savedUnavailable}>
+                {t('accounts.proxy_overload_saved_unavailable')}
+              </p>
+            ) : null}
             <p className={styles.generated}>
               {t('accounts.proxy_overload_generated', {
                 time: new Date(result.generated_at_ms).toLocaleString(),
@@ -134,7 +205,7 @@ export function ProxyOverloadSummaryModal({
         {result ? (
           <>
             <div className={styles.filters}>
-              {(['all', 'zero', 'overloaded'] as const).map((next) => (
+              {filters.map((next) => (
                 <Button
                   key={next}
                   variant={filter === next ? 'primary' : 'secondary'}
@@ -160,51 +231,113 @@ export function ProxyOverloadSummaryModal({
             </div>
 
             {visibleRows.length === 0 ? (
-              <div className={styles.empty}>{t('accounts.proxy_overload_empty')}</div>
+              <div className={styles.empty}>
+                {filter === 'unobserved'
+                  ? t('accounts.proxy_overload_unobserved_empty')
+                  : t('accounts.proxy_overload_empty')}
+              </div>
             ) : (
               <div className={styles.tableWrap}>
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th aria-label={t('accounts.proxy_overload_select_visible')} />
-                      <th>{t('accounts.proxy_overload_url')}</th>
-                      <th>{t('accounts.proxy_overload_active_label')}</th>
-                      <th>{t('accounts.proxy_overload_overloaded_label')}</th>
-                      <th>{t('accounts.proxy_overload_non_overloaded_label')}</th>
-                      <th>{t('accounts.proxy_overload_rate_label')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleRows.map((row) => (
-                      <tr
-                        key={row.proxy_url}
-                        data-proxy-overload-row
-                        data-proxy-url={row.proxy_url}
-                      >
-                        <td>
-                          <input
-                            aria-label={row.proxy_url}
-                            type="checkbox"
-                            checked={selected.has(row.proxy_url)}
-                            disabled={busy}
-                            onChange={() =>
-                              setSelected((current) =>
-                                toggleProxyOverloadSelection(current, row.proxy_url)
-                              )
-                            }
-                          />
-                        </td>
-                        <td>
-                          <code title={row.proxy_url}>{row.proxy_url}</code>
-                        </td>
-                        <td>{row.active_account_count}</td>
-                        <td>{row.overloaded_account_count}</td>
-                        <td>{row.non_overloaded_account_count}</td>
-                        <td>{formatRate(row.overloaded_rate)}</td>
+                {filter === 'unobserved' ? (
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th aria-label={t('accounts.proxy_overload_select_visible')} />
+                        <th>{t('accounts.proxy_overload_url')}</th>
+                        <th>{t('accounts.proxy_overload_status_label')}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {unobservedRows.map((row) => (
+                        <tr
+                          key={row.proxy_url}
+                          data-proxy-overload-row
+                          data-proxy-overload-kind="unobserved"
+                          data-proxy-url={row.proxy_url}
+                        >
+                          <td>
+                            <input
+                              aria-label={row.proxy_url}
+                              type="checkbox"
+                              checked={selected.has(row.proxy_url)}
+                              disabled={busy}
+                              onChange={() =>
+                                setSelected((current) =>
+                                  toggleProxyOverloadSelection(current, row.proxy_url)
+                                )
+                              }
+                            />
+                          </td>
+                          <td>
+                            <code title={row.proxy_url}>{row.proxy_url}</code>
+                          </td>
+                          <td className={styles.unobservedStatus}>
+                            {t('accounts.proxy_overload_unobserved_status')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th aria-label={t('accounts.proxy_overload_select_visible')} />
+                        <th>{t('accounts.proxy_overload_url')}</th>
+                        <th>{t('accounts.proxy_overload_active_label')}</th>
+                        <th>{t('accounts.proxy_overload_overloaded_label')}</th>
+                        <th>{t('accounts.proxy_overload_non_overloaded_label')}</th>
+                        <th aria-sort={successAriaSort}>
+                          <button
+                            type="button"
+                            className={styles.sortButton}
+                            data-proxy-overload-success-sort
+                            onClick={toggleSuccessSort}
+                            disabled={busy || sortedObservedRows.length === 0}
+                          >
+                            {t('accounts.proxy_overload_success_rate_label')}
+                            {successSort === 'success-desc'
+                              ? ' ↓'
+                              : successSort === 'success-asc'
+                                ? ' ↑'
+                                : ' ↕'}
+                          </button>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {observedRows.map((row) => (
+                        <tr
+                          key={row.proxy_url}
+                          data-proxy-overload-row
+                          data-proxy-overload-kind="observed"
+                          data-proxy-url={row.proxy_url}
+                        >
+                          <td>
+                            <input
+                              aria-label={row.proxy_url}
+                              type="checkbox"
+                              checked={selected.has(row.proxy_url)}
+                              disabled={busy}
+                              onChange={() =>
+                                setSelected((current) =>
+                                  toggleProxyOverloadSelection(current, row.proxy_url)
+                                )
+                              }
+                            />
+                          </td>
+                          <td>
+                            <code title={row.proxy_url}>{row.proxy_url}</code>
+                          </td>
+                          <td>{row.active_account_count}</td>
+                          <td>{row.overloaded_account_count}</td>
+                          <td>{row.non_overloaded_account_count}</td>
+                          <td>{formatRate(successRateForProxy(row))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             )}
           </>

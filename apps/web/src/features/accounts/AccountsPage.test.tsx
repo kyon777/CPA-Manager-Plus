@@ -1715,6 +1715,11 @@ describe('AccountsPage replacement flows', () => {
       missing_proxy_account_count: 1,
       proxy_count: 1,
       overloaded_account_count: 2,
+      saved_proxy_list_available: true,
+      saved_proxy_count: 2,
+      observed_saved_proxy_count: 1,
+      unobserved_proxy_count: 1,
+      unobserved_proxies: ['http://never-observed.example:8080'],
       proxies: [
         {
           proxy_url: 'http://healthy.example:8080',
@@ -1752,6 +1757,9 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.applyCredentialRuntimeBatchTasks).toHaveBeenCalledTimes(initialRuntimeBatchTasks);
     expect(mocks.lastProxyOverloadSummaryProps?.open).toBe(true);
     expect(mocks.lastProxyOverloadSummaryProps?.result?.proxy_count).toBe(1);
+    expect(mocks.lastProxyOverloadSummaryProps?.result?.unobserved_proxies).toEqual([
+      'http://never-observed.example:8080',
+    ]);
 
     await act(async () => {
       mocks.lastProxyOverloadSummaryProps?.onRefresh();
