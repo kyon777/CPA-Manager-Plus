@@ -35,6 +35,7 @@ import type {
   ServerErrorPriorityDemotionUpdate,
   TokenRecoveryBatchItem,
   UsageHeaderSnapshot,
+  ProxyOverloadSummaryResponse,
 } from '@/services/api/usageService';
 import { copyToClipboard } from '@/utils/clipboard';
 import {
@@ -246,6 +247,14 @@ type AccountWindowUsageTargetItemForTest = {
 
 type AccountWindowUsageRequestForTest = {
   windows: AccountWindowUsageTargetItemForTest[];
+};
+
+const deferredProxyOverloadSummary = () => {
+  let resolve!: (value: ProxyOverloadSummaryResponse) => void;
+  const promise = new Promise<ProxyOverloadSummaryResponse>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 };
 
 const makeCodexFile = (name: string, authIndex: string, account: string): AuthFileItem =>
@@ -560,6 +569,22 @@ const { mocks } = vi.hoisted(() => {
           items: [],
         })
       ),
+      getProxyOverloadSummary: vi.fn(
+        async (
+          _base: string,
+          _managementKey: string | undefined,
+          _refresh?: boolean,
+          _signal?: AbortSignal
+        ): Promise<ProxyOverloadSummaryResponse> => ({
+          generated_at_ms: 1,
+          window_start_ms: 0,
+          active_account_count: 0,
+          missing_proxy_account_count: 0,
+          proxy_count: 0,
+          overloaded_account_count: 0,
+          proxies: [],
+        })
+      ),
       getAccountWindowUsage: vi.fn(
         async (
           _base: string,
@@ -606,6 +631,16 @@ const { mocks } = vi.hoisted(() => {
         requestScope?: { apiBase: string; managementKey: string };
         onClose: () => void;
         onSuccess?: () => void | Promise<void>;
+      },
+      lastProxyOverloadSummaryProps: null as null | {
+        open: boolean;
+        loading: boolean;
+        refreshing: boolean;
+        result: ProxyOverloadSummaryResponse | null;
+        error: string;
+        onClose: () => void;
+        onRefresh: () => void;
+        onCopy: (text: string) => Promise<void>;
       },
       localInspection: null as null | Record<string, unknown>,
       lastHealthWorkspaceProps: null as null | {
@@ -892,6 +927,22 @@ vi.mock('@/features/authFiles/components/AuthJsonPasteModal', () => ({
   AuthJsonPasteModal: () => null,
 }));
 
+vi.mock('@/features/accounts/components/ProxyOverloadSummaryModal', () => ({
+  ProxyOverloadSummaryModal: (props: {
+    open: boolean;
+    loading: boolean;
+    refreshing: boolean;
+    result: ProxyOverloadSummaryResponse | null;
+    error: string;
+    onClose: () => void;
+    onRefresh: () => void;
+    onCopy: (text: string) => Promise<void>;
+  }) => {
+    mocks.lastProxyOverloadSummaryProps = props;
+    return props.open ? <div data-proxy-overload-summary-open="true" /> : null;
+  },
+}));
+
 vi.mock('@/features/authFiles/components/OAuthExcludedCard', () => ({
   OAuthExcludedCard: (props: { onAdd: () => void; onEdit: (provider: string) => void }) => (
     <div>
@@ -987,6 +1038,7 @@ vi.mock('@/services/api', () => ({
     ),
   },
   monitoringAnalyticsApi: {
+    getProxyOverloadSummary: mocks.getProxyOverloadSummary,
     getAnalytics: mocks.getAnalytics,
     getHeaderSnapshots: mocks.getHeaderSnapshots,
     getAccountHistory: mocks.getAccountHistory,
@@ -1494,6 +1546,16 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockResolvedValue(makeAccountHistoryResponse([]));
     mocks.getAccountRecentIndex.mockReset();
     mocks.getAccountRecentIndex.mockResolvedValue({ generated_at_ms: 1, items: [] });
+    mocks.getProxyOverloadSummary.mockReset();
+    mocks.getProxyOverloadSummary.mockResolvedValue({
+      generated_at_ms: 1,
+      window_start_ms: 0,
+      active_account_count: 0,
+      missing_proxy_account_count: 0,
+      proxy_count: 0,
+      overloaded_account_count: 0,
+      proxies: [],
+    });
     mocks.getAccountWindowUsage.mockReset();
     mocks.getAccountWindowUsage.mockResolvedValue({ generated_at_ms: 1, items: [] });
     mocks.credentialRuntimeItemsByClientKey = new Map();
@@ -1566,6 +1628,7 @@ describe('AccountsPage replacement flows', () => {
     mocks.lastExcludedEditorProps = null;
     mocks.lastAliasEditorProps = null;
     mocks.lastCodexReauthProps = null;
+    mocks.lastProxyOverloadSummaryProps = null;
     mocks.lastHealthWorkspaceProps = null;
     mocks.localInspection = null;
   });
@@ -1581,6 +1644,132 @@ describe('AccountsPage replacement flows', () => {
     expect(JSON.stringify(renderer.toJSON())).toContain('codex.json');
     expect(findLoadingSpinners(renderer.root)).toHaveLength(0);
     await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('opens the aggregate proxy overload summary without joining credential-list loading', async () => {
+    mocks.getProxyOverloadSummary.mockResolvedValue({
+      generated_at_ms: 72_000,
+      window_start_ms: 0,
+      active_account_count: 3,
+      missing_proxy_account_count: 1,
+      proxy_count: 1,
+      overloaded_account_count: 2,
+      proxies: [
+        {
+          proxy_url: 'http://healthy.example:8080',
+          active_account_count: 2,
+          overloaded_account_count: 0,
+          non_overloaded_account_count: 2,
+          overloaded_rate: 0,
+        },
+      ],
+    });
+    const renderer = await renderAccountsPage();
+    const initialFileLoads = mocks.loadFiles.mock.calls.length;
+    const initialHistoryLoads = mocks.getAccountHistory.mock.calls.length;
+    const initialWindowLoads = mocks.getAccountWindowUsage.mock.calls.length;
+    const initialRuntimeBatchTasks = mocks.applyCredentialRuntimeBatchTasks.mock.calls.length;
+
+    expect(() => findHostButtonByText(renderer, 'accounts.proxy_filter_button')).not.toThrow();
+    expect(() => findHostButtonByText(renderer, 'accounts.proxy_overload_button')).not.toThrow();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.proxy_overload_button').props.onClick();
+      await Promise.resolve();
+    });
+
+    expect(mocks.getProxyOverloadSummary).toHaveBeenCalledTimes(1);
+    expect(mocks.getProxyOverloadSummary).toHaveBeenCalledWith(
+      'http://manager.local:18317',
+      'manager-key',
+      false,
+      expect.any(AbortSignal)
+    );
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(initialFileLoads);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(initialHistoryLoads);
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(initialWindowLoads);
+    expect(mocks.applyCredentialRuntimeBatchTasks).toHaveBeenCalledTimes(initialRuntimeBatchTasks);
+    expect(mocks.lastProxyOverloadSummaryProps?.open).toBe(true);
+    expect(mocks.lastProxyOverloadSummaryProps?.result?.proxy_count).toBe(1);
+
+    await act(async () => {
+      mocks.lastProxyOverloadSummaryProps?.onRefresh();
+      await Promise.resolve();
+    });
+    expect(mocks.getProxyOverloadSummary).toHaveBeenLastCalledWith(
+      'http://manager.local:18317',
+      'manager-key',
+      true,
+      expect.any(AbortSignal)
+    );
+  });
+
+  it('aborts only the proxy overload summary wait on close or CPA connection change', async () => {
+    const first = deferredProxyOverloadSummary();
+    const second = deferredProxyOverloadSummary();
+    let callCount = 0;
+    mocks.getProxyOverloadSummary.mockImplementation(
+      async (
+        _base: string,
+        _managementKey: string | undefined,
+        _refresh?: boolean,
+        _signal?: AbortSignal
+      ) => {
+        callCount += 1;
+        return callCount === 1 ? first.promise : second.promise;
+      }
+    );
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.proxy_overload_button').props.onClick();
+      await Promise.resolve();
+    });
+    const firstSignal = mocks.getProxyOverloadSummary.mock.calls[0]?.[3] as AbortSignal;
+    expect(firstSignal?.aborted).toBe(false);
+
+    await act(async () => {
+      mocks.lastProxyOverloadSummaryProps?.onClose();
+      await Promise.resolve();
+    });
+    expect(firstSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.proxy_overload_button').props.onClick();
+      await Promise.resolve();
+    });
+    const secondSignal = mocks.getProxyOverloadSummary.mock.calls[1]?.[3] as AbortSignal;
+    expect(secondSignal?.aborted).toBe(false);
+
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    expect(secondSignal?.aborted).toBe(true);
+
+    first.resolve({
+      generated_at_ms: 1,
+      window_start_ms: 0,
+      active_account_count: 0,
+      missing_proxy_account_count: 0,
+      proxy_count: 0,
+      overloaded_account_count: 0,
+      proxies: [],
+    });
+    second.resolve({
+      generated_at_ms: 2,
+      window_start_ms: 0,
+      active_account_count: 0,
+      missing_proxy_account_count: 0,
+      proxy_count: 0,
+      overloaded_account_count: 0,
+      proxies: [],
+    });
+    await act(async () => {
+      await Promise.resolve();
       renderer.unmount();
     });
   });
