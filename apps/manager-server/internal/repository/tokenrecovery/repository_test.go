@@ -403,3 +403,81 @@ func newTestRepositoryWithDB(t *testing.T) (Repository, *sql.DB) {
 	t.Cleanup(func() { _ = db.Close() })
 	return New(db), db
 }
+
+func TestFailStaleRunningMarksOnlyExpiredTasksAsRecoveryTimeout(t *testing.T) {
+	repo, db := newTestRepositoryWithDB(t)
+	ctx := context.Background()
+
+	automatic, err := repo.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "stale-auto.json", AuthIndex: "1", AccountEmail: "stale-auto@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic(stale automatic) = %v", err)
+	}
+	claimedAutomatic, ok, err := repo.ClaimNextQueued(ctx)
+	if err != nil || !ok || claimedAutomatic.ID != automatic.ID {
+		t.Fatalf("ClaimNextQueued(stale automatic) = %#v, %t, %v", claimedAutomatic, ok, err)
+	}
+
+	manual, err := repo.RequestManual(ctx, model.TokenRecoveryTarget{
+		FileName: "stale-manual.json", AuthIndex: "2", AccountEmail: "stale-manual@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("RequestManual(stale manual) = %v", err)
+	}
+	claimedManual, ok, err := repo.ClaimNextQueued(ctx)
+	if err != nil || !ok || claimedManual.ID != manual.ID {
+		t.Fatalf("ClaimNextQueued(stale manual) = %#v, %t, %v", claimedManual, ok, err)
+	}
+
+	fresh, err := repo.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "fresh.json", AuthIndex: "3", AccountEmail: "fresh@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic(fresh) = %v", err)
+	}
+	claimedFresh, ok, err := repo.ClaimNextQueued(ctx)
+	if err != nil || !ok || claimedFresh.ID != fresh.ID {
+		t.Fatalf("ClaimNextQueued(fresh) = %#v, %t, %v", claimedFresh, ok, err)
+	}
+
+	now := time.Now().UnixMilli()
+	staleStartedAt := now - int64((2 * time.Hour).Milliseconds())
+	freshStartedAt := now - int64((10 * time.Minute).Milliseconds())
+	if _, err := db.Exec(`update token_recovery_tasks set started_at_ms = ?, updated_at_ms = ? where id in (?, ?)`, staleStartedAt, staleStartedAt, claimedAutomatic.ID, claimedManual.ID); err != nil {
+		t.Fatalf("age stale running tasks: %v", err)
+	}
+	if _, err := db.Exec(`update token_recovery_tasks set started_at_ms = ?, updated_at_ms = ? where id = ?`, freshStartedAt, freshStartedAt, claimedFresh.ID); err != nil {
+		t.Fatalf("age fresh running task: %v", err)
+	}
+
+	changed, err := repo.FailStaleRunning(ctx, now-int64(time.Hour.Milliseconds()))
+	if err != nil {
+		t.Fatalf("FailStaleRunning() = %v", err)
+	}
+	if got, want := changed, int64(2); got != want {
+		t.Fatalf("FailStaleRunning() changed %d tasks, want %d", got, want)
+	}
+
+	gotAutomatic, _, err := repo.GetByID(ctx, automatic.ID)
+	if err != nil {
+		t.Fatalf("GetByID(stale automatic) = %v", err)
+	}
+	if gotAutomatic.Status != model.TokenRecoveryStatusAutoFailedManualOnly || gotAutomatic.LastErrorCode != "recovery_timeout" {
+		t.Fatalf("stale automatic task = %#v", gotAutomatic)
+	}
+	gotManual, _, err := repo.GetByID(ctx, manual.ID)
+	if err != nil {
+		t.Fatalf("GetByID(stale manual) = %v", err)
+	}
+	if gotManual.Status != model.TokenRecoveryStatusManualFailedManualOnly || gotManual.LastErrorCode != "recovery_timeout" {
+		t.Fatalf("stale manual task = %#v", gotManual)
+	}
+	gotFresh, _, err := repo.GetByID(ctx, fresh.ID)
+	if err != nil {
+		t.Fatalf("GetByID(fresh) = %v", err)
+	}
+	if gotFresh.Status != model.TokenRecoveryStatusAutoRunning || gotFresh.LastErrorCode != "" {
+		t.Fatalf("fresh running task = %#v", gotFresh)
+	}
+}

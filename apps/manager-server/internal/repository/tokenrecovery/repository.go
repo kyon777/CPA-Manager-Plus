@@ -9,6 +9,8 @@ import (
 	"unicode"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	modernsqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 var (
@@ -26,6 +28,7 @@ type Repository interface {
 	Complete(context.Context, int64) (model.TokenRecoveryTask, error)
 	Fail(context.Context, int64, string, string) (model.TokenRecoveryTask, error)
 	FailRunningOnStartup(context.Context) (int64, error)
+	FailStaleRunning(context.Context, int64) (int64, error)
 }
 
 type repository struct {
@@ -34,6 +37,25 @@ type repository struct {
 
 func New(db *sql.DB) Repository {
 	return &repository{db: db}
+}
+
+// IsSQLiteBusyError recognizes the lock contention forms emitted by the
+// modernc SQLite driver. It is intentionally narrow so callers never retry a
+// semantic task error as if it were a transient database contention event.
+func IsSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var sqliteErr *modernsqlite.Error
+	if errors.As(err, &sqliteErr) {
+		code := sqliteErr.Code() & 0xff
+		return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "sqlite_locked") ||
+		strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database table is locked")
 }
 
 func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenRecoveryTarget) (model.TokenRecoveryTask, error) {
@@ -323,6 +345,32 @@ func (r *repository) FailRunningOnStartup(ctx context.Context) (int64, error) {
 		model.TokenRecoveryStatusManualFailedManualOnly,
 		model.TokenRecoveryStatusAutoFailedManualOnly,
 		now, now, model.TokenRecoveryStatusAutoRunning, model.TokenRecoveryStatusManualRunning)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// FailStaleRunning transitions only recovery tasks whose execution start is at
+// or before startedBeforeMS. It never requeues or replays an external token
+// request: a stalled worker becomes an explicit manual-review outcome instead.
+func (r *repository) FailStaleRunning(ctx context.Context, startedBeforeMS int64) (int64, error) {
+	if startedBeforeMS <= 0 {
+		return 0, nil
+	}
+	now := time.Now().UnixMilli()
+	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
+		status = case mode when ? then ? else ? end,
+		last_error_code = 'recovery_timeout',
+		last_error_message = 'recovery task exceeded maximum runtime; no automatic retry was performed',
+		completed_at_ms = ?, updated_at_ms = ?
+		where status in (?, ?) and coalesce(started_at_ms, 0) <= ?`,
+		model.TokenRecoveryModeManual,
+		model.TokenRecoveryStatusManualFailedManualOnly,
+		model.TokenRecoveryStatusAutoFailedManualOnly,
+		now, now,
+		model.TokenRecoveryStatusAutoRunning, model.TokenRecoveryStatusManualRunning,
+		startedBeforeMS)
 	if err != nil {
 		return 0, err
 	}

@@ -447,6 +447,10 @@ func (s *Store) FailRunningTokenRecoveriesOnStartup(ctx context.Context) (int64,
 	return s.TokenRecoveries.FailRunningOnStartup(ctx)
 }
 
+func (s *Store) FailStaleRunningTokenRecoveries(ctx context.Context, startedBeforeMS int64) (int64, error) {
+	return s.TokenRecoveries.FailStaleRunning(ctx, startedBeforeMS)
+}
+
 func (s *Store) CreateCodexInspectionRun(ctx context.Context, run CodexInspectionRun) (CodexInspectionRun, error) {
 	return s.CodexInspections.CreateRun(ctx, run)
 }

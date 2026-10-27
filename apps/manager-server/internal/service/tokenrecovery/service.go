@@ -27,6 +27,11 @@ const (
 	maxWriteConcurrency                    = defaultWriteConcurrency
 	DefaultCPAAuthFileOperationTimeout     = 4 * time.Minute
 	RecommendedTokenAcquisitionWorkerCount = 80
+	DefaultTokenRecoveryTaskTimeout        = 60 * time.Minute
+	defaultStaleTaskReconcileInterval      = time.Minute
+	terminalStateWriteAttempts             = 4
+	terminalStateWriteInitialBackoff       = 25 * time.Millisecond
+	terminalStateWriteTimeout              = 30 * time.Second
 )
 
 var (
@@ -73,6 +78,7 @@ type TaskStore interface {
 	CompleteTokenRecovery(context.Context, int64) (store.TokenRecoveryTask, error)
 	FailTokenRecovery(context.Context, int64, string, string) (store.TokenRecoveryTask, error)
 	FailRunningTokenRecoveriesOnStartup(context.Context) (int64, error)
+	FailStaleRunningTokenRecoveries(context.Context, int64) (int64, error)
 }
 
 type SetupResolver interface {
@@ -107,21 +113,28 @@ type Options struct {
 	// WriteConcurrency bounds cross-account CPA Core auth-file mutations after
 	// token acquisition has completed. Zero retains the production-safe default.
 	WriteConcurrency int
+	// TaskTimeout bounds one complete recovery attempt, including the external
+	// Token Acquisition call and CPA Core write/verification. A timeout cancels
+	// the in-flight request and records a manual-review terminal state; it never
+	// starts a second acquisition.
+	TaskTimeout time.Duration
 }
 
 type Service struct {
-	tasks               TaskStore
-	setupResolver       SetupResolver
-	authFiles           AuthFileClient
-	acquirer            tokenacquisition.Acquirer
-	mutationCoordinator *cpaauthfiles.MutationCoordinator
-	idlePollInterval    time.Duration
-	workerCount         int
-	acquisitionGate     chan struct{}
-	writeGate           chan struct{}
-	automaticEnabled    func(context.Context) bool
-	wake                chan struct{}
-	startOnce           sync.Once
+	tasks                    TaskStore
+	setupResolver            SetupResolver
+	authFiles                AuthFileClient
+	acquirer                 tokenacquisition.Acquirer
+	mutationCoordinator      *cpaauthfiles.MutationCoordinator
+	idlePollInterval         time.Duration
+	workerCount              int
+	acquisitionGate          chan struct{}
+	writeGate                chan struct{}
+	automaticEnabled         func(context.Context) bool
+	taskTimeout              time.Duration
+	staleTaskReconcilePeriod time.Duration
+	wake                     chan struct{}
+	startOnce                sync.Once
 }
 
 type cpaAuthFileOperationTimeoutError struct {
@@ -207,18 +220,24 @@ func NewWithOptions(options Options) *Service {
 	if writeConcurrency > maxWriteConcurrency {
 		writeConcurrency = maxWriteConcurrency
 	}
+	taskTimeout := options.TaskTimeout
+	if taskTimeout <= 0 {
+		taskTimeout = DefaultTokenRecoveryTaskTimeout
+	}
 	return &Service{
-		tasks:               options.Tasks,
-		setupResolver:       options.SetupResolver,
-		authFiles:           authFiles,
-		acquirer:            options.Acquirer,
-		mutationCoordinator: coordinator,
-		idlePollInterval:    idlePollInterval,
-		workerCount:         workerCount,
-		acquisitionGate:     make(chan struct{}, acquisitionConcurrency),
-		writeGate:           make(chan struct{}, writeConcurrency),
-		automaticEnabled:    options.AutomaticEnabled,
-		wake:                make(chan struct{}, workerCount),
+		tasks:                    options.Tasks,
+		setupResolver:            options.SetupResolver,
+		authFiles:                authFiles,
+		acquirer:                 options.Acquirer,
+		mutationCoordinator:      coordinator,
+		idlePollInterval:         idlePollInterval,
+		workerCount:              workerCount,
+		acquisitionGate:          make(chan struct{}, acquisitionConcurrency),
+		writeGate:                make(chan struct{}, writeConcurrency),
+		automaticEnabled:         options.AutomaticEnabled,
+		taskTimeout:              taskTimeout,
+		staleTaskReconcilePeriod: defaultStaleTaskReconcileInterval,
+		wake:                     make(chan struct{}, workerCount),
 	}
 }
 
@@ -236,7 +255,15 @@ func (s *Service) Start(ctx context.Context) {
 		// This recovery fence is process-wide. Running it in every worker would
 		// race the workers that have already claimed new tasks.
 		if s.tasks != nil {
-			_, _ = s.tasks.FailRunningTokenRecoveriesOnStartup(ctx)
+			startupCtx, cancel := terminalStatePersistenceContext(ctx)
+			if err := retryTerminalStateWrite(startupCtx, func() error {
+				_, err := s.tasks.FailRunningTokenRecoveriesOnStartup(startupCtx)
+				return err
+			}); err != nil {
+				log.Printf("[token-recovery] startup running-task fence failed")
+			}
+			cancel()
+			go s.runStaleTaskReconciler(ctx)
 		}
 		for worker := 0; worker < s.workerCount; worker++ {
 			// Every worker may claim manual or automatic recovery. The repository
@@ -304,27 +331,154 @@ func (s *Service) run(ctx context.Context, mayClaimAutomatic bool) {
 			s.wait(ctx)
 			continue
 		}
-		s.process(ctx, task)
+		taskCtx, cancelTask := context.WithTimeout(ctx, s.taskTimeout)
+		s.process(ctx, taskCtx, task)
+		cancelTask()
 	}
 }
 
-func (s *Service) process(ctx context.Context, task model.TokenRecoveryTask) {
-	err := s.recover(ctx, task)
+func (s *Service) process(lifecycleCtx context.Context, taskCtx context.Context, task model.TokenRecoveryTask) {
+	err := s.recover(taskCtx, task)
 	if err == nil {
-		_, _ = s.tasks.CompleteTokenRecovery(ctx, task.ID)
+		if lifecycleCtx.Err() != nil {
+			return
+		}
+		persistCtx, cancel := terminalStatePersistenceContext(lifecycleCtx)
+		defer cancel()
+		if persistErr := s.persistCompletedTask(persistCtx, task.ID); persistErr != nil {
+			log.Printf("[token-recovery] task_id=%d completed but terminal state was not persisted", task.ID)
+		}
 		return
 	}
-	if ctx.Err() != nil {
+	if lifecycleCtx.Err() != nil {
 		// Startup converts a left-running task to manual-only. This avoids a
 		// second external POST if shutdown interrupted a request or upload.
 		return
 	}
 	code := recoveryFailureCode(err)
 	message := recoveryFailureMessage(err)
+	if taskCtx.Err() != nil {
+		// The per-task deadline cancels Token Acquisition and every CPA Core
+		// operation before the row is terminalized. No automatic retry is made.
+		code = "recovery_timeout"
+		message = "\u6062\u590d\u4efb\u52a1\u8d85\u8fc7\u6700\u5927\u6267\u884c\u65f6\u95f4\uff0c\u672a\u81ea\u52a8\u91cd\u8bd5\uff0c\u8bf7\u4eba\u5de5\u6838\u67e5"
+	}
 	// code and message are both deliberately redacted, bounded task fields;
 	// never log the raw error because it can contain upstream or proxy details.
 	log.Printf("[token-recovery] task_id=%d failed code=%s reason=%q", task.ID, code, message)
-	_, _ = s.tasks.FailTokenRecovery(ctx, task.ID, code, message)
+	persistCtx, cancel := terminalStatePersistenceContext(lifecycleCtx)
+	defer cancel()
+	if persistErr := s.persistFailedTask(persistCtx, task.ID, code, message); persistErr != nil {
+		log.Printf("[token-recovery] task_id=%d failed but terminal state was not persisted", task.ID)
+	}
+}
+
+func (s *Service) runStaleTaskReconciler(ctx context.Context) {
+	interval := s.staleTaskReconcilePeriod
+	if interval <= 0 {
+		interval = defaultStaleTaskReconcileInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := s.reconcileStaleRunningTasks(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("[token-recovery] stale-task reconciliation failed")
+			}
+		}
+	}
+}
+
+func (s *Service) reconcileStaleRunningTasks(ctx context.Context) (int64, error) {
+	if s == nil || s.tasks == nil {
+		return 0, ErrRecoveryUnavailable
+	}
+	cutoff := time.Now().Add(-s.taskTimeout).UnixMilli()
+	persistCtx, cancel := terminalStatePersistenceContext(ctx)
+	defer cancel()
+	var changed int64
+	err := retryTerminalStateWrite(persistCtx, func() error {
+		var err error
+		changed, err = s.tasks.FailStaleRunningTokenRecoveries(persistCtx, cutoff)
+		return err
+	})
+	if err == nil && changed > 0 {
+		log.Printf("[token-recovery] marked stale running tasks for manual review: count=%d", changed)
+	}
+	return changed, err
+}
+
+// persistCompletedTask retries only the terminal SQLite transition. It never
+// repeats token acquisition or CPA auth-file writes, so a transient database
+// lock cannot spend another recovery request or mutate a credential twice.
+func (s *Service) persistCompletedTask(ctx context.Context, taskID int64) error {
+	if s == nil || s.tasks == nil {
+		return ErrRecoveryUnavailable
+	}
+	return retryTerminalStateWrite(ctx, func() error {
+		_, err := s.tasks.CompleteTokenRecovery(ctx, taskID)
+		return err
+	})
+}
+
+// persistFailedTask persists the already-classified terminal failure after the
+// external recovery attempt has ended. Retrying is restricted to SQLite lock
+// contention and preserves the original redacted failure category.
+func (s *Service) persistFailedTask(ctx context.Context, taskID int64, code, message string) error {
+	if s == nil || s.tasks == nil {
+		return ErrRecoveryUnavailable
+	}
+	return retryTerminalStateWrite(ctx, func() error {
+		_, err := s.tasks.FailTokenRecovery(ctx, taskID, code, message)
+		return err
+	})
+}
+
+func terminalStatePersistenceContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), terminalStateWriteTimeout)
+}
+
+func retryTerminalStateWrite(ctx context.Context, operation func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var lastErr error
+	for attempt := 0; attempt < terminalStateWriteAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lastErr = operation()
+		if lastErr == nil || !tokenrecoveryrepo.IsSQLiteBusyError(lastErr) {
+			return lastErr
+		}
+		if attempt+1 == terminalStateWriteAttempts {
+			break
+		}
+		timer := time.NewTimer(terminalStateWriteInitialBackoff << attempt)
+		select {
+		case <-ctx.Done():
+			stopTerminalStateRetryTimer(timer)
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+func stopTerminalStateRetryTimer(timer *time.Timer) {
+	if timer == nil || timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
+	}
 }
 
 func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) error {

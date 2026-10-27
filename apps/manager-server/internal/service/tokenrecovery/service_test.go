@@ -1052,3 +1052,239 @@ func (f *blockingWriteRecoveryAuthFiles) waitForUploads(t *testing.T, count int)
 func (f *blockingWriteRecoveryAuthFiles) releaseAll() {
 	f.once.Do(func() { close(f.release) })
 }
+
+func TestServiceRetriesBusyFailureTerminalWriteWithoutReacquiringToken(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-terminal-retry.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	tasks := &terminalWriteBusyTaskStore{Store: st, failBusyRemaining: 2}
+	core := newRecoveryCore(t, []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old","refresh_token":"old","id_token":"old"}`))
+	acquirer := &fakeAcquirer{err: errors.New("external failure")}
+	service, ctx, cancel := newRecoveryServiceWithTaskStore(t, core.server.URL, cpaauthfiles.NewMutationCoordinator(), acquirer, tasks)
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	failed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusAutoFailedManualOnly)
+	if got, want := failed.LastErrorCode, "recovery_failed"; got != want {
+		t.Fatalf("failure code = %q, want %q", got, want)
+	}
+	if got, want := tasks.failCallCount(), 3; got != want {
+		t.Fatalf("FailTokenRecovery() calls = %d, want %d", got, want)
+	}
+	if got, want := acquirer.callCount(), 1; got != want {
+		t.Fatalf("token acquisition calls = %d, want %d", got, want)
+	}
+}
+
+func TestServiceRetriesBusySuccessTerminalWriteWithoutReacquiringToken(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-terminal-retry.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	tasks := &terminalWriteBusyTaskStore{Store: st, completeBusyRemaining: 2}
+	core := newRecoveryCore(t, []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old","refresh_token":"old","id_token":"old"}`))
+	acquirer := &fakeAcquirer{result: tokenacquisition.Result{Email: "person@example.com", AccessToken: "new-access", RefreshToken: "new-refresh", IDToken: "new-id"}}
+	service, ctx, cancel := newRecoveryServiceWithTaskStore(t, core.server.URL, cpaauthfiles.NewMutationCoordinator(), acquirer, tasks)
+	defer cancel()
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusSucceeded)
+	if got, want := tasks.completeCallCount(), 3; got != want {
+		t.Fatalf("CompleteTokenRecovery() calls = %d, want %d", got, want)
+	}
+	if got, want := acquirer.callCount(), 1; got != want {
+		t.Fatalf("token acquisition calls = %d, want %d", got, want)
+	}
+	if got, want := core.uploadCount(), 1; got != want {
+		t.Fatalf("CPA auth-file uploads = %d, want %d", got, want)
+	}
+}
+
+type terminalWriteBusyTaskStore struct {
+	*store.Store
+
+	mu                    sync.Mutex
+	completeBusyRemaining int
+	failBusyRemaining     int
+	completeCalls         int
+	failCalls             int
+}
+
+func (s *terminalWriteBusyTaskStore) CompleteTokenRecovery(ctx context.Context, id int64) (store.TokenRecoveryTask, error) {
+	s.mu.Lock()
+	s.completeCalls++
+	busy := s.completeBusyRemaining > 0
+	if busy {
+		s.completeBusyRemaining--
+	}
+	s.mu.Unlock()
+	if busy {
+		return store.TokenRecoveryTask{}, errors.New("database is locked (SQLITE_BUSY)")
+	}
+	return s.Store.CompleteTokenRecovery(ctx, id)
+}
+
+func (s *terminalWriteBusyTaskStore) FailTokenRecovery(ctx context.Context, id int64, code, message string) (store.TokenRecoveryTask, error) {
+	s.mu.Lock()
+	s.failCalls++
+	busy := s.failBusyRemaining > 0
+	if busy {
+		s.failBusyRemaining--
+	}
+	s.mu.Unlock()
+	if busy {
+		return store.TokenRecoveryTask{}, errors.New("database is locked (SQLITE_BUSY)")
+	}
+	return s.Store.FailTokenRecovery(ctx, id, code, message)
+}
+
+func (s *terminalWriteBusyTaskStore) completeCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.completeCalls
+}
+
+func (s *terminalWriteBusyTaskStore) failCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failCalls
+}
+
+func newRecoveryServiceWithTaskStore(t *testing.T, coreURL string, coordinator *cpaauthfiles.MutationCoordinator, acquirer tokenacquisition.Acquirer, tasks TaskStore) (*Service, context.Context, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	return NewWithOptions(Options{
+		Tasks:               tasks,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: coreURL, ManagementKey: "core-management-key"}},
+		AuthFiles:           cpaauthfiles.New(http.DefaultClient, time.Second),
+		Acquirer:            acquirer,
+		MutationCoordinator: coordinator,
+		IdlePollInterval:    time.Millisecond,
+	}), ctx, cancel
+}
+
+func TestServiceMarksExceededRecoveryRuntimeTerminalWithoutSecondAcquisition(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-runtime-timeout.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	core := newRecoveryCore(t, []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old","refresh_token":"old","id_token":"old"}`))
+	acquirer := &deadlineBlockingRecoveryAcquirer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewWithOptions(Options{
+		Tasks:               st,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: core.server.URL, ManagementKey: "core-management-key"}},
+		AuthFiles:           cpaauthfiles.New(http.DefaultClient, time.Second),
+		Acquirer:            acquirer,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+		IdlePollInterval:    time.Millisecond,
+		TaskTimeout:         25 * time.Millisecond,
+	})
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	failed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusAutoFailedManualOnly)
+	if got, want := failed.LastErrorCode, "recovery_timeout"; got != want {
+		t.Fatalf("failure code = %q, want %q", got, want)
+	}
+	if got, want := failed.LastErrorMessage, "\u6062\u590d\u4efb\u52a1\u8d85\u8fc7\u6700\u5927\u6267\u884c\u65f6\u95f4\uff0c\u672a\u81ea\u52a8\u91cd\u8bd5\uff0c\u8bf7\u4eba\u5de5\u6838\u67e5"; got != want {
+		t.Fatalf("failure message = %q, want %q", got, want)
+	}
+	if got, want := acquirer.callCount(), 1; got != want {
+		t.Fatalf("token acquisition calls = %d, want %d", got, want)
+	}
+	if got := core.uploadCount(); got != 0 {
+		t.Fatalf("CPA auth-file uploads = %d, want 0", got)
+	}
+}
+
+type deadlineBlockingRecoveryAcquirer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (a *deadlineBlockingRecoveryAcquirer) Acquire(ctx context.Context, _ tokenacquisition.Request) (tokenacquisition.Result, error) {
+	a.mu.Lock()
+	a.calls++
+	a.mu.Unlock()
+	<-ctx.Done()
+	return tokenacquisition.Result{}, ctx.Err()
+}
+
+func (a *deadlineBlockingRecoveryAcquirer) callCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls
+}
+
+func TestServiceReconcilesExpiredRunningRecoveryTasks(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-stale-reconcile.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	stale, err := st.SignalTokenRecoveryAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "stale.json", AuthIndex: "1", AccountEmail: "stale@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalTokenRecoveryAutomatic(stale) = %v", err)
+	}
+	if _, found, err := st.ClaimNextEligibleTokenRecovery(ctx, true); err != nil || !found {
+		t.Fatalf("ClaimNextEligibleTokenRecovery(stale) found=%t err=%v", found, err)
+	}
+	service := NewWithOptions(Options{Tasks: st, TaskTimeout: 200 * time.Millisecond})
+	time.Sleep(220 * time.Millisecond)
+	fresh, err := st.SignalTokenRecoveryAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "fresh.json", AuthIndex: "2", AccountEmail: "fresh@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalTokenRecoveryAutomatic(fresh) = %v", err)
+	}
+	if _, found, err := st.ClaimNextEligibleTokenRecovery(ctx, true); err != nil || !found {
+		t.Fatalf("ClaimNextEligibleTokenRecovery(fresh) found=%t err=%v", found, err)
+	}
+	changed, err := service.reconcileStaleRunningTasks(ctx)
+	if err != nil {
+		t.Fatalf("reconcileStaleRunningTasks() = %v", err)
+	}
+	if got, want := changed, int64(1); got != want {
+		t.Fatalf("reconcileStaleRunningTasks() changed %d tasks, want %d", got, want)
+	}
+	staleTask, found, err := st.GetTokenRecoveryByID(ctx, stale.ID)
+	if err != nil || !found {
+		t.Fatalf("GetTokenRecoveryByID(stale) found=%t err=%v", found, err)
+	}
+	if staleTask.Status != model.TokenRecoveryStatusAutoFailedManualOnly || staleTask.LastErrorCode != "recovery_timeout" {
+		t.Fatalf("stale task = %#v", staleTask)
+	}
+	freshTask, found, err := st.GetTokenRecoveryByID(ctx, fresh.ID)
+	if err != nil || !found {
+		t.Fatalf("GetTokenRecoveryByID(fresh) found=%t err=%v", found, err)
+	}
+	if freshTask.Status != model.TokenRecoveryStatusAutoRunning || freshTask.LastErrorCode != "" {
+		t.Fatalf("fresh task = %#v", freshTask)
+	}
+}
