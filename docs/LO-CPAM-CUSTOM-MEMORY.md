@@ -646,3 +646,38 @@ authorization-file JSON export flow.
 - A successful saved-list write must invalidate the 15-second proxy-overload
   cache. Older in-flight generations must not repopulate that cache after the
   invalidation. This only affects the read-only statistic.
+
+## 2026-10-27: Token Recovery terminal-state durability and stale-task fence
+
+This CPAM-only fix must be preserved during every future upstream merge. It
+does not modify CPA Core / `cli-proxy-api`, credential JSON contents, request
+routing, usage events, Credits, quota accounting, pricing, or billing.
+
+- `internal/service/tokenrecovery` now persists the terminal result after the
+  external Token Acquisition and CPA auth-file mutation have finished. A
+  transient SQLite `BUSY`/`LOCKED` result retries only the terminal row update;
+  it never repeats Token Acquisition, CPA upload, or credential mutation.
+- Terminal writes use a cancellation-independent bounded context (30 seconds)
+  and four bounded backoff attempts. Non-lock/semantic errors are not retried.
+  The task remains an explicit manual-review failure if durable persistence
+  still cannot be completed, with a redacted log message.
+- Every claimed recovery has a 60-minute end-to-end deadline. Cancellation or
+  deadline produces `recovery_timeout` / manual-only terminal state and never
+  starts a second external request. A one-minute reconciler terminalizes older
+  `auto_running`/`manual_running` rows as `recovery_timeout`; it never requeues
+  or replays them.
+- On process start, the existing startup fence remains in force: interrupted
+  in-flight rows become manual-only. The new fence/reconciler writes use the
+  same bounded SQLite-lock retry path, so a restart cannot silently leave a
+  row permanently `*_running` solely because its final state update hit a
+  busy database.
+- The regression set is mandatory: terminal success/failure lock retry without
+  a second acquisition, per-task timeout without CPA upload, stale-row
+  reconciliation, and repository state isolation. Run the manager-server tests
+  in Linux isolation before promotion; Windows permission/signal-only failures
+  are not release evidence.
+- A production repair may terminalize only an explicitly verified stale-row
+  allowlist (`id + file_name + started_at_ms + status/mode`), writing a
+  pre-image audit file under `/home/cpam/backups/`. It must not touch
+  `/home/cpam/data/usage_events*`, usage snapshots, `data.key`, CPA Core, or
+  billing tables.
