@@ -14,6 +14,7 @@ import (
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -110,6 +111,49 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 	}
 	if checkpoint.LastEventID != 3 {
 		t.Fatalf("checkpoint = %#v", checkpoint)
+	}
+}
+
+func TestAccountHistoryRowsUsesCompatibleProjectionCoverageAndRawTail(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	monitoring := usagemonitoring.New(db)
+	repo := New(db)
+	baseMS := int64(1_700_000_000_000)
+	accountKey := rollupTestAccountKey("alice@example.com", "", "auth-a")
+
+	// The first event represents retained history: it is projected before the
+	// raw row disappears. The later event remains in the live raw tail.
+	if _, err := events.InsertBatch(ctx, []usage.Event{
+		rollupTestEvent("account-projection-covered", baseMS+1_000, "model-a", "resolved-a", "alice@example.com", "", "auth-a", false, 100, 20, 0, 10, 0, 0, 120),
+	}); err != nil {
+		t.Fatalf("insert covered event: %v", err)
+	}
+	if _, err := monitoring.CatchUpProjection(ctx, 10, baseMS+2_000); err != nil {
+		t.Fatalf("catch up projection: %v", err)
+	}
+	if _, err := db.Exec(`delete from usage_events where id = 1`); err != nil {
+		t.Fatalf("remove retained raw fixture: %v", err)
+	}
+	if _, err := events.InsertBatch(ctx, []usage.Event{
+		rollupTestEvent("account-projection-tail", baseMS+3_000, "model-a", "resolved-a", "alice@example.com", "", "auth-a", true, 5, 3, 0, 0, 0, 0, 8),
+	}); err != nil {
+		t.Fatalf("insert raw tail event: %v", err)
+	}
+
+	rows, err := repo.AccountHistoryRows(ctx, []string{accountKey})
+	if err != nil {
+		t.Fatalf("read projection-backed account history: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %#v, want one merged model row", rows)
+	}
+	row := rows[0]
+	if row.AccountKey != accountKey || row.Calls != 2 || row.SuccessCalls != 1 || row.FailureCalls != 1 ||
+		row.InputTokens != 105 || row.OutputTokens != 23 || row.TotalTokens != 128 ||
+		row.FirstSeenMS != baseMS+1_000 || row.LastSeenMS != baseMS+3_000 {
+		t.Fatalf("projection-backed row = %#v", row)
 	}
 }
 

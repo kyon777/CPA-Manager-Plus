@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -85,6 +86,7 @@ func New(db *sql.DB) Repository {
 type eventRow struct {
 	ID                    int64
 	TimestampMS           int64
+	AccountKey            string
 	AccountSnapshot       string
 	AuthLabelSnapshot     string
 	AuthFileSnapshot      string
@@ -345,6 +347,20 @@ func mergeRawAccountHistoryRows(
 	accountKeys []string,
 	grouped map[accountRollupKey]*AccountHistoryRow,
 ) error {
+	coverageID, projectionCompatible, err := accountHistoryProjectionCoverageTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if projectionCompatible && coverageID > afterEventID {
+		events, err := projectedAccountHistoryEventsAfterCheckpoint(ctx, tx, afterEventID, coverageID, accountKeys)
+		if err != nil {
+			return err
+		}
+		for _, row := range aggregateAccountHistory(events, 0) {
+			mergeAccountHistoryRow(grouped, row)
+		}
+		afterEventID = coverageID
+	}
 	events, err := accountHistoryEventsAfterCheckpoint(ctx, tx, afterEventID, accountKeys)
 	if err != nil {
 		return err
@@ -353,6 +369,31 @@ func mergeRawAccountHistoryRows(
 		mergeAccountHistoryRow(grouped, row)
 	}
 	return nil
+}
+
+// accountHistoryProjectionCoverageTx returns the monitored projection's
+// verified watermark. The projection owns a pre-computed account_key and its
+// account-window index, so it is safe to use as the historical arm even while
+// other derived rollups (for example pricing) are rebuilding. Events after the
+// watermark stay on the immutable raw table, preventing overlap or loss.
+func accountHistoryProjectionCoverageTx(ctx context.Context, tx *sql.Tx) (int64, bool, error) {
+	var schemaVersion int
+	var revision, status string
+	var coverageID int64
+	err := tx.QueryRowContext(ctx, `select schema_version, structure_revision, status, coverage_event_id
+		from usage_monitoring_rollup_state where rollup_name = 'projection_v1'`).Scan(
+		&schemaVersion, &revision, &status, &coverageID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	compatible := schemaVersion == 1 &&
+		revision == usageidentity.MonitoringProjectionStructureRevision() &&
+		status != "clearing"
+	return coverageID, compatible, nil
 }
 
 func scanAndMergeAccountHistoryRows(rows *sql.Rows, grouped map[accountRollupKey]*AccountHistoryRow) error {
@@ -569,6 +610,7 @@ func eventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID, targetE
 	rows, err := tx.QueryContext(ctx, `select
 	id,
 	timestamp_ms,
+	'' as account_key,
 	coalesce(account_snapshot, ''),
 		coalesce(auth_label_snapshot, ''),
 		coalesce(auth_file_snapshot, ''),
@@ -611,6 +653,7 @@ func accountHistoryEventsAfterCheckpoint(
 	query := `select
 		e.id,
 		e.timestamp_ms,
+		'' as account_key,
 		coalesce(e.account_snapshot, ''),
 		coalesce(e.auth_label_snapshot, ''),
 		coalesce(e.auth_file_snapshot, ''),
@@ -648,6 +691,54 @@ func accountHistoryEventsAfterCheckpoint(
 	return scanAccountHistoryEvents(rows, 0)
 }
 
+func projectedAccountHistoryEventsAfterCheckpoint(
+	ctx context.Context,
+	tx *sql.Tx,
+	afterEventID, coverageEventID int64,
+	accountKeys []string,
+) ([]eventRow, error) {
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(accountKeys)), ",")
+	query := `select
+		p.event_id,
+		p.timestamp_ms,
+		p.account_key,
+		coalesce(p.account_snapshot, ''),
+		coalesce(p.auth_label_snapshot, ''),
+		coalesce(p.auth_file_snapshot, ''),
+		coalesce(nullif(p.auth_provider_snapshot, ''), p.provider, ''),
+		coalesce(p.auth_account_id_snapshot, ''),
+		coalesce(p.auth_project_id_snapshot, ''),
+		coalesce(p.auth_index, ''),
+		coalesce(p.source, ''),
+		coalesce(p.source_hash, ''),
+		` + usageidentity.SQLRequestAnalyticsModelExpression("p.model", "p.requested_model") + ` as model,
+		coalesce(nullif(p.resolved_model, ''), ` + usageidentity.SQLRequestAnalyticsModelExpression("p.model", "p.requested_model") + `) as billing_model,
+		coalesce(p.service_tier, '') as service_tier,
+		p.failed,
+		coalesce(p.normalized_total_input_tokens, p.input_tokens, 0),
+		coalesce(p.output_tokens, 0),
+		coalesce(p.reasoning_tokens, 0),
+		coalesce(p.cached_tokens, 0),
+		coalesce(p.cache_tokens, 0),
+		coalesce(p.cache_read_tokens, 0),
+		coalesce(p.cache_creation_tokens, 0),
+		coalesce(p.total_tokens, 0)
+	from ` + usageprojection.EventTable + ` p
+	where p.event_id > ? and p.event_id <= ? and p.account_key in (` + placeholders + `)
+	order by p.event_id`
+	args := make([]any, 0, len(accountKeys)+2)
+	args = append(args, afterEventID, coverageEventID)
+	for _, key := range accountKeys {
+		args = append(args, key)
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAccountHistoryEvents(rows, 0)
+}
+
 func scanAccountHistoryEvents(rows *sql.Rows, capacity int) ([]eventRow, error) {
 	events := make([]eventRow, 0, capacity)
 	for rows.Next() {
@@ -656,6 +747,7 @@ func scanAccountHistoryEvents(rows *sql.Rows, capacity int) ([]eventRow, error) 
 		if err := rows.Scan(
 			&row.ID,
 			&row.TimestampMS,
+			&row.AccountKey,
 			&row.AccountSnapshot,
 			&row.AuthLabelSnapshot,
 			&row.AuthFileSnapshot,
@@ -702,18 +794,22 @@ type accountRollupKey struct {
 func aggregateAccountHistory(events []eventRow, nowMS int64) []AccountHistoryRow {
 	grouped := map[accountRollupKey]*AccountHistoryRow{}
 	for _, event := range events {
-		accountKey, valid := usageidentity.AccountKey(usageidentity.Fields{
-			AuthFileSnapshot:      event.AuthFileSnapshot,
-			AuthIndex:             event.AuthIndex,
-			AuthProviderSnapshot:  event.AuthProviderSnapshot,
-			AuthAccountIDSnapshot: event.AuthAccountIDSnapshot,
-			AuthProjectIDSnapshot: event.AuthProjectIDSnapshot,
-			AccountSnapshot:       event.AccountSnapshot,
-			AuthLabelSnapshot:     event.AuthLabelSnapshot,
-			Source:                event.Source,
-		})
-		if !valid {
-			continue
+		accountKey := strings.TrimSpace(event.AccountKey)
+		if accountKey == "" {
+			var valid bool
+			accountKey, valid = usageidentity.AccountKey(usageidentity.Fields{
+				AuthFileSnapshot:      event.AuthFileSnapshot,
+				AuthIndex:             event.AuthIndex,
+				AuthProviderSnapshot:  event.AuthProviderSnapshot,
+				AuthAccountIDSnapshot: event.AuthAccountIDSnapshot,
+				AuthProjectIDSnapshot: event.AuthProjectIDSnapshot,
+				AccountSnapshot:       event.AccountSnapshot,
+				AuthLabelSnapshot:     event.AuthLabelSnapshot,
+				Source:                event.Source,
+			})
+			if !valid {
+				continue
+			}
 		}
 		billingModel := event.BillingModel
 		if billingModel == "" {
