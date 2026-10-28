@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -368,7 +369,16 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 		preparedList = append(preparedList, prepared)
 	}
 
-	// Phase 5: SQLite write transaction - strictly short atomic DB writes only
+	// Phase 5: SQLite write transaction - strictly short atomic DB writes only.
+	// Raw usage events are the billing/request fact source, so they receive the
+	// critical writer lease before opening the transaction. All SQL statements,
+	// identity claims, and commit semantics remain unchanged.
+	lease, err := sqliterepo.CoordinatorFor(r.db).Acquire(ctx, sqliterepo.WritePriorityCritical)
+	if err != nil {
+		return model.InsertResult{}, err
+	}
+	defer lease.Release()
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.InsertResult{}, err
