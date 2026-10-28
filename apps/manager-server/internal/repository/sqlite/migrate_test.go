@@ -41,6 +41,57 @@ func TestProxyReplacementTaskMigrationAddsInconclusiveRecheckCount(t *testing.T)
 	}
 }
 
+func TestMigrateCreatesAccountHistoryPriceCacheSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "account-price-cache.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	wantColumns := map[string]string{
+		"account_key":      "TEXT",
+		"pricing_revision": "TEXT",
+		"covered_event_id": "INTEGER",
+		"total_cost":       "REAL",
+		"updated_at_ms":    "INTEGER",
+		"status":           "TEXT",
+		"last_error":       "TEXT",
+	}
+	columns := migrationTableColumnTypes(t, db, "usage_pricing_account_price_cache_v1")
+	for name, wantType := range wantColumns {
+		if got := columns[name]; got != wantType {
+			t.Fatalf("cache column %q type=%q, want %q; all=%#v", name, got, wantType, columns)
+		}
+	}
+	for _, indexName := range []string{
+		"idx_usage_pricing_account_price_cache_account",
+		"idx_usage_pricing_account_price_cache_revision",
+	} {
+		var count int
+		if err := db.QueryRow(`select count(*) from sqlite_master where type = 'index' and name = ?`, indexName).Scan(&count); err != nil {
+			t.Fatalf("query index %q: %v", indexName, err)
+		}
+		if count != 1 {
+			t.Fatalf("index %q count=%d, want 1", indexName, count)
+		}
+	}
+	var before int
+	if err := db.QueryRow(`select count(*) from sqlite_master where name like 'usage_pricing_account_price_cache%'`).Scan(&before); err != nil {
+		t.Fatalf("count cache schema objects before repeat migration: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("repeat migrate: %v", err)
+	}
+	var after int
+	if err := db.QueryRow(`select count(*) from sqlite_master where name like 'usage_pricing_account_price_cache%'`).Scan(&after); err != nil {
+		t.Fatalf("count cache schema objects after repeat migration: %v", err)
+	}
+	if after != before {
+		t.Fatalf("cache schema object count changed after repeat migration: before=%d after=%d", before, after)
+	}
+}
+
 func TestProxyExitIPOnlyCleanupClearsOnlyLegacyInferredProxyStateOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proxy-exit-ip-cleanup.sqlite")
 	db, err := Open(path)
@@ -4254,6 +4305,32 @@ func migrationTableColumns(t *testing.T, db *sql.DB, table string) map[string]bo
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate %s columns: %v", table, err)
+	}
+	return columns
+}
+
+func migrationTableColumnTypes(t *testing.T, db *sql.DB, table string) map[string]string {
+	t.Helper()
+	rows, err := db.Query(`pragma table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("read %s column types: %v", table, err)
+	}
+	defer rows.Close()
+
+	columns := map[string]string{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan %s column types: %v", table, err)
+		}
+		columns[name] = strings.ToUpper(columnType)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s column types: %v", table, err)
 	}
 	return columns
 }

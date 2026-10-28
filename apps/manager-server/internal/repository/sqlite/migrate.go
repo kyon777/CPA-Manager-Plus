@@ -42,9 +42,10 @@ const (
 	usageHourlyAggregateState = "usage_hourly_aggregate_state"
 	usageEventIdentityLedger  = "usage_event_identity_ledger"
 
-	usageAccountModelRollupsTable   = "usage_account_model_rollups"
-	usagePricingAccountRollupsTable = "usage_pricing_account_rollups_v1"
-	usageAccountModelRollupsLegacy  = "usage_account_model_rollups_legacy_v1120_rc2"
+	usageAccountModelRollupsTable      = "usage_account_model_rollups"
+	usagePricingAccountRollupsTable    = "usage_pricing_account_rollups_v1"
+	usagePricingAccountPriceCacheTable = "usage_pricing_account_price_cache_v1"
+	usageAccountModelRollupsLegacy     = "usage_account_model_rollups_legacy_v1120_rc2"
 	// Keep the unsuffixed identity-v3 name for cleanup of databases migrated by
 	// the previous identity revision. New Codex identity rebuilds use a
 	// revision-specific name so pending old cleanup cannot block startup.
@@ -140,6 +141,18 @@ const (
 			service_tier, context_threshold_tokens
 		)
 		)`
+
+	createUsagePricingAccountPriceCacheTable = `create table if not exists usage_pricing_account_price_cache_v1 (
+		account_key text not null,
+		pricing_revision text not null,
+		covered_event_id integer not null default 0,
+		total_cost real not null,
+		updated_at_ms integer not null,
+		status text not null default 'fresh',
+		last_error text not null default '',
+		primary key (account_key, pricing_revision),
+		check (status in ('fresh', 'stale', 'failed'))
+	)`
 
 	createUsageDashboardHourlyRollupsTable = `create table if not exists usage_dashboard_hourly_rollups (
 		bucket_ms integer not null,
@@ -359,6 +372,11 @@ func Migrate(db *sql.DB) error {
 			)
 		)`,
 		createUsagePricingAccountRollupsTable,
+		createUsagePricingAccountPriceCacheTable,
+		`create index if not exists idx_usage_pricing_account_price_cache_account
+			on usage_pricing_account_price_cache_v1(account_key, updated_at_ms desc)`,
+		`create index if not exists idx_usage_pricing_account_price_cache_revision
+			on usage_pricing_account_price_cache_v1(pricing_revision, covered_event_id)`,
 		`create table if not exists usage_pricing_rollup_state (
 			rollup_name text primary key,
 			schema_version integer not null,
