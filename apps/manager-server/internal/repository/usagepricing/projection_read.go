@@ -185,11 +185,16 @@ func retainedAccountEventSourceTx(ctx context.Context, tx *sql.Tx, accountKeys [
 	for _, key := range accountKeys {
 		args = append(args, key)
 	}
+	for _, key := range accountKeys {
+		args = append(args, key)
+	}
 	return fmt.Sprintf(`(select p.event_id as id, p.%s from %s p
 		where p.account_key in (%s) and p.event_id <= %d
-		union all select e.id, e.%s from usage_events e where e.id > %d)`,
+		union all select e.id, e.%s from usage_events e
+		where e.id > %d and %s in (%s))`,
 		strings.Join(retainedPricingColumns, ", p."), usageprojection.EventTable, placeholders, coverageID,
 		strings.Join(retainedPricingColumns, ", e."), coverageID,
+		usageidentity.SQLAccountKeyExpression("e"), placeholders,
 	), args, nil
 }
 

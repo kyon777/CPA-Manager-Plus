@@ -66,6 +66,12 @@ func TestRetainedAccountEventSourceUsesProjectionAccountIndex(t *testing.T) {
 	if !strings.Contains(source, "p.account_key in (?,?)") {
 		t.Fatalf("retained account source is not account-scoped: %s", source)
 	}
+	if !strings.Contains(source, "e.id > 100 and "+usageidentity.SQLAccountKeyExpression("e")+" in (?,?)") {
+		t.Fatalf("retained raw tail is not account-scoped: %s", source)
+	}
+	if len(args) != 4 || args[0] != "account-a" || args[1] != "account-b" || args[2] != "account-a" || args[3] != "account-b" {
+		t.Fatalf("retained account source args = %#v, want projection and raw account keys", args)
+	}
 
 	rows, err := tx.QueryContext(ctx, "explain query plan select id from "+source+" retained", args...)
 	if err != nil {

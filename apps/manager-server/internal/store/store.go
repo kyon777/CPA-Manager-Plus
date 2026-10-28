@@ -821,7 +821,7 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
-	rows, state, available, err := s.UsagePricing.LoadAccountRowsTx(ctx, tx, accountKeys)
+	rows, state, available, err := s.UsagePricing.LoadAccountRowsForHistoryTx(ctx, tx, accountKeys)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
@@ -830,7 +830,7 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 	}
 
 	incomplete := accountPricingCoverageIncompleteKeys(coreRows, rows)
-	if len(incomplete) > 0 {
+	if len(incomplete) > 0 && pricingHistoryRecoveryAllowed(state) {
 		recoveryKeys := make([]string, 0, len(incomplete))
 		for key := range incomplete {
 			recoveryKeys = append(recoveryKeys, key)
@@ -879,6 +879,14 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
 	}, nil
+}
+
+func pricingHistoryRecoveryAllowed(state UsagePricingState) bool {
+	// Structural pricing rebuilds are intentionally read-degraded. The core
+	// account rollup remains authoritative for requests/tokens, while pricing
+	// rows are allowed to catch up asynchronously. Do not turn every history
+	// page into a scan of the immutable raw event table in the meantime.
+	return state.Status != "rebuilding" && state.Status != "clearing"
 }
 
 func (s *Store) CatchUpAccountHistoryRollups(ctx context.Context, limit int, nowMS int64) (UsageRollupCatchUpResult, error) {

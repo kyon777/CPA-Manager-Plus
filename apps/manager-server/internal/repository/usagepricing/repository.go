@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
-	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -33,6 +33,11 @@ type Repository interface {
 	LoadHourlyRowsFromEventsTx(ctx context.Context, tx *sql.Tx, filter HourlyFilter) ([]HourlyRow, error)
 	LoadAccountRows(ctx context.Context, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
+	// LoadAccountRowsForHistoryTx is a read-only management fast path. During a
+	// structural rebuild, it returns the durable pricing rows without scanning
+	// the immutable raw tail; callers can fall back to core account rollups and
+	// expose pricing as temporarily unavailable. It never changes billing data.
+	LoadAccountRowsForHistoryTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, error)
 }
 
@@ -1102,6 +1107,47 @@ func (r *repository) LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountK
 		return nil, State{}, false, err
 	}
 	return sortedAccountRows(grouped), state, true, nil
+}
+
+func (r *repository) LoadAccountRowsForHistoryTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error) {
+	keys := normalizeValues(accountKeys)
+	if len(keys) == 0 {
+		state, err := stateQuery(ctx, tx)
+		return []AccountRow{}, state, err == nil && state.SchemaVersion == SchemaVersion, err
+	}
+	state, err := stateQuery(ctx, tx)
+	if err != nil {
+		return nil, State{}, false, err
+	}
+	if state.SchemaVersion != SchemaVersion {
+		return nil, state, false, nil
+	}
+	revision, err := StructureRevision(ctx, tx)
+	if err != nil {
+		return nil, State{}, false, err
+	}
+	if state.StructureRevision != revision || state.Status == "clearing" {
+		return nil, state, false, nil
+	}
+	grouped := map[accountKey]*AccountRow{}
+	if err := mergeStoredAccountRows(ctx, tx, revision, keys, grouped); err != nil {
+		return nil, State{}, false, err
+	}
+	if historyAccountRowsMaySkipRawTail(state) {
+		// A structural rebuild deliberately has incomplete pricing coverage.
+		// Returning the stored prefix lets the store mark affected accounts
+		// unpriced and use immutable core rollups instead of evaluating millions
+		// of raw events for every visible page.
+		return sortedAccountRows(grouped), state, false, nil
+	}
+	if err := mergeRawAccountRows(ctx, tx, state.CoverageEventID, keys, grouped); err != nil {
+		return nil, State{}, false, err
+	}
+	return sortedAccountRows(grouped), state, true, nil
+}
+
+func historyAccountRowsMaySkipRawTail(state State) bool {
+	return state.Status == "rebuilding" || state.Status == "clearing"
 }
 
 func mergeStoredAccountRows(
