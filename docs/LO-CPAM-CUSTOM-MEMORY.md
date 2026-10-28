@@ -681,3 +681,31 @@ routing, usage events, Credits, quota accounting, pricing, or billing.
   pre-image audit file under `/home/cpam/backups/`. It must not touch
   `/home/cpam/data/usage_events*`, usage snapshots, `data.key`, CPA Core, or
   billing tables.
+
+## 2026-10-28: Pricing-rebuild-safe account-history reads
+
+This CPAM-only performance fix is mandatory to preserve during future updates.
+It changes only read-path behavior while `pricing_v1` is rebuilding; it does
+not alter billing writes, Credits, quota accounting, usage events, pricing
+rows, CPA Core, `cli-proxy-api`, or scheduler behavior.
+
+- `account-history` first reads durable projected/core rows and the stored
+  pricing prefix. It must not scan the full raw `usage_events` tail while
+  pricing state is `rebuilding` or `clearing`; that tail scan was the source
+  of multi-minute page stalls/timeouts on large databases.
+- During an incomplete rebuild, request counts and token totals remain
+  available from immutable core/projection data. `total_cost` may be `null`
+  for accounts whose pricing coverage is not durable yet; the UI must render
+  this as unavailable/synchronizing, never as zero or monthly exhaustion.
+- Covered pricing rows remain visible during rebuild. Expensive raw-tail
+  recovery is allowed only after the pricing state is no longer rebuilding or
+  clearing, and any later recovery query must be restricted to requested
+  account keys.
+- A frontend refresh, pagination change, or service restart must not enable a
+  writer/derivation worker or mutate the usage database as a performance fix.
+  Preserve `USAGE_BACKGROUND_DERIVATIONS_ENABLED` and the existing server
+  maintenance policy; billing correctness takes precedence over displaying a
+  temporarily incomplete cost field.
+- Release verification must include focused repository/store/monitoring tests,
+  a bounded multi-account `account-history` request, service health, binary
+  hash, and confirmation that `cpa.service`/CPA PID did not change.
