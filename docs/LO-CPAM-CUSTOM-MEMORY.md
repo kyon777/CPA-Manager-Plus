@@ -709,3 +709,26 @@ rows, CPA Core, `cli-proxy-api`, or scheduler behavior.
 - Release verification must include focused repository/store/monitoring tests,
   a bounded multi-account `account-history` request, service health, binary
   hash, and confirmation that `cpa.service`/CPA PID did not change.
+
+## 2026-10-28：凭证列表价格显示恢复（B 方案，必须保留）
+
+本条覆盖上一节“重建期间禁止逐账号价格恢复”的展示降级规则。用户明确选择
+B 方案：凭证列表当前页必须恢复旧版精确价格读取，即使 `pricing_v1` 处于
+`rebuilding` 状态。该改动仍只属于 CPAM 读路径，不改变 CPA Core、
+`cli-proxy-api`、usage events、Credits、计费写入、模型价格写入或调度。
+
+- `Store.LoadUsagePricingAccountSnapshot` 必须使用既有
+  `UsagePricing.LoadAccountRowsTx`，不能退回仅读取 durable prefix 的
+  `LoadAccountRowsForHistoryTx`。
+- 价格覆盖不完整时，必须调用既有的
+  `LoadAccountRowsFromEventsTx`，按当前请求账号从兼容 monitoring projection
+  加 projection watermark 之后的 `usage_events` 尾部精确补算；覆盖校验仍是
+  唯一准入条件。
+- 可恢复账号返回真实 `total_cost`；无法证明覆盖完整的账号继续返回 `null`，
+  不得估算、复用旧 revision 或显示为 0。`sync_status=pending` 可以继续表示
+  全局 checkpoint 追赶，但不能阻止非空金额渲染。
+- 该路径是只读的。不得通过刷新、翻页或重启启用全量派生 worker，也不得把
+  本次 B 方案改成未经确认的缓存、排队或旧价格方案。
+- 回归测试必须覆盖 `pricing_v1=rebuilding` 时逐账号金额恢复且读取不写表；
+  部署验收需记录 50 账号页响应时间、CPAM 健康、二进制 SHA-256，并核对
+  `cpa.service` PID 未变化。
