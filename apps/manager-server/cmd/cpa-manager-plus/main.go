@@ -225,8 +225,6 @@ func runServer() {
 	if cfg.BackgroundDerivationsEnabled {
 		accountHistoryRollupWorker = worker.NewAccountHistoryRollupWorker(db)
 		usageDerivedRollupWorker = worker.NewUsagePricingRollupWorker(db)
-		accountPriceCacheWorker = worker.NewAccountPriceCacheWorker(db)
-		serverApp.AppContext().MonitoringService.SetAccountPriceCacheEnqueuer(accountPriceCacheWorker)
 		serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
 		if cfg.DashboardHourlyRollupEnabled {
 			usageHourlyAggregateWorker = worker.NewUsageHourlyAggregateWorker(db)
@@ -244,6 +242,10 @@ func runServer() {
 				usageHourlyAggregateWorker.Wake()
 			}
 		})
+	}
+	if cfg.AccountPriceCacheEnabled {
+		accountPriceCacheWorker = worker.NewAccountPriceCacheWorker(db)
+		serverApp.AppContext().MonitoringService.SetAccountPriceCacheEnqueuer(accountPriceCacheWorker)
 	}
 	automationRuntime := worker.NewAutomationRuntime(
 		automationSettingsService,
@@ -314,7 +316,9 @@ func runServer() {
 		if cfg.BackgroundDerivationsEnabled {
 			accountHistoryRollupWorker.Start(ctx)
 			usageDerivedRollupWorker.Start(ctx)
-			accountPriceCacheWorker.Start(ctx)
+			if accountPriceCacheWorker != nil {
+				accountPriceCacheWorker.Start(ctx)
+			}
 			if usageHourlyAggregateWorker != nil {
 				usageHourlyAggregateWorker.Start(ctx)
 			}
@@ -322,6 +326,9 @@ func runServer() {
 			worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
 		}
 		collectorWorker.Start(ctx)
+		if cfg.AccountPriceCacheEnabled && !cfg.BackgroundDerivationsEnabled && accountPriceCacheWorker != nil {
+			accountPriceCacheWorker.Start(ctx)
+		}
 	}
 
 	if cfg.BackgroundDerivationsEnabled {
