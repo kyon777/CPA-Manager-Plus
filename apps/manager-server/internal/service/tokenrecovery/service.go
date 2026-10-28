@@ -18,7 +18,10 @@ import (
 )
 
 const (
-	defaultIdlePollInterval                = 500 * time.Millisecond
+	// Idle workers are woken immediately when a manual or automatic recovery is
+	// queued. Keep the fallback poll deliberately coarse so an empty 80-worker
+	// pool does not turn into hundreds of SQLite claims per second.
+	defaultIdlePollInterval                = 5 * time.Second
 	defaultWorkerCount                     = 1
 	maxWorkerCount                         = 80
 	defaultAcquisitionConcurrency          = 40

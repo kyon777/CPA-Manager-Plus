@@ -18,6 +18,32 @@ type stubSettingsStore struct {
 	saves    int
 }
 
+type countingRuntimeSettingsStore struct {
+	mu       sync.Mutex
+	settings store.AutomationSettings
+	loads    int
+}
+
+func (s *countingRuntimeSettingsStore) LoadAutomationSettings(context.Context) (store.AutomationSettings, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loads++
+	return s.settings, true, nil
+}
+
+func (s *countingRuntimeSettingsStore) SaveAutomationSettings(
+	context.Context,
+	store.AutomationSettings,
+) (store.AutomationSettings, error) {
+	return store.AutomationSettings{}, errors.New("save is not used by this test")
+}
+
+func (s *countingRuntimeSettingsStore) loadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loads
+}
+
 func (s *stubSettingsStore) LoadAutomationSettings(ctx context.Context) (store.AutomationSettings, bool, error) {
 	return s.settings, s.ok, s.err
 }
@@ -189,6 +215,33 @@ func TestRuntimeSettingsKeepsLastKnownOnLoadError(t *testing.T) {
 	fallback := fresh.RuntimeSettings(ctx)
 	if fallback.QuotaCooldownEnabled {
 		t.Fatalf("runtime gating should fall back to startup default before first successful load, got %#v", fallback)
+	}
+}
+
+func TestRuntimeSettingsCoalescesConcurrentDatabaseReads(t *testing.T) {
+	loader := &countingRuntimeSettingsStore{
+		settings: store.AutomationSettings{CodexReauthAutoUpdateEnabled: boolPtr(true)},
+	}
+	svc := &Service{cfg: config.Config{}, store: loader}
+
+	const readers = 80
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	for range readers {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			if !svc.RuntimeSettings(context.Background()).CodexReauthAutoUpdateEnabled {
+				t.Error("runtime settings unexpectedly disabled")
+			}
+		}()
+	}
+	close(start)
+	waitGroup.Wait()
+
+	if got := loader.loadCount(); got != 1 {
+		t.Fatalf("concurrent runtime database reads = %d, want 1", got)
 	}
 }
 

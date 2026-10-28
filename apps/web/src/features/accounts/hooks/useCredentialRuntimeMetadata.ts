@@ -54,8 +54,13 @@ const normalizeMetadataTargets = (
     provider: target.provider.trim().toLowerCase(),
   }));
 
-const targetSignature = (targets: readonly CredentialRuntimeMetadataTarget[]): string =>
-  targets
+// Visible rows can be reordered by the live "recent request" sort while
+// their membership remains identical. Read lifecycle identity must represent
+// that membership, not the transient presentation order, otherwise every
+// reorder aborts and restarts the same Manager query.
+const targetSetSignature = (targets: readonly CredentialRuntimeMetadataTarget[]): string =>
+  [...targets]
+    .sort((left, right) => left.clientKey.localeCompare(right.clientKey))
     .map((target) =>
       [
         target.clientKey,
@@ -201,7 +206,6 @@ export const useCredentialRuntimeMetadata = ({
   lookupRecoveryTasks = false,
 }: UseCredentialRuntimeMetadataOptions): UseCredentialRuntimeMetadataResult => {
   const normalizedTargets = normalizeMetadataTargets(targets);
-  const normalizedTargetSignature = targetSignature(normalizedTargets);
   const seededItemSignature = itemSignature(seedItems);
   // The signature deliberately governs this identity: parents frequently
   // allocate an equivalent seed array during a render, and recreating this
@@ -217,7 +221,7 @@ export const useCredentialRuntimeMetadata = ({
     active && Boolean(managerApiBase && managerManagementKey && normalizedTargets.length > 0);
   const metadataFetchEnabled = enabled && fetchMetadata;
   const recoveryLookupEnabled = enabled && lookupRecoveryTasks && !metadataFetchEnabled;
-  const scopeSignature = [managerApiBase, managerManagementKey, normalizedTargetSignature].join(
+  const scopeSignature = [managerApiBase, managerManagementKey, targetSetSignature(normalizedTargets)].join(
     '\u0000'
   );
 
@@ -416,7 +420,7 @@ export const useCredentialRuntimeMetadata = ({
     scopeSignature,
   ]);
 
-  const pendingRecoverySignature = targetSignature(
+  const pendingRecoverySignature = targetSetSignature(
     toPendingRecoveryTargets(normalizedTargets, itemsByClientKey)
   );
 

@@ -223,6 +223,27 @@ describe('useCredentialRuntimeMetadata', () => {
     );
   });
 
+  it('does not restart the visible recovery lookup when only row order changes', async () => {
+    mocks.queryTokenRecoveryBatch.mockResolvedValue({ items: [] } satisfies TokenRecoveryBatchResponse);
+
+    await act(async () => {
+      renderer = create(
+        <Harness targets={[TARGET_A, TARGET_B]} fetchMetadata={false} lookupRecoveryTasks />
+      );
+      await flush();
+    });
+    expect(mocks.queryTokenRecoveryBatch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      renderer?.update(
+        <Harness targets={[TARGET_B, TARGET_A]} fetchMetadata={false} lookupRecoveryTasks />
+      );
+      await flush();
+    });
+
+    expect(mocks.queryTokenRecoveryBatch).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps visible recovery state when a changed list seed omits it before lookup settles', async () => {
     const lookup = deferred<TokenRecoveryBatchResponse>();
     const completedTask = {

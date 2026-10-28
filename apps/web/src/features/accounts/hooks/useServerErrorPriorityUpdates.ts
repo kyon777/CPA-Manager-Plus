@@ -6,7 +6,10 @@ import {
 } from '@/services/api';
 import type { ApiClientRequestScope } from '@/services/api/client';
 
-const POLL_INTERVAL_MS = 1_000;
+// Completion deltas are durable and cursor-based. Five seconds keeps the
+// priority badge responsive without turning every open list into a 1 Hz
+// Manager request stream during high-concurrency traffic.
+const POLL_INTERVAL_MS = 5_000;
 const STARTUP_LOOKBACK_MS = 5_000;
 
 export type UseServerErrorPriorityUpdatesOptions = {

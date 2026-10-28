@@ -494,6 +494,26 @@ const hasEquivalentRecentIndexMap = (
     hasEquivalentRecentIndexItem(current.get(rowKey), item)
   );
 
+// Monitoring responses are keyed by credential identity, not the visual row
+// position. Keep lifecycle keys insensitive to a live-sort reorder so a
+// completed compact-index update cannot restart the same heavy page reads.
+const stableAccountHistoryTargets = (
+  entries: readonly AccountHistoryTargetEntry[]
+): AccountHistoryTargetEntry['target'][] =>
+  [...entries]
+    .sort((left, right) => left.rowKey.localeCompare(right.rowKey))
+    .map((entry) => entry.target);
+
+const hasSameAccountRowKeySet = (
+  left: readonly string[],
+  right: readonly string[]
+): boolean => {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((key, index) => key === sortedRight[index]);
+};
+
 type AccountQuotaRefreshMode = 'summary' | 'detail';
 
 type AccountRecentAnomalyIndexCoverage = {
@@ -1908,6 +1928,9 @@ export function AccountsPage() {
   const quotaCooldownsRef = useRef<Map<string, QuotaCooldownInfo>>(new Map());
   const accountActionCandidatesLoadedRef = useRef(false);
   const quotaCooldownsLoadedRef = useRef(false);
+  const autoInspectionSummaryLoadKeyRef = useRef<string | null>(null);
+  const autoQuotaCooldownsLoadKeyRef = useRef<string | null>(null);
+  const autoAccountActionCandidatesLoadKeyRef = useRef<string | null>(null);
   const consumedCredentialMutationMarkerIdsRef = useRef<Set<string>>(new Set());
   const credentialMutationMarkerAttemptsRef = useRef<Map<string, string>>(new Map());
   const credentialMutationMarkerExhaustedRef = useRef<Map<string, string>>(new Map());
@@ -2479,6 +2502,9 @@ export function AccountsPage() {
     accountActionCandidatesReqIdRef.current += 1;
     accountActionCandidatesLoadedRef.current = false;
     quotaCooldownsLoadedRef.current = false;
+    autoInspectionSummaryLoadKeyRef.current = null;
+    autoQuotaCooldownsLoadKeyRef.current = null;
+    autoAccountActionCandidatesLoadKeyRef.current = null;
     if (connectionScopeChanged) {
       synchronizedInspectionMutationKeysRef.current.clear();
       synchronizingInspectionMutationsRef.current.clear();
@@ -4609,7 +4635,7 @@ export function AccountsPage() {
         managementKey,
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
-        targets: accountRecentAnomalyIndexTargets.map((entry) => entry.target),
+        targets: stableAccountHistoryTargets(accountRecentAnomalyIndexTargets),
       });
     },
     [
@@ -5128,7 +5154,7 @@ export function AccountsPage() {
         managementKey,
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
-        targets: accountRecentIndexTargets.map((entry) => entry.target),
+        targets: stableAccountHistoryTargets(accountRecentIndexTargets),
       }),
     [
       accountRecentIndexTargets,
@@ -5149,7 +5175,7 @@ export function AccountsPage() {
         managementKey,
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
-        targets: accountHistoryTargets.map((entry) => entry.target),
+        targets: stableAccountHistoryTargets(accountHistoryTargets),
       }),
     [
       accountHistoryTargets,
@@ -5170,7 +5196,7 @@ export function AccountsPage() {
         managementKey,
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
-        targets: visibleAccountRecentIndexTargets.map((entry) => entry.target),
+        targets: stableAccountHistoryTargets(visibleAccountRecentIndexTargets),
       }),
     [
       connectionFingerprint,
@@ -5406,6 +5432,9 @@ export function AccountsPage() {
       (hasSelectedAccountDetail && (detailTab === 'overview' || detailTab === 'diagnostics')));
   const needsHeaderSnapshots =
     canLoadHeaderSnapshots && headerSnapshotLoadedKey !== headerSnapshotLoadKey;
+  const automaticInspectionSummaryLoadKey = `${credentialEvidenceScopeKey}\u0000${activeView}`;
+  const automaticQuotaCooldownsLoadKey = `${credentialEvidenceScopeKey}\u0000${effectiveOperationalFilter}\u0000${selectedRowKey ?? ''}\u0000${detailTab}`;
+  const automaticAccountActionCandidatesLoadKey = `${credentialEvidenceScopeKey}\u0000${effectiveOperationalFilter}\u0000${selectedRowKey ?? ''}\u0000${detailTab}`;
 
   useEffect(() => {
     if (
@@ -5414,8 +5443,15 @@ export function AccountsPage() {
     ) {
       return;
     }
+    if (autoQuotaCooldownsLoadKeyRef.current === automaticQuotaCooldownsLoadKey) return;
+    autoQuotaCooldownsLoadKeyRef.current = automaticQuotaCooldownsLoadKey;
     void loadQuotaCooldowns();
-  }, [credentialEvidenceScopeKey, loadQuotaCooldowns, needsQuotaCooldowns]);
+  }, [
+    automaticQuotaCooldownsLoadKey,
+    credentialEvidenceScopeKey,
+    loadQuotaCooldowns,
+    needsQuotaCooldowns,
+  ]);
 
   useEffect(() => {
     if (
@@ -5424,8 +5460,17 @@ export function AccountsPage() {
     ) {
       return;
     }
+    if (autoAccountActionCandidatesLoadKeyRef.current === automaticAccountActionCandidatesLoadKey) {
+      return;
+    }
+    autoAccountActionCandidatesLoadKeyRef.current = automaticAccountActionCandidatesLoadKey;
     void loadAccountActionCandidates();
-  }, [credentialEvidenceScopeKey, loadAccountActionCandidates, needsActionCandidates]);
+  }, [
+    automaticAccountActionCandidatesLoadKey,
+    credentialEvidenceScopeKey,
+    loadAccountActionCandidates,
+    needsActionCandidates,
+  ]);
 
   useEffect(() => {
     if (!needsHeaderSnapshots) return;
@@ -5434,8 +5479,10 @@ export function AccountsPage() {
 
   useEffect(() => {
     if (!needsInspectionSummary) return;
+    if (autoInspectionSummaryLoadKeyRef.current === automaticInspectionSummaryLoadKey) return;
+    autoInspectionSummaryLoadKeyRef.current = automaticInspectionSummaryLoadKey;
     void loadInspectionSummaryAndSynchronize();
-  }, [loadInspectionSummaryAndSynchronize, needsInspectionSummary]);
+  }, [automaticInspectionSummaryLoadKey, loadInspectionSummaryAndSynchronize, needsInspectionSummary]);
 
   useEffect(() => {
     if (activeView !== 'accounts' || detailTab !== 'models' || !selectedRow) {
@@ -5652,9 +5699,9 @@ export function AccountsPage() {
   ]);
   const isListQueryContextMatching = useMemo(() => {
     if (!listWindowUsageQueryContext) return false;
-    if (listWindowUsageQueryContext.pageKeys.length !== pageRows.length) return false;
-    return pageRows.every(
-      (row, idx) => listWindowUsageQueryContext.pageKeys[idx] === row.selectionKey
+    return hasSameAccountRowKeySet(
+      listWindowUsageQueryContext.pageKeys,
+      pageRows.map((row) => row.selectionKey)
     );
   }, [listWindowUsageQueryContext, pageRows]);
   const listWindowUsageTargets = useMemo(() => {
@@ -5675,18 +5722,20 @@ export function AccountsPage() {
   // page/window identity; fresh target ranges are sampled on the next 60s
   // window-usage tick (or an explicit quota refresh).
   const listWindowUsageTargetIdentitySignature = useMemo(() => {
-    const payload = pageRows.map((row) => {
-      const definitions = listQuotaWindowsByRowKey.get(row.selectionKey) ?? [];
-      return {
-        rowKey: row.selectionKey,
-        definitions: definitions.map((def) => ({
-          key: def.key,
-          providerWindowId: def.providerWindowId,
-          windowMode: def.windowMode,
-          modelScope: def.modelScope,
-        })),
-      };
-    });
+    const payload = [...pageRows]
+      .sort((left, right) => left.selectionKey.localeCompare(right.selectionKey))
+      .map((row) => {
+        const definitions = listQuotaWindowsByRowKey.get(row.selectionKey) ?? [];
+        return {
+          rowKey: row.selectionKey,
+          definitions: definitions.map((def) => ({
+            key: def.key,
+            providerWindowId: def.providerWindowId,
+            windowMode: def.windowMode,
+            modelScope: def.modelScope,
+          })),
+        };
+      });
     return JSON.stringify(payload);
   }, [listQuotaWindowsByRowKey, pageRows]);
   const listWindowUsageAutoContextKey = useMemo(
@@ -5695,7 +5744,7 @@ export function AccountsPage() {
         checking: featureAvailability.checking,
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
-        pageKeys: pageRows.map((r) => r.selectionKey),
+        pageKeys: pageRows.map((r) => r.selectionKey).sort(),
         targetIdentitySignature: listWindowUsageTargetIdentitySignature,
       }),
     [
@@ -7962,7 +8011,7 @@ export function AccountsPage() {
     }
 
     const queryAsOfMs = Date.now();
-    const currentPageKeys = pageRows.map((r) => r.selectionKey);
+    const currentPageKeys = pageRows.map((r) => r.selectionKey).sort();
     const queryTargets = buildAccountWindowUsageTargetEntries(
       pageRows,
       listQuotaWindowsByRowKey,
@@ -8007,8 +8056,7 @@ export function AccountsPage() {
         const previousContext = listWindowUsageQueryContextRef.current;
         const previousDataMatchesCurrentPage =
           previousContext !== null &&
-          previousContext.pageKeys.length === currentPageKeys.length &&
-          previousContext.pageKeys.every((key, index) => key === currentPageKeys[index]);
+          hasSameAccountRowKeySet(previousContext.pageKeys, currentPageKeys);
         if (!previousDataMatchesCurrentPage) {
           setListWindowUsageByKey((current) => (current.size === 0 ? current : new Map()));
         }

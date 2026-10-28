@@ -910,6 +910,13 @@ func TestDefaultAcquisitionConcurrency(t *testing.T) {
 	}
 }
 
+func TestDefaultIdlePollIntervalAvoidsSubsecondDatabasePolling(t *testing.T) {
+	service := NewWithOptions(Options{})
+	if got, want := service.idlePollInterval, 5*time.Second; got != want {
+		t.Fatalf("default idle poll interval = %s, want %s", got, want)
+	}
+}
+
 func TestServiceLimitsConcurrentCPAAuthFileWritesWithoutLimitingAcquisition(t *testing.T) {
 	const workers = 12
 	const writeConcurrency = 8

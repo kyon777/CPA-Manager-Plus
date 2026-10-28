@@ -4180,6 +4180,94 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(7);
   });
 
+  it('does not restart visible monitoring reads when recent ordering changes without changing the page set', async () => {
+    const firstRecentIndex = createDeferred<AccountRecentIndexResponseForTest>();
+    mocks.files = [
+      makeCodexFile('stable-a.json', 'stable-a', 'stable-a@example.com'),
+      makeCodexFile('stable-b.json', 'stable-b', 'stable-b@example.com'),
+    ];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountRecentIndex.mockImplementation(
+      (_base, _key, request: AccountRecentIndexRequestForTest) =>
+        request.recent_limit === undefined
+          ? firstRecentIndex.promise
+          : Promise.resolve({ generated_at_ms: 1, items: [] })
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const initialRecentSignals = mocks.getAccountRecentIndex.mock.calls.map(
+      (call) => call[3] as AbortSignal
+    );
+    const initialRecentCalls = mocks.getAccountRecentIndex.mock.calls.length;
+    const initialHistoryCalls = mocks.getAccountHistory.mock.calls.length;
+    const initialWindowCalls = mocks.getAccountWindowUsage.mock.calls.length;
+
+    await act(async () => {
+      firstRecentIndex.resolve({
+        generated_at_ms: 2,
+        items: [
+          {
+            row_key: getAuthFileSelectionKey(mocks.files[0]!),
+            latest_request: { timestamp_ms: 1, failed: false },
+            recent_requests: [],
+            sync_status: 'ready',
+          },
+          {
+            row_key: getAuthFileSelectionKey(mocks.files[1]!),
+            latest_request: { timestamp_ms: 2, failed: false },
+            recent_requests: [],
+            sync_status: 'ready',
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.col_recent').props.onClick();
+      await flushPromises();
+    });
+
+    expect(getAccountListItemTexts(renderer)[0]).toContain('stable-b.json');
+
+    expect(mocks.getAccountRecentIndex).toHaveBeenCalledTimes(initialRecentCalls);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(initialHistoryCalls);
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(initialWindowCalls);
+    expect(initialRecentSignals.every((signal) => signal.aborted === false)).toBe(true);
+    renderer.unmount();
+  });
+
+  it('loads automatic inspection, cooldown, and action projections once for an unchanged list scope', async () => {
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.listCodexInspectionRuns.mockResolvedValue({ items: [] });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const initialInspectionCalls = mocks.listCodexInspectionRuns.mock.calls.length;
+    const initialCooldownCalls = mocks.getActiveQuotaCooldowns.mock.calls.length;
+    const initialActionCalls = mocks.listAccountActionCandidates.mock.calls.length;
+
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await flushPromises();
+    });
+
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(initialInspectionCalls);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(initialCooldownCalls);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(initialActionCalls);
+  });
+
   it('freezes passive list evidence until list live refresh is restored', async () => {
     vi.useFakeTimers();
     const browserEvents = new EventTarget();

@@ -58,6 +58,10 @@ type Service struct {
 	mu        sync.RWMutex
 	lastKnown store.AutomationSettings
 	hasKnown  bool
+	// runtimeLoadMu makes the hot-path policy check a singleflight read. Token
+	// recovery starts many workers by design; without this gate every idle
+	// worker simultaneously queried SQLite for the same unchanged settings.
+	runtimeLoadMu sync.Mutex
 
 	// updateMu serializes the read-modify-write in Update so concurrent PATCH
 	// requests cannot overwrite each other's fields based on a stale snapshot.
@@ -147,6 +151,27 @@ func (s *Service) Update(ctx context.Context, req UpdateRequest) (Status, error)
 // keeps the last known-good configuration (or startup defaults before the first
 // successful load).
 func (s *Service) RuntimeSettings(ctx context.Context) RuntimeSettings {
+	s.mu.RLock()
+	if s.hasKnown {
+		cached := s.lastKnown
+		s.mu.RUnlock()
+		return s.runtimeFromSettings(cached)
+	}
+	s.mu.RUnlock()
+
+	s.runtimeLoadMu.Lock()
+	defer s.runtimeLoadMu.Unlock()
+
+	// Another recovery worker may have loaded the same policy while this one
+	// waited for the gate. Reuse it rather than issuing a redundant SQLite read.
+	s.mu.RLock()
+	if s.hasKnown {
+		cached := s.lastKnown
+		s.mu.RUnlock()
+		return s.runtimeFromSettings(cached)
+	}
+	s.mu.RUnlock()
+
 	settings, _, err := s.loadSettings(ctx)
 	if err != nil {
 		log.Printf("[account-processing-policy] failed to load runtime settings: %v; using last known configuration", err)

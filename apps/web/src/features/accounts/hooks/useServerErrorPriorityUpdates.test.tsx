@@ -76,7 +76,7 @@ describe('useServerErrorPriorityUpdates', () => {
     vi.useRealTimers();
   });
 
-  it('polls immediately then every second only while the loaded account view is visible', async () => {
+  it('polls immediately then every five seconds only while the loaded account view is visible', async () => {
     mocks.listServerErrorPriorityDemotionUpdates.mockResolvedValue({
       items: [UPDATE],
       nextCursor: { completedAtMs: 2_000_000_000_000, id: 42 },
@@ -97,7 +97,14 @@ describe('useServerErrorPriorityUpdates', () => {
     expect(onUpdates).toHaveBeenCalledWith([UPDATE]);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(4_999);
+      await flush();
+    });
+
+    expect(mocks.listServerErrorPriorityDemotionUpdates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
       await flush();
     });
 
