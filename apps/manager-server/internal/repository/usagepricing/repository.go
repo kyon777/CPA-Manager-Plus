@@ -39,6 +39,9 @@ type Repository interface {
 	// expose pricing as temporarily unavailable. It never changes billing data.
 	LoadAccountRowsForHistoryTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, error)
+	LoadAccountPriceCacheTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]PriceCacheRow, error)
+	UpsertAccountPriceCache(ctx context.Context, rows []PriceCacheRow) error
+	MarkAccountPriceCacheFailure(ctx context.Context, accountKeys []string, revision string, message string, nowMS int64) error
 }
 
 type State struct {
@@ -126,6 +129,19 @@ type AccountRow struct {
 	FirstSeenMS          int64
 	LastSeenMS           int64
 	UpdatedAtMS          int64
+}
+
+// PriceCacheRow is derived pricing metadata. It is deliberately separate from
+// usage_events and the durable pricing rollup so a stale/rebuilding price can
+// never mutate billing source data.
+type PriceCacheRow struct {
+	AccountKey      string
+	PricingRevision string
+	CoveredEventID  int64
+	TotalCost       float64
+	UpdatedAtMS     int64
+	Status          string
+	LastError       string
 }
 
 type hourlyKey struct {
