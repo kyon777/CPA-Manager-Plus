@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/pricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -121,6 +124,7 @@ type UsagePricingCatchUpResult = usagepricing.CatchUpResult
 type UsagePricingHourlyFilter = usagepricing.HourlyFilter
 type UsagePricingHourlyRow = usagepricing.HourlyRow
 type UsagePricingAccountRow = usagepricing.AccountRow
+type UsagePricingAccountPriceCacheRow = usagepricing.PriceCacheRow
 type UsageMonitoringState = usagemonitoring.State
 type UsageMonitoringCatchUpResult = usagemonitoring.CatchUpResult
 type UsageArchivePreview = usagearchive.Preview
@@ -153,6 +157,18 @@ type UsagePricingAccountSnapshot struct {
 	Available                    bool
 	PricingIncompleteAccountKeys map[string]struct{}
 	Prices                       map[string]ModelPrice
+	PriceCache                   map[string]UsagePricingAccountPriceCacheRow
+	PriceRevision                string
+	PriceTargetEventID           int64
+}
+
+// AccountPriceCacheRecalculationResult describes a CPAM-local derived cache
+// refresh. It intentionally contains no mutation of usage_events, credits, or
+// CPA Core state.
+type AccountPriceCacheRecalculationResult struct {
+	PricingRevision string
+	CoveredEventID  int64
+	Recalculated    int
 }
 
 type Store struct {
@@ -821,7 +837,11 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
-	rows, state, available, err := s.UsagePricing.LoadAccountRowsTx(ctx, tx, accountKeys)
+	// The management request must never recover an incomplete pricing tail by
+	// scanning raw usage_events. The history-specific repository path returns
+	// only the durable current-revision prefix; the exact tail is handled by
+	// AccountPriceCacheWorker outside the HTTP critical path.
+	rows, state, available, err := s.UsagePricing.LoadAccountRowsForHistoryTx(ctx, tx, accountKeys)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
@@ -830,43 +850,24 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 	}
 
 	incomplete := accountPricingCoverageIncompleteKeys(coreRows, rows)
-	if len(incomplete) > 0 {
-		recoveryKeys := make([]string, 0, len(incomplete))
-		for key := range incomplete {
-			recoveryKeys = append(recoveryKeys, key)
-		}
-		recoveredRows, recoveryErr := s.UsagePricing.LoadAccountRowsFromEventsTx(ctx, tx, recoveryKeys)
-		if recoveryErr != nil {
-			return UsagePricingAccountSnapshot{}, recoveryErr
-		}
-
-		recoveryCoreRows := make([]AccountHistoryRollupRow, 0, len(coreRows))
-		for _, row := range coreRows {
-			if _, needsRecovery := incomplete[row.AccountKey]; needsRecovery {
-				recoveryCoreRows = append(recoveryCoreRows, row)
-			}
-		}
-		stillIncomplete := accountPricingCoverageIncompleteKeys(recoveryCoreRows, recoveredRows)
-
-		completeRows := make([]UsagePricingAccountRow, 0, len(rows)+len(recoveredRows))
-		for _, row := range rows {
-			if _, needsRecovery := incomplete[row.AccountKey]; !needsRecovery {
-				completeRows = append(completeRows, row)
-			}
-		}
-		for _, row := range recoveredRows {
-			if _, unresolved := stillIncomplete[row.AccountKey]; !unresolved {
-				completeRows = append(completeRows, row)
-			}
-		}
-		rows = completeRows
-		incomplete = stillIncomplete
-	}
 	available = len(incomplete) == 0
 
 	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
+	}
+	priceRevision := usagepricing.PriceValueRevision(prices)
+	var priceTargetEventID int64
+	if err := tx.QueryRowContext(ctx, `select coalesce(max(id), 0) from usage_events`).Scan(&priceTargetEventID); err != nil {
+		return UsagePricingAccountSnapshot{}, err
+	}
+	cacheRows, err := s.UsagePricing.LoadAccountPriceCacheTx(ctx, tx, accountKeys)
+	if err != nil {
+		return UsagePricingAccountSnapshot{}, err
+	}
+	priceCache := make(map[string]UsagePricingAccountPriceCacheRow, len(cacheRows))
+	for _, row := range cacheRows {
+		priceCache[row.AccountKey] = row
 	}
 	if err := tx.Commit(); err != nil {
 		return UsagePricingAccountSnapshot{}, err
@@ -878,7 +879,144 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 		Available:                    available,
 		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
+		PriceCache:                   priceCache,
+		PriceRevision:                priceRevision,
+		PriceTargetEventID:           priceTargetEventID,
 	}, nil
+}
+
+// RecalculateAccountPriceCache evaluates exact retained/raw pricing evidence
+// only for the requested accounts, then writes a small derived cache row. It
+// is intentionally called by the bounded background worker, never from an
+// account-history HTTP request.
+func (s *Store) RecalculateAccountPriceCache(
+	ctx context.Context,
+	accountKeys []string,
+	nowMS int64,
+) (AccountPriceCacheRecalculationResult, error) {
+	keys := normalizeAccountPriceCacheKeys(accountKeys)
+	if len(keys) == 0 {
+		return AccountPriceCacheRecalculationResult{}, nil
+	}
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return AccountPriceCacheRecalculationResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := s.UsagePricing.LoadAccountRowsFromEventsTx(ctx, tx, keys)
+	if err != nil {
+		return AccountPriceCacheRecalculationResult{}, err
+	}
+	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
+	if err != nil {
+		return AccountPriceCacheRecalculationResult{}, err
+	}
+	revision := usagepricing.PriceValueRevision(prices)
+	var latestEventID int64
+	if err := tx.QueryRowContext(ctx, `select coalesce(max(id), 0) from usage_events`).Scan(&latestEventID); err != nil {
+		return AccountPriceCacheRecalculationResult{}, err
+	}
+	var pricingTargetEventID int64
+	if err := tx.QueryRowContext(ctx, `select coalesce(target_event_id, 0)
+		from usage_pricing_rollup_state where rollup_name = 'pricing_v1'`).Scan(&pricingTargetEventID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return AccountPriceCacheRecalculationResult{}, err
+	}
+	coveredEventID := max(latestEventID, pricingTargetEventID)
+	if err := tx.Commit(); err != nil {
+		return AccountPriceCacheRecalculationResult{}, err
+	}
+
+	costs := make(map[string]float64, len(keys))
+	seenAccounts := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		seenAccounts[row.AccountKey] = struct{}{}
+		costs[row.AccountKey] += pricing.CostForModelCandidatesWithServiceTier(
+			[]string{row.BillingModel, row.Model},
+			row.ServiceTier,
+			pricing.ModelTokens{
+				PricingModel:            row.PricingModel,
+				ContextThresholdTokens:  row.ContextThresholdTokens,
+				InputTokens:             row.InputTokens,
+				OutputTokens:            row.OutputTokens,
+				CachedTokens:            row.CachedTokens,
+				CacheReadTokens:         row.CacheReadTokens,
+				CacheCreationTokens:     row.CacheCreationTokens,
+				LongInputTokens:         row.LongInputTokens,
+				LongOutputTokens:        row.LongOutputTokens,
+				LongCachedTokens:        row.LongCachedTokens,
+				LongCacheReadTokens:     row.LongCacheReadTokens,
+				LongCacheCreationTokens: row.LongCacheCreationTokens,
+			},
+			prices,
+		)
+	}
+	cacheRows := make([]usagepricing.PriceCacheRow, 0, len(keys))
+	for _, accountKey := range keys {
+		if _, ok := seenAccounts[accountKey]; !ok {
+			continue
+		}
+		cacheRows = append(cacheRows, usagepricing.PriceCacheRow{
+			AccountKey:      accountKey,
+			PricingRevision: revision,
+			CoveredEventID:  coveredEventID,
+			TotalCost:       costs[accountKey],
+			UpdatedAtMS:     nowMS,
+			Status:          "fresh",
+		})
+	}
+	if err := s.UsagePricing.UpsertAccountPriceCache(ctx, cacheRows); err != nil {
+		return AccountPriceCacheRecalculationResult{PricingRevision: revision, CoveredEventID: coveredEventID}, err
+	}
+	return AccountPriceCacheRecalculationResult{
+		PricingRevision: revision,
+		CoveredEventID:  coveredEventID,
+		Recalculated:    len(cacheRows),
+	}, nil
+}
+
+func (s *Store) MarkAccountPriceCacheFailure(ctx context.Context, accountKeys []string, message string, nowMS int64) error {
+	keys := normalizeAccountPriceCacheKeys(accountKeys)
+	if len(keys) == 0 {
+		return nil
+	}
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	revision := usagepricing.PriceValueRevision(prices)
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.UsagePricing.MarkAccountPriceCacheFailure(ctx, keys, revision, message, nowMS)
+}
+
+func normalizeAccountPriceCacheKeys(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	keys := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		keys = append(keys, value)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func pricingHistoryRowsUsable(state UsagePricingState, available bool) bool {

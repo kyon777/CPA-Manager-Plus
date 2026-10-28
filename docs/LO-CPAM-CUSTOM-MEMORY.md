@@ -732,3 +732,14 @@ B 方案：凭证列表当前页必须恢复旧版精确价格读取，即使 `p
 - 回归测试必须覆盖 `pricing_v1=rebuilding` 时逐账号金额恢复且读取不写表；
   部署验收需记录 50 账号页响应时间、CPAM 健康、二进制 SHA-256，并核对
   `cpa.service` PID 未变化。
+
+## 2026-10-28：账户历史价格缓存与后台精确重算
+
+本次 CPAM 二改用于解决 `POST /v0/management/monitoring/account-history` 在模型价格重建或价格覆盖不完整时同步扫描大量 `usage_events`，导致凭证列表等待、按钮卡顿和价格长期显示“同步中”的问题。该优化只属于 CPAM 派生读模型，绝不改变计费事实来源。
+
+- 正常账户历史请求只读取当前 revision 的持久化价格 rollup、CPAM 核心账户汇总、模型价格和 `usage_pricing_account_price_cache_v1`；禁止在 HTTP 请求路径调用 `LoadAccountRowsFromEventsTx`。
+- 新增 CPAM SQLite 派生表 `usage_pricing_account_price_cache_v1`，按 `(account_key, pricing_revision)` 保存 `total_cost`、`covered_event_id`、`updated_at_ms`、`status` 和错误说明。它是可丢弃缓存，不是计费源，也不替代 `usage_events`、Credits、quota 或 CPA Core 状态。
+- 价格覆盖完整时响应 `price_state=fresh`；覆盖不完整但有上次精确值时立即返回该值并标记 `price_state=stale_repricing`；没有缓存时 `total_cost=null`、`price_state=unavailable`。前端只显示非阻塞提示，不阻塞请求/额度/计费刷新。
+- 不完整账户由 CPAM `AccountPriceCacheWorker` 去重排队，单批最多 25 个、内存队列上限 5000、单 worker 并发 1，SQLite 忙/锁按 250ms/1s 重试；精确重算完成后原子写回缓存，下一次可见页刷新即可显示。
+- worker 只读保留事件/原始事件并计算派生价格，不写 `usage_events`、Credits、usage rollup 核心事实、CPA Core 或调度状态。失败只记录缓存 `status=failed`，保留上次 `total_cost`。
+- 重启后队列可丢弃；下一次账户历史读取会再次为不完整账户入队。任何后续“更新 CPAM”合并必须保留上述 HTTP 无 raw scan、缓存字段、队列边界和计费隔离约束。

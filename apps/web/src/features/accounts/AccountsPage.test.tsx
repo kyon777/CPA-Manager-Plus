@@ -190,6 +190,10 @@ type AccountHistoryResponseForTest = {
       header_trace_id?: string;
     }>;
     sync_status: string;
+    price_state?: string;
+    price_revision?: string;
+    price_covered_event_id?: number;
+    price_updated_at_ms?: number | null;
   }>;
 };
 
@@ -11045,6 +11049,41 @@ describe('AccountsPage replacement flows', () => {
     const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
     expect(quotaRegion.type).toBe('button');
     expect(quotaRegion.props['data-account-detail-trigger']).toBe('quota');
+  });
+
+  it('renders a non-blocking marker for a cached price being recalculated', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([{
+        row_key: selectionKey,
+        account_key: 'codex@example.com',
+        matched: true,
+        total_requests: 12,
+        success_calls: 10,
+        failure_calls: 2,
+        total_tokens: 1_200,
+        total_cost: 2.5,
+        success_rate: 10 / 12,
+        first_seen_ms: 1,
+        last_seen_ms: 2,
+        sync_status: 'pending',
+        price_state: 'stale_repricing',
+      }])
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const history = findAccountDetailRegion(renderer, selectionKey, 'history');
+    expect(history.findAllByType('strong').map(readText)).toContain('$2.50');
+    expect(readText(history)).toContain('accounts.history_price_recalculating');
+    expect(readText(history)).not.toContain('accounts.history_loading');
   });
 
   describe.each(['table', 'grid'] as const)('historical usage in %s layout', (layout) => {

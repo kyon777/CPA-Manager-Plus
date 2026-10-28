@@ -10614,6 +10614,12 @@ export function AccountsPage() {
         : accountHistory?.sync_status === 'pending'
           ? t('accounts.history_syncing')
           : null;
+    const priceFootnote =
+      accountHistory?.price_state === 'stale_repricing'
+        ? t('accounts.history_price_recalculating', { defaultValue: '价格后台重算中' })
+        : accountHistory?.price_state === 'unavailable'
+          ? t('accounts.history_price_unavailable', { defaultValue: '价格暂不可用' })
+          : null;
     const requests = matched
       ? accountHistory.total_requests
       : recentRequestCount > 0
@@ -10692,7 +10698,11 @@ export function AccountsPage() {
               </span>
             ))}
           </span>
-          {footnote ? <span className={styles.accountHistoryFootnote}>{footnote}</span> : null}
+          {footnote || priceFootnote ? (
+            <span className={styles.accountHistoryFootnote}>
+              {[footnote, priceFootnote].filter(Boolean).join(' · ')}
+            </span>
+          ) : null}
         </>
       ),
     });

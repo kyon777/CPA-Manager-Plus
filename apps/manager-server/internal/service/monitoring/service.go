@@ -46,6 +46,14 @@ type Service struct {
 	store            *store.Store
 	hourlyReader     *usagehourly.Reader
 	monitoringReader *monitoringrollup.Reader
+	priceCacheQueue  AccountPriceCacheEnqueuer
+}
+
+// AccountPriceCacheEnqueuer is implemented by the CPAM-only background
+// worker. Keeping this narrow interface in the service package avoids a
+// worker/service import cycle and makes the HTTP path independently testable.
+type AccountPriceCacheEnqueuer interface {
+	EnqueueAccountPriceRecalculation(accountKeys []string)
 }
 
 type analyticsQueryGroup struct {
@@ -115,6 +123,13 @@ func New(store *store.Store, hourlyRollupEnabled ...bool) *Service {
 		hourlyReader:     usagehourly.New(store, enabled, "monitoring-rollup"),
 		monitoringReader: monitoringrollup.New(store),
 	}
+}
+
+func (s *Service) SetAccountPriceCacheEnqueuer(enqueuer AccountPriceCacheEnqueuer) {
+	if s == nil {
+		return
+	}
+	s.priceCacheQueue = enqueuer
 }
 
 type Request struct {
@@ -319,20 +334,24 @@ type AccountHistoryCheckpointState struct {
 }
 
 type AccountHistoryItem struct {
-	RowKey         string                 `json:"row_key"`
-	AccountKey     string                 `json:"account_key"`
-	Matched        bool                   `json:"matched"`
-	TotalRequests  int64                  `json:"total_requests"`
-	SuccessCalls   int64                  `json:"success_calls"`
-	FailureCalls   int64                  `json:"failure_calls"`
-	TotalTokens    int64                  `json:"total_tokens"`
-	TotalCost      *float64               `json:"total_cost"`
-	SuccessRate    *float64               `json:"success_rate"`
-	FirstSeenMS    *int64                 `json:"first_seen_ms"`
-	LastSeenMS     *int64                 `json:"last_seen_ms"`
-	LatestRequest  *AccountLatestRequest  `json:"latest_request,omitempty"`
-	RecentRequests []AccountLatestRequest `json:"recent_requests,omitempty"`
-	SyncStatus     string                 `json:"sync_status"`
+	RowKey              string                 `json:"row_key"`
+	AccountKey          string                 `json:"account_key"`
+	Matched             bool                   `json:"matched"`
+	TotalRequests       int64                  `json:"total_requests"`
+	SuccessCalls        int64                  `json:"success_calls"`
+	FailureCalls        int64                  `json:"failure_calls"`
+	TotalTokens         int64                  `json:"total_tokens"`
+	TotalCost           *float64               `json:"total_cost"`
+	SuccessRate         *float64               `json:"success_rate"`
+	FirstSeenMS         *int64                 `json:"first_seen_ms"`
+	LastSeenMS          *int64                 `json:"last_seen_ms"`
+	LatestRequest       *AccountLatestRequest  `json:"latest_request,omitempty"`
+	RecentRequests      []AccountLatestRequest `json:"recent_requests,omitempty"`
+	SyncStatus          string                 `json:"sync_status"`
+	PriceState          string                 `json:"price_state"`
+	PriceRevision       string                 `json:"price_revision,omitempty"`
+	PriceCoveredEventID int64                  `json:"price_covered_event_id,omitempty"`
+	PriceUpdatedAtMS    *int64                 `json:"price_updated_at_ms,omitempty"`
 }
 
 // AccountLatestRequest is the most recent persisted request for an auth file.
@@ -1926,14 +1945,27 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 	}
 	keys = uniqueAccountHistoryKeys(keys)
 	stableKeys = uniqueAccountHistoryKeys(stableKeys)
-	loadTotals := func(readKeys []string) (map[string]*accountHistoryTotal, error) {
+	var priceStates map[string]accountHistoryPriceState
+	var queuedPriceKeys []string
+	loadTotals := func(readKeys []string) (map[string]*accountHistoryTotal, map[string]accountHistoryPriceState, []string, error) {
 		pricingSnapshot, err := s.store.LoadUsagePricingAccountSnapshot(ctx, readKeys)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		totals := buildPricingAccountHistoryTotals(pricingSnapshot.Rows, pricingSnapshot.Prices)
+		states := make(map[string]accountHistoryPriceState, len(totals))
+		for key, total := range totals {
+			if total != nil && total.costAvailable {
+				states[key] = accountHistoryPriceState{
+					state:          accountPriceStateFresh,
+					revision:       pricingSnapshot.PriceRevision,
+					coveredEventID: pricingSnapshot.State.CoverageEventID,
+					updatedAtMS:    pricingSnapshot.State.UpdatedAtMS,
+				}
+			}
+		}
 		if len(pricingSnapshot.PricingIncompleteAccountKeys) == 0 {
-			return totals, nil
+			return totals, states, nil, nil
 		}
 		unpricedRows := make([]store.AccountHistoryRollupRow, 0, len(pricingSnapshot.CoreRows))
 		for _, row := range pricingSnapshot.CoreRows {
@@ -1943,14 +1975,40 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 		}
 		for key, total := range buildUnpricedAccountHistoryTotals(unpricedRows) {
 			totals[key] = total
+			cache, cached := pricingSnapshot.PriceCache[key]
+			if cached {
+				total.cost = cache.TotalCost
+				total.costAvailable = true
+				state := accountPriceStateStaleRepricing
+				if cache.Status == "fresh" && cache.PricingRevision == pricingSnapshot.PriceRevision && cache.CoveredEventID >= pricingSnapshot.PriceTargetEventID {
+					state = accountPriceStateFresh
+				}
+				states[key] = accountHistoryPriceState{
+					state:          state,
+					revision:       cache.PricingRevision,
+					coveredEventID: cache.CoveredEventID,
+					updatedAtMS:    cache.UpdatedAtMS,
+				}
+			} else {
+				states[key] = accountHistoryPriceState{
+					state:    accountPriceStateUnavailable,
+					revision: pricingSnapshot.PriceRevision,
+				}
+			}
 		}
-		return totals, nil
+		queued := make([]string, 0, len(pricingSnapshot.PricingIncompleteAccountKeys))
+		for key := range pricingSnapshot.PricingIncompleteAccountKeys {
+			queued = append(queued, key)
+		}
+		sort.Strings(queued)
+		return totals, states, queued, nil
 	}
-	totals, err := loadTotals(keys)
+	totals, priceStates, queuedPriceKeys, err := loadTotals(keys)
 	if err != nil {
 		return AccountHistoryResponse{}, err
 	}
 	mergeAliasedAccountHistoryTotals(totals, legacyAliases)
+	mergeAliasedAccountHistoryPriceStates(priceStates, legacyAliases)
 	if len(legacyAliases) > 0 {
 		fencedLatestID, fenceErr := s.store.LatestUsageEventID(ctx)
 		if fenceErr != nil {
@@ -1962,7 +2020,7 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 			// still safe and the next refresh will pick up the new tail.
 			latestID = fencedLatestID
 			legacyAliases = nil
-			totals, err = loadTotals(stableKeys)
+			totals, priceStates, queuedPriceKeys, err = loadTotals(stableKeys)
 			if err != nil {
 				return AccountHistoryResponse{}, err
 			}
@@ -1995,6 +2053,7 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 				LatestRequest:  latestRequest,
 				RecentRequests: targetRecentRequests,
 				SyncStatus:     accountHistorySyncStatus(false, false),
+				PriceState:     accountPriceStateUnavailable,
 			})
 			continue
 		}
@@ -2007,6 +2066,7 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 				LatestRequest:  latestRequest,
 				RecentRequests: targetRecentRequests,
 				SyncStatus:     accountHistorySyncStatus(false, pending),
+				PriceState:     accountPriceStateUnavailable,
 			})
 			continue
 		}
@@ -2016,21 +2076,28 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 			successRate = &value
 		}
 		items = append(items, AccountHistoryItem{
-			RowKey:         req.Accounts[index].RowKey,
-			AccountKey:     key,
-			Matched:        true,
-			TotalRequests:  total.requests,
-			SuccessCalls:   total.successCalls,
-			FailureCalls:   total.failureCalls,
-			TotalTokens:    total.totalTokens,
-			TotalCost:      accountHistoryCostPointer(total),
-			SuccessRate:    successRate,
-			FirstSeenMS:    nullableMSPointer(total.firstSeenMS),
-			LastSeenMS:     nullableMSPointer(total.lastSeenMS),
-			LatestRequest:  latestRequest,
-			RecentRequests: targetRecentRequests,
-			SyncStatus:     accountHistorySyncStatus(true, pending),
+			RowKey:              req.Accounts[index].RowKey,
+			AccountKey:          key,
+			Matched:             true,
+			TotalRequests:       total.requests,
+			SuccessCalls:        total.successCalls,
+			FailureCalls:        total.failureCalls,
+			TotalTokens:         total.totalTokens,
+			TotalCost:           accountHistoryCostPointer(total),
+			SuccessRate:         successRate,
+			FirstSeenMS:         nullableMSPointer(total.firstSeenMS),
+			LastSeenMS:          nullableMSPointer(total.lastSeenMS),
+			LatestRequest:       latestRequest,
+			RecentRequests:      targetRecentRequests,
+			SyncStatus:          accountHistorySyncStatus(true, pending),
+			PriceState:          priceStates[key].state,
+			PriceRevision:       priceStates[key].revision,
+			PriceCoveredEventID: priceStates[key].coveredEventID,
+			PriceUpdatedAtMS:    accountHistoryPriceUpdatedPointer(priceStates[key].updatedAtMS),
 		})
+	}
+	if s.priceCacheQueue != nil && len(queuedPriceKeys) > 0 {
+		s.priceCacheQueue.EnqueueAccountPriceRecalculation(queuedPriceKeys)
 	}
 
 	return AccountHistoryResponse{
@@ -4173,6 +4240,37 @@ type accountHistoryTotal struct {
 	lastSeenMS    int64
 }
 
+type accountHistoryPriceState struct {
+	state          string
+	revision       string
+	coveredEventID int64
+	updatedAtMS    int64
+}
+
+const (
+	accountPriceStateFresh          = "fresh"
+	accountPriceStateStaleRepricing = "stale_repricing"
+	accountPriceStateUnavailable    = "unavailable"
+)
+
+func accountHistoryPriceUpdatedPointer(value int64) *int64 {
+	if value <= 0 {
+		return nil
+	}
+	return &value
+}
+
+func accountHistoryPriceStateRank(value string) int {
+	switch value {
+	case accountPriceStateFresh:
+		return 2
+	case accountPriceStateStaleRepricing:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func accountHistoryTargetKey(target AccountHistoryTarget) (string, bool) {
 	if !AccountHistoryTargetHasRequiredProvider(target) {
 		return "", false
@@ -4385,6 +4483,21 @@ func mergeAliasedAccountHistoryTotals(totals map[string]*accountHistoryTotal, al
 			primary.lastSeenMS = legacy.lastSeenMS
 		}
 		delete(totals, legacyKey)
+	}
+}
+
+func mergeAliasedAccountHistoryPriceStates(states map[string]accountHistoryPriceState, aliases map[string]string) {
+	for legacyKey, primaryKey := range aliases {
+		legacy, exists := states[legacyKey]
+		if !exists {
+			continue
+		}
+		primary, primaryExists := states[primaryKey]
+		if !primaryExists || accountHistoryPriceStateRank(legacy.state) > accountHistoryPriceStateRank(primary.state) ||
+			(legacy.updatedAtMS > primary.updatedAtMS && accountHistoryPriceStateRank(legacy.state) == accountHistoryPriceStateRank(primary.state)) {
+			states[primaryKey] = legacy
+		}
+		delete(states, legacyKey)
 	}
 }
 

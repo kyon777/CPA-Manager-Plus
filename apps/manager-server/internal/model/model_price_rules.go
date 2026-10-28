@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -277,6 +278,107 @@ func ModelPriceStructureRevision(prices map[string]ModelPrice) string {
 		}
 	}
 	return modelPriceStructureRevisionVersion + ":" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// ModelPriceValueRevision fingerprints every field that can affect the
+// computed charge while deliberately excluding provenance/timestamps. The
+// rollup structure revision above intentionally stays stable for rate-only
+// changes; a derived price cache cannot use that revision because a rate edit
+// must invalidate previously computed totals without forcing a rollup rebuild.
+func ModelPriceValueRevision(prices map[string]ModelPrice) string {
+	type contextTier struct {
+		ThresholdTokens         int64   `json:"thresholdTokens"`
+		Prompt                  float64 `json:"prompt"`
+		Completion              float64 `json:"completion"`
+		Cache                   float64 `json:"cache"`
+		CacheRead               float64 `json:"cacheRead"`
+		CacheCreation           float64 `json:"cacheCreation"`
+		PromptConfigured        bool    `json:"promptConfigured"`
+		CompletionConfigured    bool    `json:"completionConfigured"`
+		CacheConfigured         bool    `json:"cacheConfigured"`
+		CacheReadConfigured     bool    `json:"cacheReadConfigured"`
+		CacheCreationConfigured bool    `json:"cacheCreationConfigured"`
+	}
+	type serviceTier struct {
+		Mode                    string  `json:"mode"`
+		ServiceTier             string  `json:"serviceTier"`
+		Prompt                  float64 `json:"prompt"`
+		Completion              float64 `json:"completion"`
+		Cache                   float64 `json:"cache"`
+		CacheRead               float64 `json:"cacheRead"`
+		CacheCreation           float64 `json:"cacheCreation"`
+		PromptConfigured        bool    `json:"promptConfigured"`
+		CompletionConfigured    bool    `json:"completionConfigured"`
+		CacheConfigured         bool    `json:"cacheConfigured"`
+		CacheReadConfigured     bool    `json:"cacheReadConfigured"`
+		CacheCreationConfigured bool    `json:"cacheCreationConfigured"`
+	}
+	type priceValue struct {
+		Prompt                  float64       `json:"prompt"`
+		Completion              float64       `json:"completion"`
+		Cache                   float64       `json:"cache"`
+		CacheRead               float64       `json:"cacheRead"`
+		CacheCreation           float64       `json:"cacheCreation"`
+		PromptConfigured        bool          `json:"promptConfigured"`
+		CompletionConfigured    bool          `json:"completionConfigured"`
+		CacheReadConfigured     bool          `json:"cacheReadConfigured"`
+		CacheCreationConfigured bool          `json:"cacheCreationConfigured"`
+		ContextTiers            []contextTier `json:"contextTiers"`
+		ServiceTiers            []serviceTier `json:"serviceTiers"`
+	}
+	type entry struct {
+		Model string     `json:"model"`
+		Price priceValue `json:"price"`
+	}
+
+	modelIDs := make([]string, 0, len(prices))
+	for modelID := range prices {
+		modelIDs = append(modelIDs, modelID)
+	}
+	sort.Strings(modelIDs)
+	entries := make([]entry, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		price := prices[modelID]
+		contextTiers := append([]ModelPriceContextTier(nil), price.ContextTiers...)
+		sort.Slice(contextTiers, func(i, j int) bool {
+			return contextTiers[i].ThresholdTokens < contextTiers[j].ThresholdTokens
+		})
+		serviceTiers := append([]ModelPriceServiceTier(nil), price.ServiceTiers...)
+		sort.Slice(serviceTiers, func(i, j int) bool {
+			if serviceTiers[i].Mode != serviceTiers[j].Mode {
+				return serviceTiers[i].Mode < serviceTiers[j].Mode
+			}
+			return serviceTiers[i].ServiceTier < serviceTiers[j].ServiceTier
+		})
+		canonical := priceValue{
+			Prompt: price.Prompt, Completion: price.Completion, Cache: price.Cache,
+			CacheRead: price.CacheRead, CacheCreation: price.CacheCreation,
+			PromptConfigured: price.PromptConfigured, CompletionConfigured: price.CompletionConfigured,
+			CacheReadConfigured: price.CacheReadConfigured, CacheCreationConfigured: price.CacheCreationConfigured,
+		}
+		for _, tier := range contextTiers {
+			canonical.ContextTiers = append(canonical.ContextTiers, contextTier{
+				ThresholdTokens: tier.ThresholdTokens, Prompt: tier.Prompt, Completion: tier.Completion,
+				Cache: tier.Cache, CacheRead: tier.CacheRead, CacheCreation: tier.CacheCreation,
+				PromptConfigured: tier.PromptConfigured, CompletionConfigured: tier.CompletionConfigured,
+				CacheConfigured: tier.CacheConfigured, CacheReadConfigured: tier.CacheReadConfigured,
+				CacheCreationConfigured: tier.CacheCreationConfigured,
+			})
+		}
+		for _, tier := range serviceTiers {
+			canonical.ServiceTiers = append(canonical.ServiceTiers, serviceTier{
+				Mode: tier.Mode, ServiceTier: tier.ServiceTier, Prompt: tier.Prompt, Completion: tier.Completion,
+				Cache: tier.Cache, CacheRead: tier.CacheRead, CacheCreation: tier.CacheCreation,
+				PromptConfigured: tier.PromptConfigured, CompletionConfigured: tier.CompletionConfigured,
+				CacheConfigured: tier.CacheConfigured, CacheReadConfigured: tier.CacheReadConfigured,
+				CacheCreationConfigured: tier.CacheCreationConfigured,
+			})
+		}
+		entries = append(entries, entry{Model: modelID, Price: canonical})
+	}
+	payload, _ := json.Marshal(entries)
+	hash := sha256.Sum256(payload)
+	return "values-v1:" + hex.EncodeToString(hash[:])
 }
 
 func ValidateModelPrice(modelID string, price ModelPrice) error {

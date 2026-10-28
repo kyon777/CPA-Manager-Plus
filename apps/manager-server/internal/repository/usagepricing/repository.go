@@ -33,10 +33,10 @@ type Repository interface {
 	LoadHourlyRowsFromEventsTx(ctx context.Context, tx *sql.Tx, filter HourlyFilter) ([]HourlyRow, error)
 	LoadAccountRows(ctx context.Context, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
-	// LoadAccountRowsForHistoryTx is a read-only management fast path. During a
-	// structural rebuild, it returns the durable pricing rows without scanning
-	// the immutable raw tail; callers can fall back to core account rollups and
-	// expose pricing as temporarily unavailable. It never changes billing data.
+	// LoadAccountRowsForHistoryTx is a read-only management fast path. It always
+	// returns only the durable pricing prefix and never scans usage_events; the
+	// caller can use core account rollups plus the background price cache for an
+	// exact tail. It never changes billing data.
 	LoadAccountRowsForHistoryTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, error)
 	LoadAccountPriceCacheTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]PriceCacheRow, error)
@@ -522,6 +522,14 @@ func StructureRevision(ctx context.Context, db RowQuerier) (string, error) {
 		return "", err
 	}
 	return usageidentity.PricingStructureRevision(model.ModelPriceStructureRevision(prices)), nil
+}
+
+// PriceValueRevision is separate from StructureRevision: the latter is
+// intentionally insensitive to rate-only edits so rollups do not rebuild,
+// while a derived account-cost cache must become stale whenever a rate or
+// pricing rule changes.
+func PriceValueRevision(prices map[string]model.ModelPrice) string {
+	return usageidentity.PricingStructureRevision(model.ModelPriceValueRevision(prices))
 }
 
 func latestEventID(ctx context.Context, tx *sql.Tx) (int64, error) {
@@ -1149,16 +1157,9 @@ func (r *repository) LoadAccountRowsForHistoryTx(ctx context.Context, tx *sql.Tx
 	if err := mergeStoredAccountRows(ctx, tx, revision, keys, grouped); err != nil {
 		return nil, State{}, false, err
 	}
-	if historyAccountRowsMaySkipRawTail(state) {
-		// A structural rebuild deliberately has incomplete pricing coverage.
-		// Returning the stored prefix lets the store mark affected accounts
-		// unpriced and use immutable core rollups instead of evaluating millions
-		// of raw events for every visible page.
-		return sortedAccountRows(grouped), state, false, nil
-	}
-	if err := mergeRawAccountRows(ctx, tx, state.CoverageEventID, keys, grouped); err != nil {
-		return nil, State{}, false, err
-	}
+	// Deliberately do not merge the raw tail here. This method sits on the
+	// management HTTP path, where a page read must remain bounded even while a
+	// pricing rebuild or a large raw tail is present.
 	return sortedAccountRows(grouped), state, true, nil
 }
 

@@ -142,3 +142,30 @@ func TestModelPriceStructureRevisionIgnoresRatesButTracksThresholds(t *testing.T
 		t.Fatalf("threshold revision did not change: %q", got)
 	}
 }
+
+func TestModelPriceValueRevisionTracksRateChangesAndNormalizesOrder(t *testing.T) {
+	base := map[string]ModelPrice{
+		"model-a": {
+			Prompt: 1, Completion: 2, PromptConfigured: true, CompletionConfigured: true,
+			ContextTiers: []ModelPriceContextTier{{ThresholdTokens: 100, Prompt: 3, PromptConfigured: true}},
+			ServiceTiers: []ModelPriceServiceTier{{Mode: "fast", ServiceTier: "priority", Prompt: 4, PromptConfigured: true}},
+		},
+	}
+	permuted := map[string]ModelPrice{
+		"model-a": {
+			Prompt: 1, Completion: 2, PromptConfigured: true, CompletionConfigured: true,
+			ContextTiers: []ModelPriceContextTier{{ThresholdTokens: 100, Prompt: 3, PromptConfigured: true}},
+			ServiceTiers: []ModelPriceServiceTier{{Mode: "fast", ServiceTier: "priority", Prompt: 4, PromptConfigured: true}},
+		},
+	}
+	if got, want := ModelPriceValueRevision(base), ModelPriceValueRevision(permuted); got != want {
+		t.Fatalf("equivalent prices produced different value revisions: %q != %q", got, want)
+	}
+	rateChanged := map[string]ModelPrice{"model-a": base["model-a"]}
+	changedPrice := rateChanged["model-a"]
+	changedPrice.Prompt = 1.25
+	rateChanged["model-a"] = changedPrice
+	if ModelPriceValueRevision(base) == ModelPriceValueRevision(rateChanged) {
+		t.Fatalf("rate-only change did not invalidate value revision")
+	}
+}

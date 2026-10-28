@@ -219,11 +219,14 @@ func runServer() {
 	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryAutomaticSignal)
 	var accountHistoryRollupWorker *worker.AccountHistoryRollupWorker
 	var usageDerivedRollupWorker *worker.UsagePricingRollupWorker
+	var accountPriceCacheWorker *worker.AccountPriceCacheWorker
 	var usageHourlyAggregateWorker *worker.UsageHourlyAggregateWorker
 	var usageArchiveRetentionWorker *worker.UsageArchiveRetentionWorker
 	if cfg.BackgroundDerivationsEnabled {
 		accountHistoryRollupWorker = worker.NewAccountHistoryRollupWorker(db)
 		usageDerivedRollupWorker = worker.NewUsagePricingRollupWorker(db)
+		accountPriceCacheWorker = worker.NewAccountPriceCacheWorker(db)
+		serverApp.AppContext().MonitoringService.SetAccountPriceCacheEnqueuer(accountPriceCacheWorker)
 		serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
 		if cfg.DashboardHourlyRollupEnabled {
 			usageHourlyAggregateWorker = worker.NewUsageHourlyAggregateWorker(db)
@@ -311,6 +314,7 @@ func runServer() {
 		if cfg.BackgroundDerivationsEnabled {
 			accountHistoryRollupWorker.Start(ctx)
 			usageDerivedRollupWorker.Start(ctx)
+			accountPriceCacheWorker.Start(ctx)
 			if usageHourlyAggregateWorker != nil {
 				usageHourlyAggregateWorker.Start(ctx)
 			}
