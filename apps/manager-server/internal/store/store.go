@@ -825,7 +825,7 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
-	if !available {
+	if !pricingHistoryRowsUsable(state, available) {
 		rows = nil
 	}
 
@@ -887,6 +887,14 @@ func pricingHistoryRecoveryAllowed(state UsagePricingState) bool {
 	// rows are allowed to catch up asynchronously. Do not turn every history
 	// page into a scan of the immutable raw event table in the meantime.
 	return state.Status != "rebuilding" && state.Status != "clearing"
+}
+
+func pricingHistoryRowsUsable(state UsagePricingState, available bool) bool {
+	// During a structural rebuild the rows already written under the current
+	// revision are still valid. Keep that prefix so fully covered accounts can
+	// retain their cost display; only accounts missing coverage fall back to
+	// the immutable core totals below.
+	return available || state.Status == "rebuilding"
 }
 
 func (s *Store) CatchUpAccountHistoryRollups(ctx context.Context, limit int, nowMS int64) (UsageRollupCatchUpResult, error) {
