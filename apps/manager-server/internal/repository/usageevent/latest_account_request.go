@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	latestRequestAuthFileIndex = "idx_usage_events_latest_request_auth_file"
-	latestRequestSourceIndex   = "idx_usage_events_latest_request_source"
+	latestRequestAuthFileIndex    = "idx_usage_events_latest_request_auth_file"
+	latestRequestSourceIndex      = "idx_usage_events_latest_request_source"
+	maxDirectRecentRequestTargets = 1000
 )
 
 // snapshotLatestRequestByFileAndIndexSQL is the indexed Top-N path for a
@@ -87,6 +88,13 @@ type latestRequestPredicate struct {
 	args []any
 }
 
+type recentRequestPath string
+
+const (
+	recentRequestPathIndexedTopN recentRequestPath = "indexed-top-n"
+	recentRequestPathCollection  recentRequestPath = "collection"
+)
+
 func (r *repository) RecentAccountRequests(
 	ctx context.Context,
 	targets []LatestAccountRequestQuery,
@@ -95,7 +103,20 @@ func (r *repository) RecentAccountRequests(
 	if len(targets) == 0 || limit <= 0 {
 		return []LatestAccountRequest{}, nil
 	}
+	if selectRecentRequestPath(len(targets)) == recentRequestPathIndexedTopN {
+		return r.recentAccountRequestsIndexed(ctx, targets, limit)
+	}
 	return r.recentAccountRequestsCollection(ctx, targets, limit)
+}
+
+// selectRecentRequestPath keeps the direct Top-N path bounded to the public
+// endpoint's maximum target count. It avoids the large CTE/window sort that
+// can monopolize SQLite when a list-page refresh carries hundreds of files.
+func selectRecentRequestPath(targetCount int) recentRequestPath {
+	if targetCount > 0 && targetCount <= maxDirectRecentRequestTargets {
+		return recentRequestPathIndexedTopN
+	}
+	return recentRequestPathCollection
 }
 
 func (r *repository) latestRequestIndexesReady(ctx context.Context) (bool, error) {

@@ -437,6 +437,67 @@ func TestRecentAccountRequestsCollectionMatchesIndexedResultsWhenIndexesExist(t 
 	}
 }
 
+func TestRecentAccountRequestsUsesIndexedTopNPathForLargeTargetSet(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
+		t.Fatalf("prepare latest-request indexes: %v", err)
+	}
+	repo := New(db).(*repository)
+	baseMS := int64(1_700_000_000_000)
+	fixtures := make([]usage.Event, 0, 80)
+	targets := make([]LatestAccountRequestQuery, 0, 80)
+	for index := 0; index < 80; index++ {
+		fileName := fmt.Sprintf("credential-%03d.json", index)
+		authIndex := fmt.Sprintf("auth-%03d", index)
+		fixtures = append(fixtures, latestAccountRequestEvent(
+			fmt.Sprintf("large-batch-%03d", index),
+			baseMS+int64(index),
+			fileName,
+			authIndex,
+			fileName,
+		))
+		targets = append(targets, LatestAccountRequestQuery{
+			RequestIndex: index, AuthFileSnapshot: fileName, AuthIndex: authIndex,
+		})
+	}
+	if _, err := repo.InsertBatch(ctx, fixtures); err != nil {
+		t.Fatalf("insert fixtures: %v", err)
+	}
+
+	requests, err := repo.RecentAccountRequests(ctx, targets, 1)
+	if err != nil {
+		t.Fatalf("recent requests: %v", err)
+	}
+	if len(requests) != len(targets) {
+		t.Fatalf("requests = %d, want %d", len(requests), len(targets))
+	}
+	if path := selectRecentRequestPath(len(targets)); path != recentRequestPathIndexedTopN {
+		t.Fatalf("recent request path = %q, want %q", path, recentRequestPathIndexedTopN)
+	}
+}
+
+func TestSelectRecentRequestPathBoundsDirectTopNWork(t *testing.T) {
+	cases := []struct {
+		targets int
+		want    recentRequestPath
+	}{
+		{targets: 0, want: recentRequestPathCollection},
+		{targets: 1, want: recentRequestPathIndexedTopN},
+		{targets: maxDirectRecentRequestTargets, want: recentRequestPathIndexedTopN},
+		{targets: maxDirectRecentRequestTargets + 1, want: recentRequestPathCollection},
+	}
+	for _, tc := range cases {
+		if got := selectRecentRequestPath(tc.targets); got != tc.want {
+			t.Fatalf("selectRecentRequestPath(%d) = %q, want %q", tc.targets, got, tc.want)
+		}
+	}
+}
+
 func TestSnapshotLatestRequestQueryUsesAuthFileAndAuthIndexIndex(t *testing.T) {
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
