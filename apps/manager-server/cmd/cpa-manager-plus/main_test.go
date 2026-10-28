@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -235,6 +236,37 @@ func TestDerivedMigrationsStartAfterHTTPListenerIsBound(t *testing.T) {
 	}
 }
 
+func TestBackgroundDerivationsCanBeQuiescedWithoutStoppingRawCollection(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	source := string(content)
+	gateAt := strings.Index(source, "if cfg.BackgroundDerivationsEnabled {")
+	if gateAt < 0 {
+		t.Fatal("background derivations are not guarded by the operator quiesce switch")
+	}
+	for _, derivedStart := range []string{
+		"db.RunDerivedStartupMaintenance(ctx)",
+		"accountHistoryRollupWorker.Start(ctx)",
+		"usageDerivedRollupWorker.Start(ctx)",
+		"db.StartDerivedMaintenance(ctx)",
+		"NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)",
+		"usageCacheAccountingMigrationWorker.Start(ctx)",
+		"waitForUsageResponseMetadataBackfill(ctx, db)",
+	} {
+		if at := strings.Index(source, derivedStart); at < gateAt {
+			t.Fatalf("%s is not behind the background derivations gate", derivedStart)
+		}
+	}
+	if collectorAt := strings.Index(source, "collectorWorker.Start(ctx)"); collectorAt < gateAt {
+		t.Fatalf("raw collector startup disappeared while adding the derivations gate: collector=%d gate=%d", collectorAt, gateAt)
+	}
+	if !strings.Contains(source, "background derivations disabled; raw collection remains enabled") {
+		t.Fatal("disabled derivations path does not document raw collection continuity")
+	}
+}
+
 func TestUsageEventFanoutIsInstalledAfterAutomationRuntime(t *testing.T) {
 	content, err := os.ReadFile("main.go")
 	if err != nil {
@@ -381,6 +413,47 @@ func TestLargeDerivedMigrationServesHTTPAndResumesAfterRestart(t *testing.T) {
 	}
 }
 
+func TestBackgroundDerivationsDisabledServesHTTPWithoutStartingDerivedCleanup(t *testing.T) {
+	if raceDetectorEnabled || runtime.GOOS == "windows" {
+		t.Skip("external-process availability test is covered by the normal suite")
+	}
+	const rowCount = int64(10_001)
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "usage.sqlite")
+	before := prepareLargeStartupMigrationFixture(t, dbPath, rowCount)
+	observer := openMigrationObserver(t, dbPath)
+	t.Cleanup(func() { _ = observer.Close() })
+	var cleanupJobsBefore int
+	if err := observer.QueryRow(`select count(*) from usage_derived_cleanup_jobs`).Scan(&cleanupJobsBefore); err != nil {
+		t.Fatalf("count initial derived cleanup jobs: %v", err)
+	}
+
+	server := startManagerServerProcessWithEnv(t, tempDir, dbPath, map[string]string{
+		"USAGE_BACKGROUND_DERIVATIONS_ENABLED": "false",
+	})
+	stopped := false
+	t.Cleanup(func() {
+		if !stopped {
+			server.stop(t)
+		}
+	})
+	assertManagerEndpoint(t, server.addr, "/management.html")
+	assertManagerEndpoint(t, server.addr, "/usage-service/info")
+
+	var cleanupJobs int
+	if err := observer.QueryRow(`select count(*) from usage_derived_cleanup_jobs`).Scan(&cleanupJobs); err != nil {
+		t.Fatalf("count derived cleanup jobs: %v", err)
+	}
+	if cleanupJobs != cleanupJobsBefore {
+		t.Fatalf("background derivations disabled, but cleanup jobs changed: before=%d after=%d", cleanupJobsBefore, cleanupJobs)
+	}
+	if after := readUsageEventsSummaryFromDB(t, observer); after != before {
+		t.Fatalf("usage_events changed with background derivations disabled: before=%+v after=%+v", before, after)
+	}
+	server.stop(t)
+	stopped = true
+}
+
 func TestManagerServerHelperProcess(t *testing.T) {
 	if os.Getenv("CPA_MANAGER_TEST_HELPER") != "1" {
 		t.Skip("helper process only")
@@ -461,9 +534,13 @@ func (l *synchronizedLog) String() string {
 }
 
 func startManagerServerProcess(t testing.TB, dataDir, dbPath string) *managerServerProcess {
+	return startManagerServerProcessWithEnv(t, dataDir, dbPath, nil)
+}
+
+func startManagerServerProcessWithEnv(t testing.TB, dataDir, dbPath string, additionalEnv map[string]string) *managerServerProcess {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestManagerServerHelperProcess$")
-	cmd.Env = managerServerTestEnvironment(dataDir, dbPath)
+	cmd.Env = managerServerTestEnvironmentWithEnv(dataDir, dbPath, additionalEnv)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatalf("open manager server stderr: %v", err)
@@ -512,6 +589,10 @@ func startManagerServerProcess(t testing.TB, dataDir, dbPath string) *managerSer
 }
 
 func managerServerTestEnvironment(dataDir, dbPath string) []string {
+	return managerServerTestEnvironmentWithEnv(dataDir, dbPath, nil)
+}
+
+func managerServerTestEnvironmentWithEnv(dataDir, dbPath string, additionalEnv map[string]string) []string {
 	overrides := map[string]string{
 		"CPA_MANAGER_TEST_HELPER":               "1",
 		"CPA_MANAGER_ADMIN_KEY":                 "cpamp_startup_migration_test_admin_key",
@@ -522,6 +603,9 @@ func managerServerTestEnvironment(dataDir, dbPath string) []string {
 		"USAGE_COLLECTOR_MODE":                  "http",
 		"USAGE_POLL_INTERVAL_MS":                "1000",
 		"USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED": "false",
+	}
+	for key, value := range additionalEnv {
+		overrides[key] = value
 	}
 	environment := make([]string, 0, len(os.Environ())+len(overrides))
 	for _, entry := range os.Environ() {

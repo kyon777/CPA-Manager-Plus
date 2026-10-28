@@ -217,27 +217,31 @@ func runServer() {
 		log.Fatalf("bootstrap durable server-error priority demotion queue: %v", err)
 	}
 	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryAutomaticSignal)
-	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)
-	usageDerivedRollupWorker := worker.NewUsagePricingRollupWorker(db)
-	serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
+	var accountHistoryRollupWorker *worker.AccountHistoryRollupWorker
+	var usageDerivedRollupWorker *worker.UsagePricingRollupWorker
 	var usageHourlyAggregateWorker *worker.UsageHourlyAggregateWorker
-	if cfg.DashboardHourlyRollupEnabled {
-		usageHourlyAggregateWorker = worker.NewUsageHourlyAggregateWorker(db)
-	}
 	var usageArchiveRetentionWorker *worker.UsageArchiveRetentionWorker
-	if cfg.UsageArchiveRetentionEnabled && cfg.UsageArchiveRetentionDays > 0 && cfg.DashboardHourlyRollupEnabled {
-		usageArchiveRetentionWorker = worker.NewUsageArchiveRetentionWorker(
-			serverApp.AppContext().UsageService,
-			cfg.UsageArchiveRetentionDays,
-		)
-	}
-	serverApp.AppContext().UsageService.SetEventsInsertedNotifier(func() {
-		accountHistoryRollupWorker.Wake()
-		usageDerivedRollupWorker.Wake()
-		if usageHourlyAggregateWorker != nil {
-			usageHourlyAggregateWorker.Wake()
+	if cfg.BackgroundDerivationsEnabled {
+		accountHistoryRollupWorker = worker.NewAccountHistoryRollupWorker(db)
+		usageDerivedRollupWorker = worker.NewUsagePricingRollupWorker(db)
+		serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
+		if cfg.DashboardHourlyRollupEnabled {
+			usageHourlyAggregateWorker = worker.NewUsageHourlyAggregateWorker(db)
 		}
-	})
+		if cfg.UsageArchiveRetentionEnabled && cfg.UsageArchiveRetentionDays > 0 && cfg.DashboardHourlyRollupEnabled {
+			usageArchiveRetentionWorker = worker.NewUsageArchiveRetentionWorker(
+				serverApp.AppContext().UsageService,
+				cfg.UsageArchiveRetentionDays,
+			)
+		}
+		serverApp.AppContext().UsageService.SetEventsInsertedNotifier(func() {
+			accountHistoryRollupWorker.Wake()
+			usageDerivedRollupWorker.Wake()
+			if usageHourlyAggregateWorker != nil {
+				usageHourlyAggregateWorker.Wake()
+			}
+		})
+	}
 	automationRuntime := worker.NewAutomationRuntime(
 		automationSettingsService,
 		manager,
@@ -281,8 +285,12 @@ func runServer() {
 		log.Printf("[startup] start usage archive jobs: %v", err)
 	}
 
-	if err := db.RunDerivedStartupMaintenance(ctx); err != nil && ctx.Err() == nil {
-		log.Printf("[startup] post-listen index preparation failed; continuing without blocking background workers: %v", err)
+	if cfg.BackgroundDerivationsEnabled {
+		if err := db.RunDerivedStartupMaintenance(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("[startup] post-listen index preparation failed; continuing without blocking background workers: %v", err)
+		}
+	} else {
+		log.Printf("[startup] background derivations disabled; raw collection remains enabled")
 	}
 	if ctx.Err() == nil {
 		log.Printf("[startup] starting background workers")
@@ -300,36 +308,40 @@ func runServer() {
 		serverApp.AppContext().TokenRecoveryService.Start(ctx)
 		codexInspectionWorker.Start(ctx)
 		serverApp.AppContext().ProxyReplacementService.Start(ctx)
-		accountHistoryRollupWorker.Start(ctx)
-		usageDerivedRollupWorker.Start(ctx)
-		if usageHourlyAggregateWorker != nil {
-			usageHourlyAggregateWorker.Start(ctx)
+		if cfg.BackgroundDerivationsEnabled {
+			accountHistoryRollupWorker.Start(ctx)
+			usageDerivedRollupWorker.Start(ctx)
+			if usageHourlyAggregateWorker != nil {
+				usageHourlyAggregateWorker.Start(ctx)
+			}
+			db.StartDerivedMaintenance(ctx)
+			worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
 		}
-		db.StartDerivedMaintenance(ctx)
 		collectorWorker.Start(ctx)
-		worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
 	}
 
-	usageCacheAccountingMigrationWorker := worker.NewUsageCacheAccountingMigrationWorker(db, func() {
-		accountHistoryRollupWorker.Wake()
-		usageDerivedRollupWorker.Wake()
-		if usageHourlyAggregateWorker != nil {
-			usageHourlyAggregateWorker.Wake()
-		}
-		go func() {
-			if err := waitForUsageResponseMetadataBackfill(ctx, db); err != nil {
-				if ctx.Err() == nil {
-					log.Printf("usage response metadata backfill: %v", err)
+	if cfg.BackgroundDerivationsEnabled {
+		usageCacheAccountingMigrationWorker := worker.NewUsageCacheAccountingMigrationWorker(db, func() {
+			accountHistoryRollupWorker.Wake()
+			usageDerivedRollupWorker.Wake()
+			if usageHourlyAggregateWorker != nil {
+				usageHourlyAggregateWorker.Wake()
+			}
+			go func() {
+				if err := waitForUsageResponseMetadataBackfill(ctx, db); err != nil {
+					if ctx.Err() == nil {
+						log.Printf("usage response metadata backfill: %v", err)
+					}
+					return
 				}
-				return
-			}
-			if usageArchiveRetentionWorker != nil {
-				usageArchiveRetentionWorker.Start(ctx)
-			}
-		}()
-	})
-	if ctx.Err() == nil {
-		usageCacheAccountingMigrationWorker.Start(ctx)
+				if usageArchiveRetentionWorker != nil {
+					usageArchiveRetentionWorker.Start(ctx)
+				}
+			}()
+		})
+		if ctx.Err() == nil {
+			usageCacheAccountingMigrationWorker.Start(ctx)
+		}
 	}
 
 	select {
