@@ -205,7 +205,7 @@ git commit -m "perf: serve account prices from derived cache during rebuild"
 
 - [ ] **Step 1: Define the queue contract and write failing worker tests**
 
-Define:
+Define the queue contract in `apps/manager-server/internal/service/monitoring/service.go` (not in `worker`, to avoid a Go import cycle):
 
 ```go
 type AccountPriceCacheEnqueuer interface {
@@ -213,7 +213,7 @@ type AccountPriceCacheEnqueuer interface {
 }
 ```
 
-Tests must prove duplicate keys coalesce, queue capacity is bounded, a batch is processed with one exact read, and a failed batch leaves the previous cached cost intact while recording `status='failed'`.
+The worker implements this interface structurally; the monitoring package does not import `worker`. Tests must prove duplicate keys coalesce, queue capacity is bounded, a batch is processed with one exact read, and a failed batch leaves the previous cached cost intact while recording `status='failed'`.
 
 - [ ] **Step 2: Implement the deduplicated queue**
 
@@ -253,7 +253,7 @@ PriceCoveredEventID int64  `json:"price_covered_event_id,omitempty"`
 PriceUpdatedAtMS    *int64 `json:"price_updated_at_ms,omitempty"`
 ```
 
-Add a small interface field to `monitoring.Service` and `SetAccountPriceCacheEnqueuer(enqueuer AccountPriceCacheEnqueuer)`; keep the constructor signature backward-compatible.
+Add the `AccountPriceCacheEnqueuer` interface and a small interface field to `monitoring.Service`, plus `SetAccountPriceCacheEnqueuer(enqueuer AccountPriceCacheEnqueuer)`; keep the constructor signature backward-compatible.
 
 - [ ] **Step 2: Write service tests for fresh, stale, and unavailable prices**
 
