@@ -910,6 +910,21 @@ func (s *Store) RecalculateAccountPriceCache(
 	if err != nil {
 		return AccountPriceCacheRecalculationResult{}, err
 	}
+	// The retained projection's watermark is not a completeness proof. Compare
+	// the exact pricing source with the immutable/core account totals before
+	// publishing a fresh cache row; otherwise a missing retained event could be
+	// silently converted into an under-counted price.
+	coreRows, err := s.UsageRollups.AccountHistoryRowsTx(ctx, tx, keys)
+	if err != nil {
+		return AccountPriceCacheRecalculationResult{}, err
+	}
+	if incomplete := accountPricingCoverageIncompleteKeys(coreRows, rows); len(incomplete) > 0 {
+		return AccountPriceCacheRecalculationResult{}, fmt.Errorf(
+			"%w: exact pricing source incomplete for %d account(s)",
+			ErrUsagePricingCoverageIncomplete,
+			len(incomplete),
+		)
+	}
 	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
 	if err != nil {
 		return AccountPriceCacheRecalculationResult{}, err

@@ -3,10 +3,13 @@ package worker
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -96,6 +99,66 @@ func TestAccountPriceCacheWorkerWritesExactDerivedCost(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("worker did not write account price cache; pending=%d", worker.PendingCount())
+}
+
+func TestRecalculateAccountPriceCacheRejectsIncompleteCoverage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"model-a": {Prompt: 2, Completion: 4, PromptConfigured: true, CompletionConfigured: true},
+	}); err != nil {
+		t.Fatalf("save model price: %v", err)
+	}
+	event := accountPriceCacheTestEvent()
+	if _, err := st.InsertEvents(ctx, []usage.Event{event}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	accountKey, ok := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     event.AuthFileSnapshot,
+		AuthIndex:            event.AuthIndex,
+		AuthProviderSnapshot: event.AuthProviderSnapshot,
+		AccountSnapshot:      event.AccountSnapshot,
+		Source:               event.Source,
+	})
+	if !ok {
+		t.Fatalf("build account key failed")
+	}
+	// Simulate a retained projection that has lost one event while its
+	// watermark still claims coverage. The exact cache writer must fail closed
+	// instead of publishing a falsely fresh, under-counted price.
+	st.UsageRollups = &incompleteAccountRollupRepository{
+		Repository: st.UsageRollups,
+		rows: []usagerollup.AccountHistoryRow{{
+			AccountKey:   accountKey,
+			Model:        event.Model,
+			BillingModel: event.ResolvedModel,
+			Calls:        2,
+			FirstSeenMS:  event.TimestampMS,
+			LastSeenMS:   event.TimestampMS,
+		}},
+	}
+	_, err := st.RecalculateAccountPriceCache(ctx, []string{accountKey}, time.Now().UnixMilli())
+	if !errors.Is(err, store.ErrUsagePricingCoverageIncomplete) {
+		t.Fatalf("recalculate error = %v, want coverage incomplete", err)
+	}
+	snapshot, err := st.LoadUsagePricingAccountSnapshot(ctx, []string{accountKey})
+	if err != nil {
+		t.Fatalf("load cache snapshot: %v", err)
+	}
+	if _, cached := snapshot.PriceCache[accountKey]; cached {
+		t.Fatalf("incomplete source wrote a cache row: %#v", snapshot.PriceCache[accountKey])
+	}
+}
+
+type incompleteAccountRollupRepository struct {
+	usagerollup.Repository
+	rows []usagerollup.AccountHistoryRow
+}
+
+func (r *incompleteAccountRollupRepository) AccountHistoryRowsTx(_ context.Context, _ *sql.Tx, _ []string) ([]usagerollup.AccountHistoryRow, error) {
+	return r.rows, nil
 }
 
 func accountPriceCacheTestEvent() usage.Event {

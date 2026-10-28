@@ -743,4 +743,5 @@ B 方案：凭证列表当前页必须恢复旧版精确价格读取，即使 `p
 - 不完整账户由 CPAM `AccountPriceCacheWorker` 去重排队，单批最多 25 个、内存队列上限 5000、单 worker 并发 1，SQLite 忙/锁按 250ms/1s 重试；精确重算完成后原子写回缓存，下一次可见页刷新即可显示。
 - `USAGE_ACCOUNT_PRICE_CACHE_ENABLED` 独立于 `USAGE_BACKGROUND_DERIVATIONS_ENABLED`，默认开启；即使为避免历史维护锁竞争而关闭通用派生 worker，账户价格缓存 worker 仍可单独运行。关闭该开关时只显示已有缓存/不可用状态，不启动精确重算。
 - worker 只读保留事件/原始事件并计算派生价格，不写 `usage_events`、Credits、usage rollup 核心事实、CPA Core 或调度状态。失败只记录缓存 `status=failed`，保留上次 `total_cost`。
+- exact repricing 在写入 `fresh` 前必须把 retained/raw pricing rows 与 core account rollup 做覆盖校验；projection watermark 不能单独证明完整性。覆盖不完整时 fail-closed，不得发布低估的“新鲜”价格。
 - 重启后队列可丢弃；下一次账户历史读取会再次为不完整账户入队。任何后续“更新 CPAM”合并必须保留上述 HTTP 无 raw scan、缓存字段、队列边界和计费隔离约束。
