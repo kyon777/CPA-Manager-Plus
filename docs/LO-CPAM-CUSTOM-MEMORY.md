@@ -808,3 +808,34 @@ imports upstream historical-price recovery exactly where it belongs.
   test, web TypeScript type-check, and production web build. Do not substitute
   a full browser suite for the bounded price-recovery regression unless a
   later change touches that UI path.
+
+## 2026-10-29: Current-page-only account-history refresh (A decision)
+
+This amendment supersedes the preceding `all/current/single` account-history
+refresh matrix. The operator explicitly chose option A because the 17.4 GB
+usage database and high-concurrency account inventory made automatic full
+history/pricing reads unusable. It is mandatory to preserve this behavior in
+future CPAM updates.
+
+- `POST /v0/management/monitoring/account-history` is never automatically
+  called with the full credential inventory. Initial entry, pagination,
+  filtering, live-refresh enablement, live-refresh ticks, and the top-right
+  refresh request only the current visible page (normally 10 rows, or the
+  configured page size) plus an explicitly opened row outside that page.
+- A single-account manual refresh remains a single-target request. All history
+  scopes cancel obsolete page requests and use the existing bounded history
+  concurrency; no new global queue or pricing worker may be introduced.
+- The full `auth-files?include_proxy_url=1` inventory load and global compact
+  `account-recent-index` request remain unchanged. Global recent-request sorting
+  therefore remains available without loading global historical cost data.
+- `account-window-usage` remains a current-page stream with its existing
+  independent 60-second cadence. Recent-request bars and failure reasons keep
+  their current-page cadence. These streams must not trigger a full
+  `account-history` request.
+- Exact historical totals and `total_cost` still use the upstream coverage-
+  checked read path for the requested keys only. This is read-only and must not
+  alter `usage_events`, Credits, usage rollups, pricing writes, scheduler state,
+  CPA Core, `cli-proxy-api`, or billing behavior.
+- Keep the management/usage HTTP timeout at 240000 ms. Do not restore the old
+  initial/full-history pass, full-refresh revision, or any UI behavior that
+  silently expands a current-page request into an inventory scan.

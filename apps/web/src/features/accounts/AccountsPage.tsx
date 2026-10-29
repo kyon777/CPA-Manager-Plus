@@ -576,7 +576,7 @@ type AccountQuotaRefreshOutcome =
   | { status: 'ignored' };
 
 type AccountHistoryLoadOutcome = { status: 'success' } | { status: 'error'; error: string };
-type AccountHistoryLoadScope = 'all' | 'current' | 'single';
+type AccountHistoryLoadScope = 'current' | 'single';
 type AccountHistoryLoadOptions = {
   scope?: AccountHistoryLoadScope;
   targetEntries?: AccountHistoryTargetEntry[];
@@ -1588,7 +1588,6 @@ export function AccountsPage() {
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [accountHistoryRefreshRevision, setAccountHistoryRefreshRevision] = useState(0);
   const [accountHistoryAutoRefreshRevision, setAccountHistoryAutoRefreshRevision] = useState(0);
-  const [accountHistoryFullRefreshRevision, setAccountHistoryFullRefreshRevision] = useState(0);
   const [recentIndexRefreshRevision, setRecentIndexRefreshRevision] = useState(0);
   const [visibleRecentIndexRefreshRevision, setVisibleRecentIndexRefreshRevision] = useState(0);
   const [globalRecentIndexRefreshRevision, setGlobalRecentIndexRefreshRevision] = useState(0);
@@ -1884,7 +1883,6 @@ export function AccountsPage() {
   const detailEventsRequestIdRef = useRef(0);
   const detailEventsAutoLoadKeyRef = useRef<string | null>(null);
   const quotaCooldownRequestIdRef = useRef(0);
-  const accountHistoryFullAbortRef = useRef<AbortController | null>(null);
   const accountHistoryAutoAbortRef = useRef<AbortController | null>(null);
   const proxyOverloadSummaryAbortRef = useRef<AbortController | null>(null);
   const accountHistoryTargetAbortRef = useRef<AbortController | null>(null);
@@ -1898,12 +1896,6 @@ export function AccountsPage() {
   const accountHistoryVisibleScopeRef = useRef('');
   const accountHistoryInventoryRowKeysRef = useRef<ReadonlySet<string>>(new Set());
   const accountHistoryTargetRequestRowKeysRef = useRef<ReadonlySet<string>>(new Set());
-  const accountHistoryFullLoadKeyRef = useRef<string | null>(null);
-  const accountHistoryFullPendingRef = useRef(false);
-  const accountHistoryFullCompletedRef = useRef(false);
-  const accountHistoryFullActiveRevisionRef = useRef<number | null>(null);
-  const accountHistoryFullHandledRevisionRef = useRef<number | null>(null);
-  const accountHistoryInitialScopeDecidedRef = useRef(false);
   const accountHistoryAutoLoadKeyRef = useRef<string | null>(null);
   const accountHistoryAutoRequestContextKeyRef = useRef<string | null>(null);
   const accountRecentIndexAutoLoadKeyRef = useRef<string | null>(null);
@@ -2485,9 +2477,6 @@ export function AccountsPage() {
       requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
     };
     quotaCooldownRequestIdRef.current += 1;
-    accountHistoryFullPendingRef.current = false;
-    accountHistoryFullAbortRef.current?.abort();
-    accountHistoryFullAbortRef.current = null;
     accountHistoryAutoAbortRef.current?.abort();
     accountHistoryAutoAbortRef.current = null;
     accountHistoryTargetAbortRef.current?.abort();
@@ -2510,11 +2499,6 @@ export function AccountsPage() {
     accountHistoryVisibleScopeRef.current = '';
     accountHistoryInventoryRowKeysRef.current = new Set();
     accountHistoryTargetRequestRowKeysRef.current = new Set();
-    accountHistoryFullLoadKeyRef.current = null;
-    accountHistoryFullCompletedRef.current = false;
-    accountHistoryFullActiveRevisionRef.current = null;
-    accountHistoryFullHandledRevisionRef.current = null;
-    accountHistoryInitialScopeDecidedRef.current = false;
     accountHistoryAutoLoadKeyRef.current = null;
     accountHistoryAutoRequestContextKeyRef.current = null;
     accountHistoryAutoPendingRefreshRef.current = false;
@@ -2596,8 +2580,6 @@ export function AccountsPage() {
 
   useEffect(
     () => () => {
-      accountHistoryFullPendingRef.current = false;
-      accountHistoryFullAbortRef.current?.abort();
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryTargetAbortRef.current?.abort();
       accountRecentIndexAbortRef.current?.abort();
@@ -2642,7 +2624,6 @@ export function AccountsPage() {
           : loadFiles(),
       loadHeaderSnapshots(),
     ]);
-    setAccountHistoryFullRefreshRevision((current) => current + 1);
     setAccountHistoryAutoRefreshRevision((current) => current + 1);
     setRecentIndexRefreshRevision((current) => current + 1);
     setVisibleRecentIndexRefreshRevision((current) => current + 1);
@@ -2695,7 +2676,6 @@ export function AccountsPage() {
 
   const setAccountsLiveRefresh = useCallback(
     (enabled: boolean) => {
-      const wasEnabled = liveRefreshEnabledRef.current;
       liveRefreshEnabledRef.current = enabled;
       setLiveRefreshEnabled(enabled);
       if (!enabled) {
@@ -2722,9 +2702,6 @@ export function AccountsPage() {
       }
       setFrozenListEvidenceAtMs(null);
       setVisibleRecentIndexRefreshRevision((current) => current + 1);
-      if (!wasEnabled) {
-        setAccountHistoryFullRefreshRevision((current) => current + 1);
-      }
       setAccountHistoryAutoRefreshRevision((current) => current + 1);
       setListWindowUsageRefreshRevision((current) => current + 1);
       if (accountSort.key === 'recent') {
@@ -5173,17 +5150,6 @@ export function AccountsPage() {
     () => buildAccountHistoryTargetEntries(accountHistoryRows),
     [accountHistoryRows]
   );
-  const accountHistoryFullTargets = useMemo(() => {
-    // An all-account refresh still covers the entire inventory, but starts
-    // with the rows the operator can see now. This lets the current page show
-    // exact history/cost as soon as its first batch returns instead of waiting
-    // behind unrelated credentials whose batches are still in flight.
-    const visibleRowKeys = new Set(accountHistoryTargets.map((entry) => entry.rowKey));
-    return [
-      ...accountHistoryTargets,
-      ...buildAccountHistoryTargetEntries(rows).filter((entry) => !visibleRowKeys.has(entry.rowKey)),
-    ];
-  }, [accountHistoryTargets, rows]);
   const visibleAccountRecentIndexTargets = useMemo(
     () => buildAccountHistoryTargetEntries(pageRows),
     [pageRows]
@@ -5230,27 +5196,6 @@ export function AccountsPage() {
       managementKey,
     ]
   );
-  const accountHistoryFullContextKey = useMemo(
-    () =>
-      JSON.stringify({
-        checking: featureAvailability.checking,
-        connectionFingerprint,
-        managerServiceBase: featureAvailability.managerServiceBase,
-        managementKey,
-        managerConnectionFingerprint,
-        requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
-        targets: stableAccountHistoryTargets(accountHistoryFullTargets),
-      }),
-    [
-      accountHistoryFullTargets,
-      connectionFingerprint,
-      featureAvailability.checking,
-      featureAvailability.managerServiceBase,
-      featureAvailability.requestMonitoringAvailable,
-      managerConnectionFingerprint,
-      managementKey,
-    ]
-  );
   const visibleAccountRecentIndexAutoContextKey = useMemo(
     () =>
       JSON.stringify({
@@ -5275,7 +5220,6 @@ export function AccountsPage() {
   const accountRecentIndexAutoLoadKey = `${accountRecentIndexAutoContextKey}\u0000${recentIndexRefreshRevision}\u0000${globalRecentIndexRefreshRevision}`;
   const visibleAccountRecentIndexAutoLoadKey = `${visibleAccountRecentIndexAutoContextKey}\u0000${visibleRecentIndexRefreshRevision}`;
   const accountHistoryAutoLoadKey = `${accountHistoryAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
-  const accountHistoryFullLoadKey = `${accountHistoryFullContextKey}\u0000${accountHistoryFullRefreshRevision}`;
   const accountHistoryVisibleScopeKey = useMemo(
     () =>
       JSON.stringify({
@@ -5301,15 +5245,6 @@ export function AccountsPage() {
       statusFilter,
     ]
   );
-  const accountHistoryInitialFullEligible =
-    page === 1 &&
-    providerFilter === 'all' &&
-    statusFilter === 'all' &&
-    planFilter === 'all' &&
-    quotaBandFilter === 'all' &&
-    effectiveOperationalFilter === 'all' &&
-    search.trim() === '' &&
-    selectedRowKey === null;
   useEffect(() => {
     if (accountHistoryVisibleScopeRef.current !== accountHistoryVisibleScopeKey) {
       accountHistoryVisibleScopeRef.current = accountHistoryVisibleScopeKey;
@@ -7283,17 +7218,9 @@ export function AccountsPage() {
     ): Promise<Map<string, AccountHistoryLoadOutcome>> => {
       const scope = options.scope ?? (options.targetEntries ? 'single' : 'current');
       const mergeResult = scope === 'single';
-      const fullResult = scope === 'all';
-      const visibleEntries =
-        options.targetEntries ?? (fullResult ? accountHistoryFullTargets : accountHistoryTargets);
-      const controllerRef = fullResult
-        ? accountHistoryFullAbortRef
-        : mergeResult
-          ? accountHistoryTargetAbortRef
-          : accountHistoryAutoAbortRef;
-      const requestContextKey = fullResult
-        ? accountHistoryFullContextKey
-        : accountHistoryAutoContextKey;
+      const visibleEntries = options.targetEntries ?? accountHistoryTargets;
+      const controllerRef = mergeResult ? accountHistoryTargetAbortRef : accountHistoryAutoAbortRef;
+      const requestContextKey = accountHistoryAutoContextKey;
       const managerServiceBase = featureAvailability.managerServiceBase;
       const outcomes = new Map<string, AccountHistoryLoadOutcome>();
 
@@ -7324,10 +7251,10 @@ export function AccountsPage() {
         }
       }
 
-      // Full and single scopes always force their requested rows. Current-page
+      // A direct single-account action forces its requested row. Current-page
       // reads retain a session cache so a page/filter revisit does not repeat
       // an expensive request until the next automatic refresh revision.
-      const entries = fullResult || mergeResult
+      const entries = mergeResult
         ? visibleEntries
         : selectUncachedAccountHistoryTargetEntries(
             visibleEntries,
@@ -7340,9 +7267,6 @@ export function AccountsPage() {
         !managementKey ||
         entries.length === 0
       ) {
-        if (fullResult) {
-          accountHistoryFullPendingRef.current = false;
-        }
         setAccountHistoryLoading(accountHistoryPendingRequestsRef.current.size > 0);
         return outcomes;
       }
@@ -7353,11 +7277,7 @@ export function AccountsPage() {
         accountHistoryTargetRequestRowKeysRef.current = new Set(
           entries.map((entry) => entry.rowKey)
         );
-      }
-      if (fullResult) {
-        accountHistoryFullPendingRef.current = true;
-        accountHistoryFullActiveRevisionRef.current = accountHistoryFullRefreshRevision;
-      } else if (!mergeResult) {
+      } else {
         accountHistoryAutoRequestContextKeyRef.current = requestContextKey;
       }
       const requestToken = Symbol('account-history-request');
@@ -7427,7 +7347,7 @@ export function AccountsPage() {
               outcomes.set(entry.rowKey, { status: 'error', error });
               return;
             }
-            if (scope === 'current' || fullResult) {
+            if (scope === 'current') {
               accountHistoryLoadedRowKeysRef.current.add(entry.rowKey);
             }
             outcomes.set(entry.rowKey, { status: 'success' });
@@ -7493,20 +7413,7 @@ export function AccountsPage() {
           controllerRef.current = null;
           if (mergeResult) {
             accountHistoryTargetRequestRowKeysRef.current = new Set();
-          }
-          if (fullResult) {
-            accountHistoryFullPendingRef.current = false;
-            accountHistoryFullActiveRevisionRef.current = null;
-            if (!controller.signal.aborted) {
-              accountHistoryFullCompletedRef.current = true;
-              accountHistoryFullHandledRevisionRef.current = accountHistoryFullRefreshRevision;
-            }
-            if (accountHistoryAutoPendingRefreshRef.current) {
-              accountHistoryAutoPendingRefreshRef.current = false;
-              accountHistoryAutoLoadKeyRef.current = null;
-              setAccountHistoryAutoRefreshRevision((current) => current + 1);
-            }
-          } else if (!mergeResult) {
+          } else {
             accountHistoryAutoRequestContextKeyRef.current = null;
             accountHistoryAutoPendingRefreshRef.current = false;
             if (shouldScheduleFollowUp) {
@@ -7521,9 +7428,6 @@ export function AccountsPage() {
     [
       accountHistoryAutoContextKey,
       accountHistoryAutoRefreshRevision,
-      accountHistoryFullContextKey,
-      accountHistoryFullRefreshRevision,
-      accountHistoryFullTargets,
       accountHistoryTargets,
       connectionFingerprint,
       featureAvailability.checking,
@@ -7537,71 +7441,6 @@ export function AccountsPage() {
   );
   useEffect(() => {
     if (activeView !== 'accounts') {
-      accountHistoryFullLoadKeyRef.current = null;
-      accountHistoryFullAbortRef.current?.abort();
-      accountHistoryFullAbortRef.current = null;
-      accountHistoryFullPendingRef.current = false;
-      return;
-    }
-    // Do not decide the initial scope against the transient empty inventory
-    // rendered before auth-files finishes loading. This also ensures that a
-    // later manual filter change cannot accidentally promote a current-page
-    // read into an all-inventory scan.
-    if (!hasLoaded || loading) return;
-    const explicitFullRevisionPending =
-      accountHistoryFullRefreshRevision > 0 &&
-      accountHistoryFullHandledRevisionRef.current !== accountHistoryFullRefreshRevision;
-    if (accountHistoryFullCompletedRef.current && !explicitFullRevisionPending) {
-      accountHistoryFullLoadKeyRef.current = accountHistoryFullLoadKey;
-      return;
-    }
-    if (
-      accountHistoryFullLoadKeyRef.current === accountHistoryFullLoadKey &&
-      !explicitFullRevisionPending
-    ) {
-      return;
-    }
-    accountHistoryFullLoadKeyRef.current = accountHistoryFullLoadKey;
-
-    // Inventory changes should not silently turn a page/filter interaction
-    // into another all-account history scan. The initial all-account read is
-    // one-time; subsequent all-account reads are explicit refresh revisions
-    // (top-right refresh or enabling live refresh). The current-page effect
-    // remains responsible for newly added/recreated visible rows.
-    const initialScopeDecision = !accountHistoryInitialScopeDecidedRef.current;
-    accountHistoryInitialScopeDecidedRef.current = true;
-    const needsInitialFullLoad = initialScopeDecision && accountHistoryInitialFullEligible;
-    const needsExplicitFullLoad =
-      accountHistoryFullRefreshRevision > 0 &&
-      accountHistoryFullHandledRevisionRef.current !== accountHistoryFullRefreshRevision;
-    if (!needsInitialFullLoad && !needsExplicitFullLoad) {
-      return;
-    }
-    if (
-      accountHistoryFullPendingRef.current &&
-      accountHistoryFullActiveRevisionRef.current === accountHistoryFullRefreshRevision
-    ) {
-      return;
-    }
-    // The all-account pass owns the initial/explicit refresh for this exact
-    // auto-load key. Mark it before the current-page effect runs so the same
-    // render cannot enqueue a duplicate page request.
-    accountHistoryAutoLoadKeyRef.current = accountHistoryAutoLoadKey;
-    void loadAccountHistory({ scope: 'all' });
-  }, [
-    accountHistoryAutoLoadKey,
-    accountHistoryFullContextKey,
-    accountHistoryFullLoadKey,
-    accountHistoryFullRefreshRevision,
-    accountHistoryInitialFullEligible,
-    hasLoaded,
-    loading,
-    activeView,
-    loadAccountHistory,
-  ]);
-
-  useEffect(() => {
-    if (activeView !== 'accounts') {
       accountHistoryAutoLoadKeyRef.current = null;
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryAutoAbortRef.current = null;
@@ -7610,16 +7449,9 @@ export function AccountsPage() {
       return;
     }
     if (accountHistoryAutoLoadKeyRef.current === accountHistoryAutoLoadKey) return;
-    const fullRequestInFlight =
-      accountHistoryFullPendingRef.current || accountHistoryFullAbortRef.current !== null;
-    if (fullRequestInFlight) {
-      accountHistoryAutoPendingRefreshRef.current = true;
-      accountHistoryAutoLoadKeyRef.current = accountHistoryAutoLoadKey;
-      return;
-    }
     accountHistoryAutoLoadKeyRef.current = accountHistoryAutoLoadKey;
     void loadAccountHistory();
-  }, [accountHistoryAutoLoadKey, accountHistoryFullContextKey, activeView, loadAccountHistory]);
+  }, [accountHistoryAutoLoadKey, activeView, loadAccountHistory]);
 
   const loadDetailEvents = useCallback(
     async (

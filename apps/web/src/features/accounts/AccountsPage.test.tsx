@@ -5495,7 +5495,7 @@ describe('AccountsPage replacement flows', () => {
     expect(getAccountListItemTexts(renderer).join('\n')).toContain('accounts.health_reauth');
   });
 
-  it('loads full detailed history on an unfiltered initial entry', async () => {
+  it('loads only current-page detailed history on an unfiltered initial entry', async () => {
     mocks.files = Array.from({ length: 51 }, (_, index) =>
       makeCodexFile(
         `initial-${String(index + 1).padStart(3, '0')}.json`,
@@ -5515,11 +5515,11 @@ describe('AccountsPage replacement flows', () => {
     const historyRequests = mocks.getAccountHistory.mock.calls.map(
       (call) => call[2] as AccountHistoryRequestForTest
     );
-    expect(historyRequests.reduce((total, request) => total + request.accounts.length, 0)).toBe(51);
+    expect(historyRequests.reduce((total, request) => total + request.accounts.length, 0)).toBe(10);
     expect(historyRequests).toHaveLength(1);
   });
 
-  it('loads full detailed history initially while the compact index remains global', async () => {
+  it('keeps the compact request index global while detailed history stays current-page', async () => {
     mocks.files = Array.from({ length: 601 }, (_, index) =>
       makeCodexFile(
         `credential-${String(index + 1).padStart(3, '0')}.json`,
@@ -5533,14 +5533,14 @@ describe('AccountsPage replacement flows', () => {
       requestMonitoringAvailable: true,
       serverCodexInspectionAvailable: false,
     };
-    await renderAccountsPage();
+    const renderer = await renderAccountsPage();
     await flushPromises();
 
     const historyRequests = mocks.getAccountHistory.mock.calls.map(
       (call) => call[2] as AccountHistoryRequestForTest
     );
-    expect(historyRequests).toHaveLength(4);
-    expect(historyRequests.reduce((total, request) => total + request.accounts.length, 0)).toBe(601);
+    expect(historyRequests).toHaveLength(1);
+    expect(historyRequests.reduce((total, request) => total + request.accounts.length, 0)).toBe(10);
     const recentIndexRequests = mocks.getAccountRecentIndex.mock.calls.map(
       (call) => call[2] as AccountRecentIndexRequestForTest
     );
@@ -5553,9 +5553,20 @@ describe('AccountsPage replacement flows', () => {
     expect(recentIndexRequests).toHaveLength(2);
     expect(globalRecentIndexRequest?.accounts).toHaveLength(601);
     expect(visibleRecentIndexRequest?.accounts).toHaveLength(10);
+
+    mocks.getAccountHistory.mockClear();
+    await act(async () => {
+      findHostButtonByText(renderer, 'common.refresh').props.onClick();
+      await flushPromises();
+    });
+    const refreshedHistoryRequests = mocks.getAccountHistory.mock.calls.map(
+      (call) => call[2] as AccountHistoryRequestForTest
+    );
+    expect(refreshedHistoryRequests).toHaveLength(1);
+    expect(refreshedHistoryRequests[0]?.accounts).toHaveLength(10);
   });
 
-  it('publishes the first full-history batch before slower background batches finish', async () => {
+  it('publishes current-page history without waiting for unrelated inventory rows', async () => {
     mocks.files = Array.from({ length: 401 }, (_, index) =>
       makeCodexFile(
         `progressive-${String(index + 1).padStart(3, '0')}.json`,
@@ -5570,21 +5581,12 @@ describe('AccountsPage replacement flows', () => {
       serverCodexInspectionAvailable: false,
     };
     const firstBatch = createDeferred<AccountHistoryResponseForTest>();
-    const secondBatch = createDeferred<AccountHistoryResponseForTest>();
-    const thirdBatch = createDeferred<AccountHistoryResponseForTest>();
-    let callIndex = 0;
-    mocks.getAccountHistory.mockImplementation(() => {
-      const currentCall = callIndex;
-      callIndex += 1;
-      if (currentCall === 0) return firstBatch.promise;
-      if (currentCall === 1) return secondBatch.promise;
-      return thirdBatch.promise;
-    });
+    mocks.getAccountHistory.mockImplementation(() => firstBatch.promise);
 
     const firstRowKey = getAuthFileSelectionKey(mocks.files[0]);
     const renderer = await renderAccountsPage();
     await flushPromises();
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
 
     try {
       await act(async () => {
@@ -5615,13 +5617,12 @@ describe('AccountsPage replacement flows', () => {
         findAccountDetailRegion(renderer, firstRowKey, 'history').findAllByType('strong').map(readText)
       ).toEqual(['42', '4.2K', '$1.23', '100.0%']);
     } finally {
-      secondBatch.resolve(makeAccountHistoryResponse([]));
-      thirdBatch.resolve(makeAccountHistoryResponse([]));
+      firstBatch.resolve(makeAccountHistoryResponse([]));
       await flushPromises();
     }
   });
 
-  it('prioritizes the visible sorted page in the first full-history batch', async () => {
+  it('loads only the visible sorted page instead of an inventory history batch', async () => {
     mocks.files = Array.from({ length: 201 }, (_, index) =>
       makeCodexFile(
         `priority-${String(index + 1).padStart(3, '0')}.json`,
@@ -5645,6 +5646,8 @@ describe('AccountsPage replacement flows', () => {
     await flushPromises();
 
     const firstHistoryRequest = mocks.getAccountHistory.mock.calls[0]?.[2] as AccountHistoryRequestForTest;
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(firstHistoryRequest.accounts).toHaveLength(10);
     expect(firstHistoryRequest.accounts[0]?.row_key).toBe(getAuthFileSelectionKey(mocks.files[200]));
   });
 
