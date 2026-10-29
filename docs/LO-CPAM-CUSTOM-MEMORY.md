@@ -785,3 +785,26 @@ must report it as enabled/locked and future CPAM updates must preserve the
 setting across binary replacement and `cpam.service` restarts. Do not modify
 CPA Core, `cli-proxy-api`, `/home/cpa`, or billing data when preserving this
 flag.
+
+## 2026-10-29: v1.14.10 / PR #1083 price-recovery merge
+
+This CPAM-only upstream merge preserves the custom credential-list UX and
+imports upstream historical-price recovery exactly where it belongs.
+
+- usagepricing.retainedEventSourceTx and retainedAccountEventSourceTx must
+  treat intact raw usage_events as authoritative. A compatible retained
+  projection may contribute only archive rows proven deleted through
+  usage_archive_event_refs.raw_deleted_at_ms. Never revert to projection
+  prefix plus raw tail; that can omit a live event whose projection entry is
+  stale or missing.
+- Preserve the current custom AccountsPage.tsx and account-history refresh
+  scope matrix. The upstream pricing recovery is a server-side read-path fix;
+  it must not reintroduce an all-inventory raw-event scan for a normal
+  current-page history request.
+- This change is read-only with respect to billing facts. Do not modify
+  usage_events, Credits, pricing-write semantics, CPA Core, cli-proxy-api,
+  /home/cpa, or cpa.service when updating CPAM.
+- Fast release evidence used for this merge: focused usagepricing Go package
+  test, web TypeScript type-check, and production web build. Do not substitute
+  a full browser suite for the bounded price-recovery regression unless a
+  later change touches that UI path.
