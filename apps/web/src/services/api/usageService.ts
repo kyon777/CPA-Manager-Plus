@@ -1444,10 +1444,6 @@ export interface MonitoringAccountHistoryItem {
   latest_request?: MonitoringAccountLatestRequest | null;
   recent_requests?: MonitoringAccountLatestRequest[];
   sync_status: 'ready' | 'pending' | 'empty' | string;
-  price_state?: 'fresh' | 'stale_repricing' | 'unavailable' | string;
-  price_revision?: string;
-  price_covered_event_id?: number;
-  price_updated_at_ms?: number | null;
 }
 
 export interface MonitoringAccountHistoryResponse {

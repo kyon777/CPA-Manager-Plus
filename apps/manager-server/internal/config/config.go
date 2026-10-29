@@ -69,7 +69,6 @@ type Config struct {
 	CodexReauthAutoUpdateEnabled          bool
 	DashboardHourlyRollupEnabled          bool
 	BackgroundDerivationsEnabled          bool
-	AccountPriceCacheEnabled              bool
 	UsageImportChunkBytes                 int64
 	UsageImportDiskQuotaBytes             int64
 	UsageImportMaxSessions                int
@@ -219,7 +218,6 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		CodexReauthAutoUpdateEnabled: envBool("USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED", cfgFile.CodexReauthAutoUpdateEnabled),
 		DashboardHourlyRollupEnabled: envBool("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", true),
 		BackgroundDerivationsEnabled: envBool("USAGE_BACKGROUND_DERIVATIONS_ENABLED", true),
-		AccountPriceCacheEnabled:     envBool("USAGE_ACCOUNT_PRICE_CACHE_ENABLED", true),
 		UsageImportChunkBytes: envInt64(
 			"USAGE_IMPORT_CHUNK_BYTES",
 			int64Fallback(cfgFile.UsageImportChunkBytes, DefaultUsageImportChunkBytes),

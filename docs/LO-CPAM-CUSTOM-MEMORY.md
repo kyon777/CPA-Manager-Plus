@@ -745,3 +745,43 @@ B 方案：凭证列表当前页必须恢复旧版精确价格读取，即使 `p
 - worker 只读保留事件/原始事件并计算派生价格，不写 `usage_events`、Credits、usage rollup 核心事实、CPA Core 或调度状态。失败只记录缓存 `status=failed`，保留上次 `total_cost`。
 - exact repricing 在写入 `fresh` 前必须把 retained/raw pricing rows 与 core account rollup 做覆盖校验；projection watermark 不能单独证明完整性。覆盖不完整时 fail-closed，不得发布低估的“新鲜”价格。
 - 重启后队列可丢弃；下一次账户历史读取会再次为不完整账户入队。任何后续“更新 CPAM”合并必须保留上述 HTTP 无 raw scan、缓存字段、队列边界和计费隔离约束。
+
+## 2026-10-28: Superseding amendment - upstream pricing path and refresh matrix
+
+The preceding account-price-cache section is historical and is superseded by this amendment. The custom `AccountPriceCacheWorker`, HTTP `price_state` fields, price cache queue, and `USAGE_ACCOUNT_PRICE_CACHE_ENABLED` configuration are retired. Do not restore them during a future upstream merge. The SQLite cache table and migration may remain only as inert rollback/schema compatibility; no runtime reader, writer, queue, or UI marker may use it.
+
+The active CPAM account-history path is the upstream exact path:
+
+- `Store.LoadUsagePricingAccountSnapshot` calls `LoadAccountRowsTx` and uses the existing coverage-checked `LoadAccountRowsFromEventsTx` recovery only for requested incomplete account keys.
+- Responses expose only upstream `sync_status` and exact `total_cost`; they must not emit or render `price_state`, `price_revision`, or repricing footnotes.
+- This is a read/derived-display change only. Never modify `usage_events`, Credits, usage rollups, CPA Core, scheduler state, or billing writes.
+
+The active frontend account-history refresh scope is explicit:
+
+1. Initial list entry: all inventory accounts and related history/cost data.
+2. Manual page change or filter change: current visible page only; cancel the obsolete current-page request, but do not cancel an all-inventory request.
+3. Enabling live refresh: one all-inventory history refresh first.
+4. Live refresh intervals: current visible page only. Recent-request index and quota/window usage retain their independent refresh periods.
+5. Single-account manual refresh: that account only.
+6. Top-right full refresh: all inventory accounts and related data.
+
+Use separate abort/deduplication state for `all`, `current`, and `single`. Preserve the 240000ms usage timeout and never silently fall back to a full read from a current-page refresh.
+
+For an `all` history refresh, retain complete-inventory coverage but put the
+currently visible page (and an explicitly opened row outside that page) at
+the front of the request order. Publish every completed 200-account response
+to the UI immediately; do not wait for the final background batch before
+rendering an exact `total_cost` for the visible row. This is a frontend
+read/render scheduling rule only: it must not increase request concurrency
+above the existing two bounded history requests, enable a writer, alter
+billing data, or change the `all/current/single` scope matrix.
+
+## 2026-10-28: Priority-demotion feature flag is explicitly enabled
+
+The production native CPAM service at `/home/cpam` currently runs with
+`USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED=true` in
+`/home/cpam/config/cpam.env`. The flag is environment-locked, so the panel
+must report it as enabled/locked and future CPAM updates must preserve the
+setting across binary replacement and `cpam.service` restarts. Do not modify
+CPA Core, `cli-proxy-api`, `/home/cpa`, or billing data when preserving this
+flag.

@@ -219,7 +219,6 @@ func runServer() {
 	tokenRecoverySignalWorker := worker.NewTokenRecoverySignalWorker(serverApp.AppContext().TokenRecoveryAutomaticSignal)
 	var accountHistoryRollupWorker *worker.AccountHistoryRollupWorker
 	var usageDerivedRollupWorker *worker.UsagePricingRollupWorker
-	var accountPriceCacheWorker *worker.AccountPriceCacheWorker
 	var usageHourlyAggregateWorker *worker.UsageHourlyAggregateWorker
 	var usageArchiveRetentionWorker *worker.UsageArchiveRetentionWorker
 	if cfg.BackgroundDerivationsEnabled {
@@ -242,10 +241,6 @@ func runServer() {
 				usageHourlyAggregateWorker.Wake()
 			}
 		})
-	}
-	if cfg.AccountPriceCacheEnabled {
-		accountPriceCacheWorker = worker.NewAccountPriceCacheWorker(db)
-		serverApp.AppContext().MonitoringService.SetAccountPriceCacheEnqueuer(accountPriceCacheWorker)
 	}
 	automationRuntime := worker.NewAutomationRuntime(
 		automationSettingsService,
@@ -316,9 +311,6 @@ func runServer() {
 		if cfg.BackgroundDerivationsEnabled {
 			accountHistoryRollupWorker.Start(ctx)
 			usageDerivedRollupWorker.Start(ctx)
-			if accountPriceCacheWorker != nil {
-				accountPriceCacheWorker.Start(ctx)
-			}
 			if usageHourlyAggregateWorker != nil {
 				usageHourlyAggregateWorker.Start(ctx)
 			}
@@ -326,9 +318,6 @@ func runServer() {
 			worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
 		}
 		collectorWorker.Start(ctx)
-		if cfg.AccountPriceCacheEnabled && !cfg.BackgroundDerivationsEnabled && accountPriceCacheWorker != nil {
-			accountPriceCacheWorker.Start(ctx)
-		}
 	}
 
 	if cfg.BackgroundDerivationsEnabled {

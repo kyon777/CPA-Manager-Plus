@@ -20,9 +20,9 @@ export const retainAccountHistoryRowKeys = <T>(
 };
 
 /**
- * Keep a session-local cache for the page-sized detailed history read.  The
- * lightweight recent-request index remains global; this only prevents a page
- * flip from requesting the same expensive history rows again.
+ * Keep a small helper for scoped history reads. The page/current scope may
+ * reuse rows until its refresh revision changes; the full and single scopes
+ * intentionally bypass this helper and force their requested targets.
  */
 export const selectUncachedAccountHistoryTargetEntries = (
   entries: readonly AccountHistoryTargetEntry[],

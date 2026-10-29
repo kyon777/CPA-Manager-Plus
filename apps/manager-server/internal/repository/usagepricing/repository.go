@@ -33,15 +33,7 @@ type Repository interface {
 	LoadHourlyRowsFromEventsTx(ctx context.Context, tx *sql.Tx, filter HourlyFilter) ([]HourlyRow, error)
 	LoadAccountRows(ctx context.Context, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
-	// LoadAccountRowsForHistoryTx is a read-only management fast path. It always
-	// returns only the durable pricing prefix and never scans usage_events; the
-	// caller can use core account rollups plus the background price cache for an
-	// exact tail. It never changes billing data.
-	LoadAccountRowsForHistoryTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, error)
-	LoadAccountPriceCacheTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]PriceCacheRow, error)
-	UpsertAccountPriceCache(ctx context.Context, rows []PriceCacheRow) error
-	MarkAccountPriceCacheFailure(ctx context.Context, accountKeys []string, revision string, message string, nowMS int64) error
 }
 
 type State struct {
@@ -129,19 +121,6 @@ type AccountRow struct {
 	FirstSeenMS          int64
 	LastSeenMS           int64
 	UpdatedAtMS          int64
-}
-
-// PriceCacheRow is derived pricing metadata. It is deliberately separate from
-// usage_events and the durable pricing rollup so a stale/rebuilding price can
-// never mutate billing source data.
-type PriceCacheRow struct {
-	AccountKey      string
-	PricingRevision string
-	CoveredEventID  int64
-	TotalCost       float64
-	UpdatedAtMS     int64
-	Status          string
-	LastError       string
 }
 
 type hourlyKey struct {
@@ -522,14 +501,6 @@ func StructureRevision(ctx context.Context, db RowQuerier) (string, error) {
 		return "", err
 	}
 	return usageidentity.PricingStructureRevision(model.ModelPriceStructureRevision(prices)), nil
-}
-
-// PriceValueRevision is separate from StructureRevision: the latter is
-// intentionally insensitive to rate-only edits so rollups do not rebuild,
-// while a derived account-cost cache must become stale whenever a rate or
-// pricing rule changes.
-func PriceValueRevision(prices map[string]model.ModelPrice) string {
-	return usageidentity.PricingStructureRevision(model.ModelPriceValueRevision(prices))
 }
 
 func latestEventID(ctx context.Context, tx *sql.Tx) (int64, error) {
@@ -1131,40 +1102,6 @@ func (r *repository) LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountK
 		return nil, State{}, false, err
 	}
 	return sortedAccountRows(grouped), state, true, nil
-}
-
-func (r *repository) LoadAccountRowsForHistoryTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error) {
-	keys := normalizeValues(accountKeys)
-	if len(keys) == 0 {
-		state, err := stateQuery(ctx, tx)
-		return []AccountRow{}, state, err == nil && state.SchemaVersion == SchemaVersion, err
-	}
-	state, err := stateQuery(ctx, tx)
-	if err != nil {
-		return nil, State{}, false, err
-	}
-	if state.SchemaVersion != SchemaVersion {
-		return nil, state, false, nil
-	}
-	revision, err := StructureRevision(ctx, tx)
-	if err != nil {
-		return nil, State{}, false, err
-	}
-	if state.StructureRevision != revision || state.Status == "clearing" {
-		return nil, state, false, nil
-	}
-	grouped := map[accountKey]*AccountRow{}
-	if err := mergeStoredAccountRows(ctx, tx, revision, keys, grouped); err != nil {
-		return nil, State{}, false, err
-	}
-	// Deliberately do not merge the raw tail here. This method sits on the
-	// management HTTP path, where a page read must remain bounded even while a
-	// pricing rebuild or a large raw tail is present.
-	return sortedAccountRows(grouped), state, true, nil
-}
-
-func historyAccountRowsMaySkipRawTail(state State) bool {
-	return state.Status == "rebuilding" || state.Status == "clearing"
 }
 
 func mergeStoredAccountRows(

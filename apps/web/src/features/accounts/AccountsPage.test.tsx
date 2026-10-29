@@ -190,10 +190,6 @@ type AccountHistoryResponseForTest = {
       header_trace_id?: string;
     }>;
     sync_status: string;
-    price_state?: string;
-    price_revision?: string;
-    price_covered_event_id?: number;
-    price_updated_at_ms?: number | null;
   }>;
 };
 
@@ -4498,44 +4494,53 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockImplementation(
       async (_base, _managementKey, request: AccountHistoryRequestForTest) => {
         const targets = request.accounts as Array<{ row_key?: string }>;
-        if (!targets.some((target) => target.row_key === problemRowKey)) {
-          throw new Error('first batch unavailable');
-        }
-        return makeAccountHistoryResponse([
-          {
-            row_key: problemRowKey,
-            account_key: 'problem-account',
-            matched: true,
-            total_requests: 1,
-            success_calls: 0,
-            failure_calls: 1,
-            total_tokens: 0,
-            total_cost: 0,
-            success_rate: 0,
-            first_seen_ms: 2_000,
-            last_seen_ms: 2_000,
-            latest_request: {
-              timestamp_ms: 2_000,
-              failed: true,
-              fail_status_code: 401,
-            },
-            recent_requests: [
-              {
-                timestamp_ms: 2_000,
-                failed: true,
-                fail_status_code: 401,
-              },
-            ],
-            sync_status: 'ready',
-          },
-        ]);
+        const matching = targets.some((target) => target.row_key === problemRowKey);
+        return makeAccountHistoryResponse(
+          matching
+            ? [
+                {
+                  row_key: problemRowKey,
+                  account_key: 'problem-account',
+                  matched: true,
+                  total_requests: 1,
+                  success_calls: 0,
+                  failure_calls: 1,
+                  total_tokens: 0,
+                  total_cost: 0,
+                  success_rate: 0,
+                  first_seen_ms: 2_000,
+                  last_seen_ms: 2_000,
+                  latest_request: {
+                    timestamp_ms: 2_000,
+                    failed: true,
+                    fail_status_code: 401,
+                  },
+                  recent_requests: [
+                    {
+                      timestamp_ms: 2_000,
+                      failed: true,
+                      fail_status_code: 401,
+                    },
+                  ],
+                  sync_status: 'ready',
+                },
+              ]
+            : []
+        );
       }
     );
 
     const renderer = await renderAccountsPage();
     await flushPromises();
 
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountHistory.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(
+      mocks.getAccountHistory.mock.calls.some((call) =>
+        ((call[2] as AccountHistoryRequestForTest).accounts ?? []).some(
+          (target) => target.row_key === problemRowKey
+        )
+      )
+    ).toBe(true);
     expect(
       renderer.root.findAllByProps({
         'data-account-card': problemRowKey,
@@ -5490,7 +5495,31 @@ describe('AccountsPage replacement flows', () => {
     expect(getAccountListItemTexts(renderer).join('\n')).toContain('accounts.health_reauth');
   });
 
-  it('loads detailed history only for the visible page while the compact index remains global', async () => {
+  it('loads full detailed history on an unfiltered initial entry', async () => {
+    mocks.files = Array.from({ length: 51 }, (_, index) =>
+      makeCodexFile(
+        `initial-${String(index + 1).padStart(3, '0')}.json`,
+        `initial-${index + 1}`,
+        `initial-${index + 1}@example.com`
+      )
+    );
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    await renderAccountsPage();
+    await flushPromises();
+
+    const historyRequests = mocks.getAccountHistory.mock.calls.map(
+      (call) => call[2] as AccountHistoryRequestForTest
+    );
+    expect(historyRequests.reduce((total, request) => total + request.accounts.length, 0)).toBe(51);
+    expect(historyRequests).toHaveLength(1);
+  });
+
+  it('loads full detailed history initially while the compact index remains global', async () => {
     mocks.files = Array.from({ length: 601 }, (_, index) =>
       makeCodexFile(
         `credential-${String(index + 1).padStart(3, '0')}.json`,
@@ -5510,8 +5539,8 @@ describe('AccountsPage replacement flows', () => {
     const historyRequests = mocks.getAccountHistory.mock.calls.map(
       (call) => call[2] as AccountHistoryRequestForTest
     );
-    expect(historyRequests).toHaveLength(1);
-    expect(historyRequests[0]?.accounts).toHaveLength(10);
+    expect(historyRequests).toHaveLength(4);
+    expect(historyRequests.reduce((total, request) => total + request.accounts.length, 0)).toBe(601);
     const recentIndexRequests = mocks.getAccountRecentIndex.mock.calls.map(
       (call) => call[2] as AccountRecentIndexRequestForTest
     );
@@ -5524,6 +5553,99 @@ describe('AccountsPage replacement flows', () => {
     expect(recentIndexRequests).toHaveLength(2);
     expect(globalRecentIndexRequest?.accounts).toHaveLength(601);
     expect(visibleRecentIndexRequest?.accounts).toHaveLength(10);
+  });
+
+  it('publishes the first full-history batch before slower background batches finish', async () => {
+    mocks.files = Array.from({ length: 401 }, (_, index) =>
+      makeCodexFile(
+        `progressive-${String(index + 1).padStart(3, '0')}.json`,
+        `progressive-${index + 1}`,
+        `progressive-${index + 1}@example.com`
+      )
+    );
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    const firstBatch = createDeferred<AccountHistoryResponseForTest>();
+    const secondBatch = createDeferred<AccountHistoryResponseForTest>();
+    const thirdBatch = createDeferred<AccountHistoryResponseForTest>();
+    let callIndex = 0;
+    mocks.getAccountHistory.mockImplementation(() => {
+      const currentCall = callIndex;
+      callIndex += 1;
+      if (currentCall === 0) return firstBatch.promise;
+      if (currentCall === 1) return secondBatch.promise;
+      return thirdBatch.promise;
+    });
+
+    const firstRowKey = getAuthFileSelectionKey(mocks.files[0]);
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+
+    try {
+      await act(async () => {
+        firstBatch.resolve(
+          makeAccountHistoryResponse([
+            {
+              row_key: firstRowKey,
+              account_key: 'progressive-1@example.com',
+              matched: true,
+              total_requests: 42,
+              success_calls: 42,
+              failure_calls: 0,
+              total_tokens: 4_200,
+              total_cost: 1.23,
+              success_rate: 1,
+              first_seen_ms: 1,
+              last_seen_ms: 2,
+              sync_status: 'ready',
+            },
+          ])
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(
+        findAccountDetailRegion(renderer, firstRowKey, 'history').findAllByType('strong').map(readText)
+      ).toEqual(['42', '4.2K', '$1.23', '100.0%']);
+    } finally {
+      secondBatch.resolve(makeAccountHistoryResponse([]));
+      thirdBatch.resolve(makeAccountHistoryResponse([]));
+      await flushPromises();
+    }
+  });
+
+  it('prioritizes the visible sorted page in the first full-history batch', async () => {
+    mocks.files = Array.from({ length: 201 }, (_, index) =>
+      makeCodexFile(
+        `priority-${String(index + 1).padStart(3, '0')}.json`,
+        `priority-${index + 1}`,
+        `priority-${index + 1}@example.com`
+      )
+    );
+    mocks.files[200] = {
+      ...mocks.files[200],
+      priority: 99_999,
+    } as AuthFileItem;
+    mocks.location = { pathname: '/accounts', search: '?sort=priority&direction=desc' };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+
+    await renderAccountsPage();
+    await flushPromises();
+
+    const firstHistoryRequest = mocks.getAccountHistory.mock.calls[0]?.[2] as AccountHistoryRequestForTest;
+    expect(firstHistoryRequest.accounts[0]?.row_key).toBe(getAuthFileSelectionKey(mocks.files[200]));
   });
 
   it('offers and applies the unknown plan filter', async () => {
@@ -11051,7 +11173,7 @@ describe('AccountsPage replacement flows', () => {
     expect(quotaRegion.props['data-account-detail-trigger']).toBe('quota');
   });
 
-  it('renders a non-blocking marker for a cached price being recalculated', async () => {
+  it('does not render the retired custom price-cache marker', async () => {
     const file = mocks.files[0];
     const selectionKey = getAuthFileSelectionKey(file);
     mocks.panelFeatureAvailability = {
@@ -11074,7 +11196,6 @@ describe('AccountsPage replacement flows', () => {
         first_seen_ms: 1,
         last_seen_ms: 2,
         sync_status: 'pending',
-        price_state: 'stale_repricing',
       }])
     );
 
@@ -11082,7 +11203,7 @@ describe('AccountsPage replacement flows', () => {
     await flushPromises();
     const history = findAccountDetailRegion(renderer, selectionKey, 'history');
     expect(history.findAllByType('strong').map(readText)).toContain('$2.50');
-    expect(readText(history)).toContain('accounts.history_price_recalculating');
+    expect(readText(history)).not.toContain('accounts.history_price_recalculating');
     expect(readText(history)).not.toContain('accounts.history_loading');
   });
 
@@ -12775,7 +12896,8 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockClear();
     mocks.getAccountHistory
       .mockImplementationOnce(() => staleHistory.promise)
-      .mockImplementationOnce(() => currentHistory.promise);
+      .mockImplementationOnce(() => currentHistory.promise)
+      .mockImplementationOnce(() => Promise.resolve(makeAccountHistoryResponse([])));
 
     mocks.showNotification.mockClear();
     await act(async () => {
@@ -12797,9 +12919,9 @@ describe('AccountsPage replacement flows', () => {
       await Promise.resolve();
     });
     await flushPromises();
-    // The stable row is cached; only the recreated credential needs a fresh
-    // current-page history request after the stale targeted request is invalidated.
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    // Removing/re-adding a row cancels the obsolete current-page request and
+    // starts one fresh request for the recreated visible page.
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
 
     staleHistory.resolve(
       makeAccountHistoryResponse([
@@ -12878,7 +13000,8 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockClear();
     mocks.getAccountHistory
       .mockImplementationOnce(() => staleHistory.promise)
-      .mockImplementationOnce(() => currentHistory.promise);
+      .mockImplementationOnce(() => currentHistory.promise)
+      .mockImplementationOnce(() => Promise.resolve(makeAccountHistoryResponse([])));
 
     mocks.showNotification.mockClear();
     await act(async () => {
@@ -12899,9 +13022,9 @@ describe('AccountsPage replacement flows', () => {
       await Promise.resolve();
     });
     await flushPromises();
-    // The stable row is cached; only the recreated credential needs a fresh
-    // current-page history request after the stale targeted request is invalidated.
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    // Removing/re-adding a row cancels the obsolete current-page request and
+    // starts one fresh request for the recreated visible page.
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
 
     staleHistory.reject(new Error('stale history offline'));
     await flushPromises();

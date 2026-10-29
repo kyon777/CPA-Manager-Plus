@@ -31,9 +31,6 @@ func TestLoadCreatesDefaultConfig(t *testing.T) {
 	if !cfg.BackgroundDerivationsEnabled {
 		t.Fatal("BackgroundDerivationsEnabled = false by default")
 	}
-	if !cfg.AccountPriceCacheEnabled {
-		t.Fatal("AccountPriceCacheEnabled = false by default")
-	}
 	if want := filepath.Join(dir, "data", "usage-archives"); cfg.UsageArchiveDir != want {
 		t.Fatalf("UsageArchiveDir = %q, want %q", cfg.UsageArchiveDir, want)
 	}
@@ -221,7 +218,6 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	t.Setenv("CPA_MANAGER_PPROF_ADDR", "[::1]:6061")
 	t.Setenv("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", "false")
 	t.Setenv("USAGE_BACKGROUND_DERIVATIONS_ENABLED", "false")
-	t.Setenv("USAGE_ACCOUNT_PRICE_CACHE_ENABLED", "false")
 	t.Setenv("USAGE_SERVER_ERROR_PRIORITY_DEMOTION_ENABLED", "true")
 	t.Setenv("USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED", "true")
 	t.Setenv("USAGE_IMPORT_CHUNK_BYTES", "2097152")
@@ -255,9 +251,6 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	}
 	if cfg.BackgroundDerivationsEnabled {
 		t.Fatal("BackgroundDerivationsEnabled = true, want false")
-	}
-	if cfg.AccountPriceCacheEnabled {
-		t.Fatal("AccountPriceCacheEnabled = true, want false")
 	}
 	if !cfg.ServerErrorPriorityDemotionEnabled || !cfg.ServerErrorPriorityDemotionEnvSet {
 		t.Fatalf("ServerErrorPriorityDemotion env config = enabled:%t envSet:%t", cfg.ServerErrorPriorityDemotionEnabled, cfg.ServerErrorPriorityDemotionEnvSet)
@@ -468,7 +461,6 @@ func clearConfigEnv(t *testing.T) {
 		"USAGE_CODEX_REAUTH_AUTO_UPDATE_ENABLED",
 		"USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED",
 		"USAGE_BACKGROUND_DERIVATIONS_ENABLED",
-		"USAGE_ACCOUNT_PRICE_CACHE_ENABLED",
 		"USAGE_IMPORT_CHUNK_BYTES",
 		"USAGE_IMPORT_DISK_QUOTA_BYTES",
 		"USAGE_IMPORT_MAX_SESSIONS",

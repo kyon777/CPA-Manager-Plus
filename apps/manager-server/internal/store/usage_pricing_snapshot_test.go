@@ -199,21 +199,6 @@ func TestWithModelPriceSnapshotBlocksMutationsUntilReadCompletes(t *testing.T) {
 	}
 }
 
-func TestPricingHistoryRowsRetainsStoredPrefixDuringRebuild(t *testing.T) {
-	if !pricingHistoryRowsUsable(UsagePricingState{Status: "rebuilding"}, false) {
-		t.Fatal("rebuilding pricing rows should retain the durable stored prefix")
-	}
-	if pricingHistoryRowsUsable(UsagePricingState{Status: "clearing"}, false) {
-		t.Fatal("clearing pricing rows must not be treated as usable")
-	}
-	if pricingHistoryRowsUsable(UsagePricingState{Status: "ready"}, false) {
-		t.Fatal("unavailable ready rows must not be treated as usable")
-	}
-	if !pricingHistoryRowsUsable(UsagePricingState{Status: "ready"}, true) {
-		t.Fatal("available ready rows should remain usable")
-	}
-}
-
 func catchUpUsagePricingSnapshot(t *testing.T, ctx context.Context, db *Store) {
 	t.Helper()
 	for {
