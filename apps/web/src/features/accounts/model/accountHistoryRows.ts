@@ -20,9 +20,9 @@ export const retainAccountHistoryRowKeys = <T>(
 };
 
 /**
- * Keep a small helper for scoped history reads. The page/current scope may
- * reuse rows until its refresh revision changes; the full and single scopes
- * intentionally bypass this helper and force their requested targets.
+ * Keep a small helper for scoped history reads. Current-page requests may
+ * reuse rows until their refresh revision changes; single-account requests
+ * intentionally bypass this helper and force their requested target.
  */
 export const selectUncachedAccountHistoryTargetEntries = (
   entries: readonly AccountHistoryTargetEntry[],

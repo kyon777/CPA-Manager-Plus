@@ -12899,8 +12899,7 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockClear();
     mocks.getAccountHistory
       .mockImplementationOnce(() => staleHistory.promise)
-      .mockImplementationOnce(() => currentHistory.promise)
-      .mockImplementationOnce(() => Promise.resolve(makeAccountHistoryResponse([])));
+      .mockImplementationOnce(() => currentHistory.promise);
 
     mocks.showNotification.mockClear();
     await act(async () => {
@@ -12924,7 +12923,7 @@ describe('AccountsPage replacement flows', () => {
     await flushPromises();
     // Removing/re-adding a row cancels the obsolete current-page request and
     // starts one fresh request for the recreated visible page.
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
 
     staleHistory.resolve(
       makeAccountHistoryResponse([
@@ -13003,8 +13002,7 @@ describe('AccountsPage replacement flows', () => {
     mocks.getAccountHistory.mockClear();
     mocks.getAccountHistory
       .mockImplementationOnce(() => staleHistory.promise)
-      .mockImplementationOnce(() => currentHistory.promise)
-      .mockImplementationOnce(() => Promise.resolve(makeAccountHistoryResponse([])));
+      .mockImplementationOnce(() => currentHistory.promise);
 
     mocks.showNotification.mockClear();
     await act(async () => {
@@ -13027,7 +13025,7 @@ describe('AccountsPage replacement flows', () => {
     await flushPromises();
     // Removing/re-adding a row cancels the obsolete current-page request and
     // starts one fresh request for the recreated visible page.
-    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
 
     staleHistory.reject(new Error('stale history offline'));
     await flushPromises();
