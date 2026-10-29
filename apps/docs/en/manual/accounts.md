@@ -27,6 +27,7 @@ Keep `auth_index` stable in multi-account deployments. File-name-only identity i
 - Refresh the credential list or explicitly refresh Provider quota for one credential.
 - Paste JSON, upload, download, edit, disable, restore, or delete credentials.
 - Filter by search, provider, state, plan, quota window, or operational state.
+- Pin credentials you watch from the corner button on each row or card. Pinned credentials stay at the top in pin order across providers and plans, but filters still apply. Pins are stored only in the current browser and are hidden in selection mode.
 - Batch change priority or enabled state, and toggle WebSockets for selected Codex credentials.
 - Inspect overview, configuration, supported models, quota history, and diagnostic evidence.
 - Run local or Manager Server Codex/xAI inspection from the health workspace.
@@ -56,6 +57,8 @@ Account state may come from:
 Provider quota refresh remains explicit. Opening Accounts, reading history, or passively loading Header evidence does not poll upstream quota endpoints. Muse / Meta quota refresh reads the DCA from the current physical auth file and asks Meta through CPA; the DCA is never used as an inference API key.
 
 CPAMP reconciles evidence by credential identity and observation time. Newer healthy evidence can supersede older reauth, quota-limit, cooldown, and action-candidate state; a newer `401` or explicit quota exhaustion remains authoritative. After reauthentication, inspection and quota evidence from the replaced credential cannot reattach to the new credential.
+
+After a successful xAI OAuth quota refresh, CPAMP queries `/user?include=subscription` and `/settings` through CPA in the background to resolve plan names such as SuperGrok Heavy. Quota appears first; optional lookup failures retain existing data and do not edit auth files. The live subscription takes precedence over a potentially stale settings label. A plan name alone does not prove all models available: health still requires current quota or request evidence. Observed quota remains visible in the overview when the plan is unrecognized.
 
 | Provider        | Possible evidence                                                              | Boundary                                                                                            |
 | --------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |

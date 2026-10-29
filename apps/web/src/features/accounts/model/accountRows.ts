@@ -507,7 +507,7 @@ export const buildAccountRows = (
         updatedAtMs !== null &&
         authenticationAtMs >= updatedAtMs);
     const quota = resolveAccountQuota(effectiveFile, stores, overrides);
-    const planType = quota.planType ?? readPlanType(file);
+    const planType = provider === 'xai' ? quota.planType : (quota.planType ?? readPlanType(file));
     const subscriptionUntilMs = buildAccountSubscriptionPresentation({
       row: {
         provider,
