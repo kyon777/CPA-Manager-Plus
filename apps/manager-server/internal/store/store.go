@@ -835,7 +835,7 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 		for key := range incomplete {
 			recoveryKeys = append(recoveryKeys, key)
 		}
-		recoveredRows, recoveryErr := s.UsagePricing.LoadAccountRowsFromEventsTx(ctx, tx, recoveryKeys)
+		recoveredRows, recoveryErr := s.UsagePricing.LoadAccountRowsFromRetainedEventsTx(ctx, tx, recoveryKeys)
 		if recoveryErr != nil {
 			return UsagePricingAccountSnapshot{}, recoveryErr
 		}

@@ -54,6 +54,41 @@ func (r *repository) LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx
 	if len(keys) == 0 {
 		return []AccountRow{}, nil
 	}
+	source, sourceArgs, usable, err := indexedAccountEventSourceTx(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	if !usable {
+		source, sourceArgs, err = retainedAccountEventSourceTx(ctx, tx, keys)
+		if err != nil {
+			return nil, err
+		}
+	}
+	grouped := map[accountKey]*AccountRow{}
+	if err := mergeAccountRowsFromSourceArgs(ctx, tx, 0, keys, grouped, source, sourceArgs); err != nil {
+		return nil, err
+	}
+	// A stale projection watermark can exist after an interrupted projection
+	// rebuild. If the indexed source produced nothing, retain the old
+	// authoritative raw/retained fallback rather than reporting a false zero.
+	if usable && len(grouped) == 0 {
+		source, sourceArgs, err = retainedAccountEventSourceTx(ctx, tx, keys)
+		if err != nil {
+			return nil, err
+		}
+		grouped = map[accountKey]*AccountRow{}
+		if err := mergeAccountRowsFromSourceArgs(ctx, tx, 0, keys, grouped, source, sourceArgs); err != nil {
+			return nil, err
+		}
+	}
+	return sortedAccountRows(grouped), nil
+}
+
+func (r *repository) LoadAccountRowsFromRetainedEventsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, error) {
+	keys := normalizeValues(accountKeys)
+	if len(keys) == 0 {
+		return []AccountRow{}, nil
+	}
 	source, sourceArgs, err := retainedAccountEventSourceTx(ctx, tx, keys)
 	if err != nil {
 		return nil, err
@@ -63,6 +98,61 @@ func (r *repository) LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx
 		return nil, err
 	}
 	return sortedAccountRows(grouped), nil
+}
+
+// indexedAccountEventSourceTx builds the bounded source used by current-page
+// pricing reads while pricing_v1 is rebuilding. The monitoring projection has
+// a covering account_key index and contains every event through its watermark;
+// only the small live tail is read from usage_events. The old recovery source
+// joined raw usage_events for the entire lifetime and made a 50-row page look
+// like a full-database scan.
+func indexedAccountEventSourceTx(ctx context.Context, tx *sql.Tx, accountKeys []string) (string, []any, bool, error) {
+	var projectionStatus string
+	if err := tx.QueryRowContext(ctx, `select status from usage_monitoring_rollup_state
+		where rollup_name = 'projection_v1'`).Scan(&projectionStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil, false, nil
+		}
+		return "", nil, false, err
+	}
+	if projectionStatus != "ready" {
+		return "", nil, false, nil
+	}
+	coverageID, compatible, err := retainedProjectionCoverageTx(ctx, tx)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if !compatible || coverageID <= 0 {
+		return "", nil, false, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(accountKeys)), ",")
+	projectionColumns := strings.Join(retainedPricingColumns, ", p.")
+	rawColumns := strings.Join(retainedPricingColumns, ", e.")
+	rawAccountKey := usageidentity.SQLAccountKeyExpression("e")
+	source := fmt.Sprintf(`(select p.event_id as id, p.%s
+		from %s p
+		where p.event_id <= ? and p.account_key in (%s)
+		union all
+		select e.id, e.%s
+		from usage_events e
+		where e.id > ? and %s in (%s))`,
+		projectionColumns,
+		usageprojection.EventTable,
+		placeholders,
+		rawColumns,
+		rawAccountKey,
+		placeholders,
+	)
+	args := make([]any, 0, len(accountKeys)*2+2)
+	args = append(args, coverageID)
+	for _, key := range accountKeys {
+		args = append(args, key)
+	}
+	args = append(args, coverageID)
+	for _, key := range accountKeys {
+		args = append(args, key)
+	}
+	return source, args, true, nil
 }
 
 // VerifyRetainedPricingRebuildSourceTx proves that every raw event removed by

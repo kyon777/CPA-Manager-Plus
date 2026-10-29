@@ -34,6 +34,7 @@ type Repository interface {
 	LoadAccountRows(ctx context.Context, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, State, bool, error)
 	LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, error)
+	LoadAccountRowsFromRetainedEventsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]AccountRow, error)
 }
 
 type State struct {
@@ -1085,6 +1086,21 @@ func (r *repository) LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountK
 	revision, err := StructureRevision(ctx, tx)
 	if err != nil {
 		return nil, State{}, false, err
+	}
+	// A structural price change leaves pricing_v1 in rebuilding state. Prefer
+	// the indexed monitoring projection for this read path so a visible page
+	// gets exact current-price totals without scanning the full raw event log.
+	if state.StructureRevision != revision || state.Status == "pending" ||
+		state.Status == "rebuilding" || state.Status == "clearing" {
+		if source, sourceArgs, usable, sourceErr := indexedAccountEventSourceTx(ctx, tx, keys); sourceErr != nil {
+			return nil, State{}, false, sourceErr
+		} else if usable {
+			grouped := map[accountKey]*AccountRow{}
+			if err := mergeAccountRowsFromSourceArgs(ctx, tx, 0, keys, grouped, source, sourceArgs); err != nil {
+				return nil, State{}, false, err
+			}
+			return sortedAccountRows(grouped), state, true, nil
+		}
 	}
 	if state.StructureRevision != revision || state.Status == "clearing" {
 		grouped := map[accountKey]*AccountRow{}

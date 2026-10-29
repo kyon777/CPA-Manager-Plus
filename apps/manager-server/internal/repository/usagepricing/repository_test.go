@@ -79,6 +79,79 @@ func TestPricingRollupBandsStrictThresholdsAndMergesRawDelta(t *testing.T) {
 	}
 }
 
+// A pricing rebuild must not make a current-page read fall back to a scan of
+// usage_events. The monitoring projection already has the same event fields
+// and an account_key index, so it is the bounded read source while the pricing
+// rollup is rebuilding.
+func TestPricingAccountRowsDuringRebuildUseCompleteProjection(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": {Prompt: 1}}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+	events := []usage.Event{
+		pricingEvent("projection-page-1", 3_600_001, 100),
+		pricingEvent("projection-page-2", 3_600_002, 200),
+	}
+	for i := range events {
+		events[i].Provider = "codex"
+		events[i].AccountSnapshot = "alice@example.com"
+		events[i].AuthFileSnapshot = "alice.json"
+		events[i].AuthIndex = "auth-alice"
+		events[i].AuthProviderSnapshot = "codex"
+		events[i].Source = "alice.json"
+	}
+	if _, err := st.UsageEvents.InsertBatch(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if result, err := st.CatchUpUsageMonitoringProjection(ctx, 10, 10_000); err != nil || result.Pending {
+		t.Fatalf("build projection: result=%#v err=%v", result, err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 11_000); err != nil {
+		t.Fatalf("prime pricing rollup: %v", err)
+	}
+
+	db, err := sqliterepo.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `delete from usage_pricing_account_rollups_v1`); err != nil {
+		t.Fatalf("clear pricing account rows: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `update usage_pricing_rollup_state
+		set status = 'rebuilding', coverage_event_id = 2, target_event_id = 2,
+			backfill_last_event_id = 2, processed_events = 2`); err != nil {
+		t.Fatalf("mark pricing rebuild: %v", err)
+	}
+
+	key, ok := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     "alice.json",
+		AuthIndex:            "auth-alice",
+		AuthProviderSnapshot: "codex",
+		AccountSnapshot:      "alice@example.com",
+		Source:               "alice.json",
+	})
+	if !ok {
+		t.Fatal("build account key returned invalid identity")
+	}
+	rows, state, available, err := st.UsagePricingAccountRows(ctx, []string{key})
+	if err != nil {
+		t.Fatalf("load rebuilding account rows: %v", err)
+	}
+	if state.Status != "rebuilding" || !available {
+		t.Fatalf("rebuilding account state=%#v available=%v", state, available)
+	}
+	var calls int64
+	for _, row := range rows {
+		calls += row.Calls
+	}
+	if calls != 2 {
+		t.Fatalf("projection-backed calls=%d rows=%#v", calls, rows)
+	}
+}
+
 func TestPricingRollupRebuildsFromRetainedProjectionAfterRawDeletion(t *testing.T) {
 	ctx := context.Background()
 	cfg := testutil.NewConfig(t)
@@ -86,8 +159,8 @@ func TestPricingRollupRebuildsFromRetainedProjectionAfterRawDeletion(t *testing.
 	price := store.ModelPrice{
 		Prompt: 1,
 		ContextTiers: []store.ModelPriceContextTier{{
-			ThresholdTokens: 100,
-			Prompt:          2,
+			ThresholdTokens:  100,
+			Prompt:           2,
 			PromptConfigured: true,
 		}},
 	}
