@@ -117,6 +117,28 @@ func TestRetainedAccountEventSourceUsesProjectionAccountIndex(t *testing.T) {
 	}
 }
 
+func TestIndexedAccountEventSourceUsesCoveredProjectionWhileCatchingUp(t *testing.T) {
+	ctx, tx := retainedEventSourceFixture(t)
+	if _, err := tx.ExecContext(ctx, `update usage_monitoring_rollup_state
+		set status = 'catching_up' where rollup_name = 'projection_v1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	source, args, usable, err := indexedAccountEventSourceTx(ctx, tx, []string{"account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !usable {
+		t.Fatal("a covered projection must remain usable while it catches up")
+	}
+	if !strings.Contains(source, "p.account_key in (?)") {
+		t.Fatalf("indexed account source is not account-scoped: %s", source)
+	}
+	if len(args) != 4 {
+		t.Fatalf("indexed account source args = %d, want 4", len(args))
+	}
+}
+
 // The hourly source must drive archived projection rows from the archive
 // timestamp index instead of scanning every retained archive reference.
 func TestRetainedEventSourceUsesArchiveTimestampIndex(t *testing.T) {

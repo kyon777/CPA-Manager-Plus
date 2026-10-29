@@ -115,7 +115,10 @@ func indexedAccountEventSourceTx(ctx context.Context, tx *sql.Tx, accountKeys []
 		}
 		return "", nil, false, err
 	}
-	if projectionStatus != "ready" {
+	// A catching-up projection is still complete through coverageID. The raw
+	// tail below supplies events newer than that watermark, so current-page
+	// reads remain bounded while the background worker advances the projection.
+	if projectionStatus != "ready" && projectionStatus != "catching_up" {
 		return "", nil, false, nil
 	}
 	coverageID, compatible, err := retainedProjectionCoverageTx(ctx, tx)
