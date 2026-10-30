@@ -59,6 +59,18 @@ func MigrateDerived(db *sql.DB) error {
 		)`,
 		`create index if not exists idx_derived_applied_events_stream_coverage
 			on derived_applied_events(stream_name, generation, event_id desc)`,
+		`create table if not exists derived_materialized_rows (
+			stream_name text not null,
+			generation text not null,
+			row_key text not null,
+			payload_json text not null,
+			first_event_id integer not null default 0,
+			last_event_id integer not null default 0,
+			updated_at_ms integer not null,
+			primary key (stream_name, generation, row_key)
+		)`,
+		`create index if not exists idx_derived_materialized_rows_lookup
+			on derived_materialized_rows(stream_name, generation, row_key)`,
 		createUsageAccountModelRollupsTable,
 		createUsagePricingAccountRollupsTable,
 		createUsagePricingAccountPriceCacheTable,
