@@ -1214,6 +1214,25 @@ func TestServiceRetriesBusySuccessTerminalWriteWithoutReacquiringToken(t *testin
 	}
 }
 
+func TestRetryTerminalStateWriteKeepsRetryingBusyUntilDeadlineAllowsSuccess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	attempts := 0
+	err := retryTerminalStateWrite(ctx, func() error {
+		attempts++
+		if attempts <= 4 {
+			return errors.New("database is locked (SQLITE_BUSY)")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retryTerminalStateWrite() error = %v", err)
+	}
+	if got, want := attempts, 5; got != want {
+		t.Fatalf("write attempts = %d, want %d", got, want)
+	}
+}
+
 type terminalWriteBusyTaskStore struct {
 	*store.Store
 

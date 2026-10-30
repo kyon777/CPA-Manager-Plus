@@ -542,3 +542,46 @@ func TestFailStaleRunningMarksOnlyExpiredTasksAsRecoveryTimeout(t *testing.T) {
 		t.Fatalf("fresh running task = %#v", gotFresh)
 	}
 }
+
+func TestCompleteWaitsForSharedSQLiteWriterLease(t *testing.T) {
+	repo, db := newTestRepositoryWithDB(t)
+	ctx := context.Background()
+	task, err := repo.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "lease.json", AuthIndex: "1", AccountEmail: "lease@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	claimed, found, err := repo.ClaimNextQueued(ctx)
+	if err != nil || !found || claimed.ID != task.ID {
+		t.Fatalf("ClaimNextQueued() = %#v, found=%t, err=%v", claimed, found, err)
+	}
+
+	lease, err := sqliterepo.CoordinatorFor(db).Acquire(ctx, sqliterepo.WritePriorityBackground)
+	if err != nil {
+		t.Fatalf("Acquire(background lease) error = %v", err)
+	}
+	defer lease.Release()
+
+	completed := make(chan error, 1)
+	go func() {
+		_, err := repo.Complete(ctx, task.ID)
+		completed <- err
+	}()
+
+	select {
+	case err := <-completed:
+		t.Fatalf("Complete() escaped active writer lease: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	lease.Release()
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("Complete() error after lease release = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Complete() did not resume after writer lease release")
+	}
+}

@@ -255,3 +255,60 @@ func TestAcquireClassifiesHTTPTransportFailure(t *testing.T) {
 		t.Fatalf("FailureReason() must not expose transport data, got %q", got)
 	}
 }
+
+func TestAcquireKeepsPollingKnownBatchAfterTransientTransportFailure(t *testing.T) {
+	var posts atomic.Int32
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tokens":
+			posts.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"batch_id": "batch-transient-poll"})
+		case "/v1/batches/batch-transient-poll":
+			polls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"done": true,
+				"jobs": []any{map[string]any{
+					"email": "person@example.com", "status": "ok",
+					"result": map[string]any{
+						"email": "person@example.com", "access_token": "access", "refresh_token": "refresh", "id_token": "id",
+					},
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var injectedFailures atomic.Int32
+	client := New(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-admin-key",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Path == "/v1/batches/batch-transient-poll" && injectedFailures.Add(1) == 1 {
+				return nil, errors.New("temporary network interruption")
+			}
+			return http.DefaultTransport.RoundTrip(request)
+		})},
+		PollInterval: time.Millisecond,
+		Timeout:      time.Second,
+	})
+
+	result, err := client.Acquire(context.Background(), Request{Email: "person@example.com"})
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if result.AccessToken != "access" {
+		t.Fatalf("result = %#v", result)
+	}
+	if got, want := posts.Load(), int32(1); got != want {
+		t.Fatalf("POST /v1/tokens count = %d, want %d", got, want)
+	}
+	if got, want := injectedFailures.Load(), int32(2); got != want {
+		t.Fatalf("poll transport attempts = %d, want %d", got, want)
+	}
+	if got, want := polls.Load(), int32(1); got != want {
+		t.Fatalf("successful poll count = %d, want %d", got, want)
+	}
+}

@@ -54,6 +54,29 @@ CPA 上传超时
   -> verified: succeeded；unconfirmed: cpa_auth_file_timeout
 ```
 
+## 2026-10-30 补充：已知 Token Acquisition 批次与终态 SQLite 持久化
+
+生产日志证明前一版的 30 秒终态持久化上下文实际上只执行四次快速重试：
+`25ms + 50ms + 100ms` 后仍遇到 `SQLITE_BUSY` 就放弃。因此在高并发恢复完成的
+瞬间，CPA 文件已经写入、但 `token_recovery_tasks` 仍停留在 `running`，前端当然
+无法持久显示“凭证已更新/已自动更新一次”。这是 SQLite 写竞争，不是浏览器状态。
+
+修复约束：
+
+1. 所有 Token Recovery 的排队、claim、成功、失败、启动 fence 和 stale fence 写入
+   在打开 SQLite 事务前，先取得与原始 usage-event 持久化共用的 `Critical` writer
+   lease；这样 CPAM 自己的多个写路径不会在同一数据库上互相抢写。
+2. 若底层仍返回 `SQLITE_BUSY`/`SQLITE_LOCKED`，终态更新在独立的 30 秒 context
+   内持续重试，25ms 指数退避并封顶 1 秒；只有语义错误直接返回。该重试严格只包含
+   SQLite 行状态转换，绝不重复外部 Token Acquisition、CPA 上传或授权文件 mutation。
+3. `POST /v1/tokens` 成功返回 `batch_id` 后，后续 `GET /v1/batches/{id}` 是幂等读取。
+   单次网络抖动不再把仍在上游执行的批次标成 `token_acquisition_transport_failed`；
+   使用同一 `batch_id` 退避继续轮询直到既有 acquisition deadline。绝不重发 POST。
+   若 POST 本身在未拿到 batch ID 前失败，结果仍未知，保持现有人工复核终态。
+
+这三项只修 CPAM 的恢复控制面；不变更 CPA Core、`cli-proxy-api`、计费用量事实、
+模型价格、代理路由、优先级、并发门限或八路 CPA 文件写入门限。
+
 ## 错误与安全边界
 
 - 响应继续只包含脱敏的 `TokenRecoveryTask`，绝不返回授权 JSON、访问 Token、刷新 Token、ID Token、管理密钥或外部 API 密钥。

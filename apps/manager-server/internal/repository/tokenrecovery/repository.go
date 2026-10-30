@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	modernsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -40,6 +41,15 @@ func New(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
+// acquireDurableWrite keeps recovery workflow state transitions in the same
+// process-local SQLite writer lane as raw usage persistence. A recovery task is
+// the durable record that tells the browser whether an already-finished token
+// write succeeded; letting dozens of recovery workers race raw events for the
+// SQLite writer can otherwise lose that terminal transition under load.
+func (r *repository) acquireDurableWrite(ctx context.Context) (*sqliterepo.WriteLease, error) {
+	return sqliterepo.CoordinatorFor(r.db).Acquire(ctx, sqliterepo.WritePriorityCritical)
+}
+
 // IsSQLiteBusyError recognizes the lock contention forms emitted by the
 // modernc SQLite driver. It is intentionally narrow so callers never retry a
 // semantic task error as if it were a transient database contention event.
@@ -64,6 +74,11 @@ func (r *repository) SignalAutomatic(ctx context.Context, target model.TokenReco
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
 	}
+	lease, err := r.acquireDurableWrite(ctx)
+	if err != nil {
+		return model.TokenRecoveryTask{}, err
+	}
+	defer lease.Release()
 	now := time.Now().UnixMilli()
 	seenAt := normalized.ObservedAtMS
 	if seenAt <= 0 {
@@ -139,6 +154,11 @@ func (r *repository) RequestManual(ctx context.Context, target model.TokenRecove
 	if err != nil {
 		return model.TokenRecoveryTask{}, err
 	}
+	lease, err := r.acquireDurableWrite(ctx)
+	if err != nil {
+		return model.TokenRecoveryTask{}, err
+	}
+	defer lease.Release()
 	now := time.Now().UnixMilli()
 	seenAt := normalized.ObservedAtMS
 	if seenAt <= 0 {
@@ -369,6 +389,11 @@ func (r *repository) ClaimNextQueued(ctx context.Context) (model.TokenRecoveryTa
 // the oldest automatic task. It leaves paused automatic work durable and
 // untouched while the operator's automatic-recovery switch is off.
 func (r *repository) ClaimNextEligible(ctx context.Context, allowAutomatic bool) (model.TokenRecoveryTask, bool, error) {
+	lease, err := r.acquireDurableWrite(ctx)
+	if err != nil {
+		return model.TokenRecoveryTask{}, false, err
+	}
+	defer lease.Release()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.TokenRecoveryTask{}, false, err
@@ -421,6 +446,11 @@ func (r *repository) Complete(ctx context.Context, id int64) (model.TokenRecover
 	if id <= 0 {
 		return model.TokenRecoveryTask{}, ErrTaskNotFound
 	}
+	lease, err := r.acquireDurableWrite(ctx)
+	if err != nil {
+		return model.TokenRecoveryTask{}, err
+	}
+	defer lease.Release()
 	now := time.Now().UnixMilli()
 	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
 		status = ?, last_error_code = null, last_error_message = null, completed_at_ms = ?, updated_at_ms = ?
@@ -444,6 +474,11 @@ func (r *repository) Fail(ctx context.Context, id int64, errorCode string, error
 	if id <= 0 {
 		return model.TokenRecoveryTask{}, ErrTaskNotFound
 	}
+	lease, err := r.acquireDurableWrite(ctx)
+	if err != nil {
+		return model.TokenRecoveryTask{}, err
+	}
+	defer lease.Release()
 	now := time.Now().UnixMilli()
 	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
 		status = case mode when ? then ? else ? end,
@@ -469,6 +504,11 @@ func (r *repository) Fail(ctx context.Context, id int64, errorCode string, error
 }
 
 func (r *repository) FailRunningOnStartup(ctx context.Context) (int64, error) {
+	lease, err := r.acquireDurableWrite(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer lease.Release()
 	now := time.Now().UnixMilli()
 	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
 		status = case mode when ? then ? else ? end,
@@ -491,6 +531,11 @@ func (r *repository) FailStaleRunning(ctx context.Context, startedBeforeMS int64
 	if startedBeforeMS <= 0 {
 		return 0, nil
 	}
+	lease, err := r.acquireDurableWrite(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer lease.Release()
 	now := time.Now().UnixMilli()
 	res, err := r.db.ExecContext(ctx, `update token_recovery_tasks set
 		status = case mode when ? then ? else ? end,

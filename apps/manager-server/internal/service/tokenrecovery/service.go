@@ -32,8 +32,8 @@ const (
 	RecommendedTokenAcquisitionWorkerCount = 80
 	DefaultTokenRecoveryTaskTimeout        = 60 * time.Minute
 	defaultStaleTaskReconcileInterval      = time.Minute
-	terminalStateWriteAttempts             = 4
 	terminalStateWriteInitialBackoff       = 25 * time.Millisecond
+	terminalStateWriteMaxBackoff           = time.Second
 	terminalStateWriteTimeout              = 30 * time.Second
 	timedOutUploadVerificationAttempts     = 3
 	timedOutUploadVerificationRetryDelay   = 250 * time.Millisecond
@@ -486,27 +486,29 @@ func retryTerminalStateWrite(ctx context.Context, operation func() error) error 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	var lastErr error
-	for attempt := 0; attempt < terminalStateWriteAttempts; attempt++ {
+	backoff := terminalStateWriteInitialBackoff
+	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		lastErr = operation()
+		lastErr := operation()
 		if lastErr == nil || !tokenrecoveryrepo.IsSQLiteBusyError(lastErr) {
 			return lastErr
 		}
-		if attempt+1 == terminalStateWriteAttempts {
-			break
-		}
-		timer := time.NewTimer(terminalStateWriteInitialBackoff << attempt)
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
 			stopTerminalStateRetryTimer(timer)
 			return ctx.Err()
 		case <-timer.C:
 		}
+		if backoff < terminalStateWriteMaxBackoff {
+			backoff *= 2
+			if backoff > terminalStateWriteMaxBackoff {
+				backoff = terminalStateWriteMaxBackoff
+			}
+		}
 	}
-	return lastErr
 }
 
 func stopTerminalStateRetryTimer(timer *time.Timer) {

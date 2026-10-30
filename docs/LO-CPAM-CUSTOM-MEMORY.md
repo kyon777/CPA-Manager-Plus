@@ -872,6 +872,23 @@ Token Acquisition concurrency, or the eight-slot CPA credential-write gate.
   upload. Verified bytes complete the durable task as `succeeded`; an
   unverified outcome remains the existing redacted `cpa_auth_file_timeout`
   terminal state for manual review.
+- Every recovery state mutation that changes queue ownership or a terminal
+  result now acquires the shared CPAM SQLite **critical** writer lease before
+  opening its transaction. Terminal `succeeded`/failed transitions therefore
+  serialize with raw usage-event persistence instead of racing it under an
+  80-worker recovery burst. SQLite `BUSY`/`LOCKED` retries continue for the
+  entire cancellation-independent 30-second terminal-write budget with an
+  exponential backoff capped at one second; semantic failures do not retry,
+  and no retry can repeat Token Acquisition, a CPA upload, or another
+  credential mutation.
+- Once `POST /v1/tokens` has returned a `batch_id`, a transient transport
+  failure while polling that known batch is no longer terminalized as
+  `token_acquisition_transport_failed`. CPAM keeps idempotently polling that
+  same batch until the existing acquisition deadline, using capped backoff and
+  **never issuing a second POST**. A transport failure before a batch ID is
+  still unknown and remains a redacted manual-review failure.
 - Preserve focused coverage for stale-auth-index display, ambiguous-email
   fail-closed behavior, historical-success no-reload, pending-to-success
-  one-time reload, and timeout-after-applied-upload reconciliation.
+  one-time reload, timeout-after-applied-upload reconciliation, known-batch
+  polling transport recovery, terminal retry beyond four lock collisions, and
+  shared-writer lease serialization.

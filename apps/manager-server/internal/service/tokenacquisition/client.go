@@ -21,9 +21,14 @@ import (
 const (
 	defaultPollInterval = 2 * time.Second
 	defaultTimeout      = 14*time.Minute + 30*time.Second
-	maxResponseBytes    = 1 << 20
-	maxFailureCodeBytes = 96
-	maxFailureTextBytes = 320
+	// A batch is already durably accepted once POST /v1/tokens returns its ID.
+	// Subsequent GETs are idempotent, so transient transport failures must not
+	// turn that known remote job into a local terminal failure or trigger a
+	// duplicate POST. Back off, but remain within Acquire's end-to-end deadline.
+	maxPollTransportRetryDelay = 15 * time.Second
+	maxResponseBytes           = 1 << 20
+	maxFailureCodeBytes        = 96
+	maxFailureTextBytes        = 320
 )
 
 var (
@@ -163,11 +168,20 @@ func (c *Client) Acquire(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, normalizeContextError(err)
 	}
+	pollTransportRetryDelay := c.pollInterval
 	for {
 		batch, err := c.getBatch(ctx, batchID)
 		if err != nil {
+			if errors.Is(err, ErrTransportFailed) {
+				if err := wait(ctx, pollTransportRetryDelay); err != nil {
+					return Result{}, normalizeContextError(err)
+				}
+				pollTransportRetryDelay = nextPollTransportRetryDelay(pollTransportRetryDelay)
+				continue
+			}
 			return Result{}, normalizeContextError(err)
 		}
+		pollTransportRetryDelay = c.pollInterval
 		if batch.Done {
 			return resultFromBatch(batch, request.Email)
 		}
@@ -175,6 +189,16 @@ func (c *Client) Acquire(ctx context.Context, request Request) (Result, error) {
 			return Result{}, normalizeContextError(err)
 		}
 	}
+}
+
+func nextPollTransportRetryDelay(current time.Duration) time.Duration {
+	if current <= 0 {
+		return defaultPollInterval
+	}
+	if current >= maxPollTransportRetryDelay/2 {
+		return maxPollTransportRetryDelay
+	}
+	return current * 2
 }
 
 func (c *Client) createBatch(ctx context.Context, request Request) (string, error) {
