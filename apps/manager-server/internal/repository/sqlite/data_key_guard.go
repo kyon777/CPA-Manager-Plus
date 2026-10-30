@@ -159,6 +159,8 @@ func readOnlyDataSourceName(databasePath string) (string, error) {
 	}
 	query := parsed.Query()
 	query.Set("mode", "ro")
+	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", derivedReadOnlyBusyTimeoutMS))
+	query.Add("_pragma", "query_only(1)")
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
 }

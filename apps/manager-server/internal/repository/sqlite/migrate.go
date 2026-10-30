@@ -312,6 +312,11 @@ func Migrate(db *sql.DB) error {
 			stream integer,
 			created_at_ms integer not null
 		)`,
+		`create table if not exists usage_source_identity (
+			singleton integer primary key check (singleton = 1),
+			source_epoch text not null,
+			created_at_ms integer not null
+		)`,
 		`create table if not exists usage_rollup_checkpoints (
 			name text primary key,
 			last_event_id integer not null default 0,
@@ -1253,7 +1258,37 @@ func Migrate(db *sql.DB) error {
 	if err := ensureDashboardHourlyRollupFormatVersion(db); err != nil {
 		return err
 	}
-	return ensureModelPriceColumns(db)
+	if err := ensureModelPriceColumns(db); err != nil {
+		return err
+	}
+	return ensureUsageSourceIdentity(db)
+}
+
+// ensureUsageSourceIdentity creates a stable opaque epoch for the primary
+// usage event source. A separate derived database must never be accepted after
+// a primary database restore/replacement, because its materializations may no
+// longer describe the same event stream.
+func ensureUsageSourceIdentity(db *sql.DB) error {
+	if db == nil {
+		return errors.New("sqlite database is unavailable")
+	}
+	var exists int
+	if err := db.QueryRow(`select count(*) from usage_source_identity where singleton = 1`).Scan(&exists); err != nil {
+		return fmt.Errorf("inspect usage source identity: %w", err)
+	}
+	if exists != 0 {
+		return nil
+	}
+	var epochBytes [16]byte
+	if _, err := rand.Read(epochBytes[:]); err != nil {
+		return fmt.Errorf("generate usage source identity: %w", err)
+	}
+	_, err := db.Exec(`insert or ignore into usage_source_identity(singleton, source_epoch, created_at_ms) values (1, ?, ?)`,
+		hex.EncodeToString(epochBytes[:]), time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("persist usage source identity: %w", err)
+	}
+	return nil
 }
 
 // Create and backfill the deleted-raw summary atomically. Existing databases

@@ -4,10 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -70,14 +68,7 @@ func openDiagnostic(code int, dbPath string) string {
 }
 
 func dataSourceName(path string) string {
-	uriPath := filepath.ToSlash(path)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	dsn := &url.URL{
-		Scheme: "file",
-		Path:   uriPath,
-	}
+	dsn := databaseURL(path)
 	query := dsn.Query()
 	query.Add("_txlock", "immediate")
 	query.Add("_pragma", "busy_timeout(5000)")
