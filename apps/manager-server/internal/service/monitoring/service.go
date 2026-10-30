@@ -1868,14 +1868,18 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 	generatedAtMS := time.Now().UnixMilli()
 	processed := 0
 	if req.CatchUp {
-		result, err := s.store.CatchUpAccountHistoryRollups(ctx, accountHistoryCatchUpLimit, generatedAtMS)
-		if err != nil {
-			return AccountHistoryResponse{}, err
-		}
-		processed = result.Processed
-		if _, err := s.store.CatchUpUsagePricing(ctx, accountHistoryCatchUpLimit, generatedAtMS); err != nil &&
-			!errors.Is(err, store.ErrUsagePricingCoverageIncomplete) {
-			return AccountHistoryResponse{}, err
+		if s.store.SeparateDerivedEnabled() {
+			s.store.WakeSeparateDerived()
+		} else {
+			result, err := s.store.CatchUpAccountHistoryRollups(ctx, accountHistoryCatchUpLimit, generatedAtMS)
+			if err != nil {
+				return AccountHistoryResponse{}, err
+			}
+			processed = result.Processed
+			if _, err := s.store.CatchUpUsagePricing(ctx, accountHistoryCatchUpLimit, generatedAtMS); err != nil &&
+				!errors.Is(err, store.ErrUsagePricingCoverageIncomplete) {
+				return AccountHistoryResponse{}, err
+			}
 		}
 	}
 	checkpoint, err := s.store.AccountHistoryRollupCheckpoint(ctx)

@@ -2364,6 +2364,67 @@ func TestRepositoryDeleteAcceptsHourlyAggregateRebuildRevision(t *testing.T) {
 	}
 }
 
+func TestRepositoryBeginDeleteFailsClosedWhenSeparateDerivedCoverageIsIncomplete(t *testing.T) {
+	db, repository, run := prepareVerifiedArchiveRun(t, "separate-derived-guard-"+fmt.Sprint(time.Now().UnixNano()))
+	repository.SetDerivedCoverageGuard(derivedCoverageGuardFunc(func(context.Context, Run) error {
+		return errors.New("account-history coverage is behind target")
+	}))
+
+	if _, err := repository.BeginDelete(context.Background(), run.ID, 80_000); !errors.Is(err, ErrDerivedCoverageIncomplete) {
+		t.Fatalf("begin delete with incomplete separate coverage error = %v, want ErrDerivedCoverageIncomplete", err)
+	}
+	current, err := repository.Run(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("reload archive run: %v", err)
+	}
+	if current.Status != StatusVerified || current.DeleteStartedAtMS != 0 {
+		t.Fatalf("guarded run mutated before delete handoff: %#v", current)
+	}
+	var rawCount int
+	if err := db.QueryRowContext(context.Background(), `select count(*) from usage_events`).Scan(&rawCount); err != nil {
+		t.Fatalf("count raw events: %v", err)
+	}
+	if rawCount != 2 {
+		t.Fatalf("raw event count after guarded delete = %d, want 2", rawCount)
+	}
+}
+
+func TestRepositoryDeleteBatchRechecksSeparateDerivedCoverageBeforeRawDelete(t *testing.T) {
+	db, repository, run := prepareVerifiedArchiveRun(t, "separate-derived-batch-guard-"+fmt.Sprint(time.Now().UnixNano()))
+	if _, err := repository.BeginDelete(context.Background(), run.ID, 81_000); err != nil {
+		t.Fatalf("begin delete: %v", err)
+	}
+	checks := 0
+	repository.SetDerivedCoverageGuard(derivedCoverageGuardFunc(func(context.Context, Run) error {
+		checks++
+		if checks >= 2 {
+			return errors.New("derived coverage changed during delete batch")
+		}
+		return nil
+	}))
+
+	if _, err := repository.DeleteBatch(context.Background(), run.ID, 1, 81_001); !errors.Is(err, ErrDerivedCoverageIncomplete) {
+		t.Fatalf("delete batch with coverage lost before raw delete error = %v, want ErrDerivedCoverageIncomplete", err)
+	}
+	if checks != 2 {
+		t.Fatalf("derived guard checks = %d, want two checks around batch", checks)
+	}
+	current, err := repository.Run(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("reload archive run: %v", err)
+	}
+	if current.Status != StatusDeleting || current.DeletedEventCount != 0 {
+		t.Fatalf("guarded batch mutated run: %#v", current)
+	}
+	var rawCount int
+	if err := db.QueryRowContext(context.Background(), `select count(*) from usage_events`).Scan(&rawCount); err != nil {
+		t.Fatalf("count raw events: %v", err)
+	}
+	if rawCount != 2 {
+		t.Fatalf("raw event count after guarded batch = %d, want 2", rawCount)
+	}
+}
+
 func TestRepositoryPreflightRejectsNoncanonicalEventHash(t *testing.T) {
 	db := openArchiveTestDB(t)
 	ctx := context.Background()

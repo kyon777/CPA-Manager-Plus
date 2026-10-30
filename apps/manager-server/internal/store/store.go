@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/accountaction"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/apikeyalias"
@@ -179,6 +180,8 @@ type Store struct {
 	UsageRollups                 usagerollup.Repository
 	derivedRuntime               *separateDerivedRuntime
 	derivedRuntimeMu             sync.RWMutex
+	derivedStorageMode           config.DerivedStorageMode
+	derivedStorageError          string
 }
 
 func Open(path string, protector ...*security.Protector) (*Store, error) {
@@ -210,6 +213,7 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 		UsagePricing:                 usagepricing.New(db),
 		UsageMonitoring:              usagemonitoring.New(db),
 		UsageRollups:                 usagerollup.New(db),
+		derivedStorageMode:           config.DerivedStoragePrimary,
 	}
 }
 
@@ -840,7 +844,21 @@ func (s *Store) UsagePricingAccountRows(ctx context.Context, accountKeys []strin
 }
 
 func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys []string) (UsagePricingAccountSnapshot, error) {
-	if runtime := s.separateRuntime(); runtime != nil {
+	if s.SeparateDerivedEnabled() {
+		runtime := s.separateRuntime()
+		if runtime == nil {
+			// Separate mode must never silently re-enable a primary derived
+			// writer when its independent database is unavailable. A bounded
+			// read-only legacy snapshot keeps the panel usable in degraded mode;
+			// callers receive Available=false so it is not mistaken for a fresh
+			// separate projection.
+			fallback, err := s.loadUsagePricingAccountSnapshotPrimary(ctx, accountKeys)
+			if err != nil {
+				return UsagePricingAccountSnapshot{}, err
+			}
+			fallback.Available = false
+			return fallback, nil
+		}
 		// Keep the separate read path on the query-only source connection. This
 		// avoids routing every visible-page refresh through the primary model
 		// price repository while the isolated worker is rebuilding.
@@ -858,11 +876,11 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 			// the snapshot still contains the last verified rows when available.
 			runtime.engine.Wake()
 			if len(snapshot.Rows) == 0 && len(snapshot.CoreRows) == 0 {
-				// During first warm-up, serve the last read-only primary projection
-				// rather than replacing known amounts with an empty page. This path
-				// never invokes a primary catch-up/write operation and remains marked
-				// stale until the isolated database proves its own coverage.
-				fallback, fallbackErr := s.loadUsagePricingAccountSnapshotPrimary(ctx, accountKeys)
+				// During first warm-up, serve the last read-only legacy projection
+				// rather than replacing known amounts with an empty page. The fallback
+				// repositories are bound to runtime.sourceDB opened with mode=ro and
+				// query_only=1; they cannot acquire the primary writer lock.
+				fallback, fallbackErr := runtime.loadLegacySnapshot(ctx, accountKeys, prices)
 				if fallbackErr == nil {
 					fallback.Available = false
 					return fallback, nil
@@ -947,6 +965,12 @@ func (s *Store) loadUsagePricingAccountSnapshotPrimary(ctx context.Context, acco
 func (s *Store) CatchUpAccountHistoryRollups(ctx context.Context, limit int, nowMS int64) (UsageRollupCatchUpResult, error) {
 	if s.SeparateDerivedEnabled() {
 		s.WakeSeparateDerived()
+		if !s.SeparateDerivedRuntimeAvailable() {
+			// A configured-but-unavailable isolated store is degraded, not caught
+			// up. Never let the zero-valued legacy checkpoint make callers report
+			// Pending=false while the derived reader is unable to advance.
+			return UsageRollupCatchUpResult{Pending: true}, nil
+		}
 		checkpoint, err := s.AccountHistoryRollupCheckpoint(ctx)
 		if err != nil {
 			return UsageRollupCatchUpResult{}, err

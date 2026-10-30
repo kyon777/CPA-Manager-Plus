@@ -280,6 +280,30 @@ func TestUsageEventFanoutIsInstalledAfterAutomationRuntime(t *testing.T) {
 	}
 }
 
+func TestSeparateDerivedCollectorEventsWakeIsolatedWorker(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	source := string(content)
+	if !strings.Contains(source, "worker.NewUsageEventWakeHandler") ||
+		!strings.Contains(source, "db.WakeSeparateDerived()") {
+		t.Fatal("collector event fanout does not wake the separate derived worker")
+	}
+}
+
+func TestSeparateDerivedShutdownDoesNotCallAbsentArchiveRetentionWorker(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	source := string(content)
+	if !strings.Contains(source, "if usageArchiveRetentionWorker != nil {\r\n\t\tif err := usageArchiveRetentionWorker.StopAndWait(shutdownCtx);") &&
+		!strings.Contains(source, "if usageArchiveRetentionWorker != nil {\n\t\tif err := usageArchiveRetentionWorker.StopAndWait(shutdownCtx);") {
+		t.Fatal("shutdown path calls the optional archive-retention worker without a nil guard")
+	}
+}
+
 func TestManagerDatabaseProcessLockPrecedesStoreOpen(t *testing.T) {
 	content, err := os.ReadFile("main.go")
 	if err != nil {

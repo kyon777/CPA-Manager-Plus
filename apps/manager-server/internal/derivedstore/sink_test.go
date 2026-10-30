@@ -101,6 +101,39 @@ func TestSinkReadsRowsByStreamAndGeneration(t *testing.T) {
 	}
 }
 
+func TestSinkFetchesOnlyRequestedSubjects(t *testing.T) {
+	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sink := NewSink(db)
+	if _, err := sink.Apply(context.Background(), ApplyBatch{
+		Stream: StreamPricing, SourceEpoch: "epoch-a", Generation: "pricing-v1", ToEventID: 3,
+		Rows: []MaterializedRow{
+			{Key: "account-a\x00model-a", SubjectKey: "account-a", PayloadJSON: `{"calls":1}`},
+			{Key: "account-b\x00model-a", SubjectKey: "account-b", PayloadJSON: `{"calls":1}`},
+			{Key: "account-c\x00model-a", SubjectKey: "account-c", PayloadJSON: `{"calls":1}`},
+		},
+	}); err != nil {
+		t.Fatalf("apply rows: %v", err)
+	}
+	rows, err := sink.RowsForSubjects(context.Background(), StreamPricing, "pricing-v1", []string{"account-b"})
+	if err != nil {
+		t.Fatalf("read subject rows: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Key != "account-b\x00model-a" || rows[0].SubjectKey != "account-b" {
+		t.Fatalf("subject rows = %#v", rows)
+	}
+	rows, err = sink.RowsByKeys(context.Background(), StreamPricing, "pricing-v1", []string{"account-c\x00model-a"})
+	if err != nil {
+		t.Fatalf("read key rows: %v", err)
+	}
+	if len(rows) != 1 || rows[0].SubjectKey != "account-c" {
+		t.Fatalf("key rows = %#v", rows)
+	}
+}
+
 func TestSinkResetsCoverageWhenGenerationChanges(t *testing.T) {
 	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
 	if err != nil {

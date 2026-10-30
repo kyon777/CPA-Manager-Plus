@@ -43,6 +43,9 @@ func (r *Reader) AccountStats(ctx context.Context, filter store.AnalyticsFilter)
 	if r == nil || r.store == nil {
 		return nil, false
 	}
+	if r.store.SeparateDerivedEnabled() {
+		return nil, false
+	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
 		return nil, false
 	}
@@ -60,6 +63,9 @@ func (r *Reader) AccountStats(ctx context.Context, filter store.AnalyticsFilter)
 
 func (r *Reader) AccountWindowStats(ctx context.Context, windows []store.AccountWindowUsageQuery) ([]store.AccountWindowModelStat, bool, error) {
 	if r == nil || r.store == nil {
+		return nil, false, nil
+	}
+	if r.store.SeparateDerivedEnabled() {
 		return nil, false, nil
 	}
 	rows, state, available, err := r.store.UsageMonitoringAccountWindowStats(ctx, windows)
@@ -81,6 +87,9 @@ func (r *Reader) APIKeyStats(ctx context.Context, filter store.AnalyticsFilter) 
 	if r == nil || r.store == nil {
 		return nil, false
 	}
+	if r.store.SeparateDerivedEnabled() {
+		return nil, false
+	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
 		return nil, false
 	}
@@ -98,6 +107,9 @@ func (r *Reader) APIKeyStats(ctx context.Context, filter store.AnalyticsFilter) 
 
 func (r *Reader) FilterOptions(ctx context.Context, filter store.AnalyticsFilter) (store.FilterOptionValues, bool) {
 	if r == nil || r.store == nil {
+		return store.FilterOptionValues{}, false
+	}
+	if r.store.SeparateDerivedEnabled() {
 		return store.FilterOptionValues{}, false
 	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
@@ -119,6 +131,9 @@ func (r *Reader) FilterSelectors(ctx context.Context, filter store.AnalyticsFilt
 	if r == nil || r.store == nil {
 		return store.FilterSelectorValues{}, false
 	}
+	if r.store.SeparateDerivedEnabled() {
+		return store.FilterSelectorValues{}, false
+	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
 		return store.FilterSelectorValues{}, false
 	}
@@ -136,6 +151,9 @@ func (r *Reader) FilterSelectors(ctx context.Context, filter store.AnalyticsFilt
 
 func (r *Reader) Aggregate(ctx context.Context, filter store.AnalyticsFilter) (store.Aggregate, bool) {
 	if r == nil || r.store == nil {
+		return store.Aggregate{}, false
+	}
+	if r.store.SeparateDerivedEnabled() {
 		return store.Aggregate{}, false
 	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
@@ -157,6 +175,9 @@ func (r *Reader) ModelStats(ctx context.Context, filter store.AnalyticsFilter) (
 	if r == nil || r.store == nil {
 		return nil, false
 	}
+	if r.store.SeparateDerivedEnabled() {
+		return nil, false
+	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
 		return nil, false
 	}
@@ -174,6 +195,9 @@ func (r *Reader) ModelStats(ctx context.Context, filter store.AnalyticsFilter) (
 
 func (r *Reader) EventsCount(ctx context.Context, filter store.AnalyticsFilter) (int64, bool) {
 	if r == nil || r.store == nil {
+		return 0, false
+	}
+	if r.store.SeparateDerivedEnabled() {
 		return 0, false
 	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) || !monitoringrepo.PrefersEventProjection(filter) {
@@ -195,6 +219,9 @@ func (r *Reader) EventsPage(ctx context.Context, filter store.AnalyticsFilter, b
 	if r == nil || r.store == nil {
 		return store.EventsPage{}, false
 	}
+	if r.store.SeparateDerivedEnabled() {
+		return store.EventsPage{}, false
+	}
 	if !monitoringrepo.SupportsEventProjectionFilter(filter) || !monitoringrepo.PrefersEventProjection(filter) {
 		return store.EventsPage{}, false
 	}
@@ -212,6 +239,9 @@ func (r *Reader) EventsPage(ctx context.Context, filter store.AnalyticsFilter, b
 
 func (r *Reader) HeaderSnapshots(ctx context.Context, sinceMS int64, limit int) ([]store.HeaderSnapshot, bool) {
 	if r == nil || r.store == nil {
+		return nil, false
+	}
+	if r.store.SeparateDerivedEnabled() {
 		return nil, false
 	}
 	items, state, available, err := r.store.UsageMonitoringHeaderSnapshots(ctx, sinceMS, limit)

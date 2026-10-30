@@ -20,12 +20,14 @@ import (
 )
 
 type separateDerivedRuntime struct {
-	sourceDB  *sql.DB
-	derivedDB *sql.DB
-	source    derivedstore.Source
-	sink      derivedstore.Sink
-	engine    *derivedstore.Engine
-	mu        sync.RWMutex
+	sourceDB      *sql.DB
+	derivedDB     *sql.DB
+	source        derivedstore.Source
+	sink          derivedstore.Sink
+	engine        *derivedstore.Engine
+	sourceRollups usagerollup.Repository
+	sourcePricing usagepricing.Repository
+	mu            sync.RWMutex
 }
 
 // visibleAccountTailLimit is deliberately finite: a page read may merge a
@@ -40,24 +42,50 @@ func (s *Store) ConfigureDerivedStorage(ctx context.Context, cfg config.Config) 
 	if s == nil {
 		return errors.New("store is unavailable")
 	}
+	s.derivedRuntimeMu.Lock()
+	s.derivedStorageMode = cfg.DerivedStorageMode
+	s.derivedStorageError = ""
+	s.derivedRuntimeMu.Unlock()
+	if cfg.DerivedStorageMode == config.DerivedStorageSeparate {
+		// A reconfiguration must not leave an older source/sink pair active
+		// while the replacement is being validated. The guard below remains
+		// fail-closed if opening the replacement fails.
+		s.closeSeparateDerivedRuntime()
+	}
+	if s.UsageArchives != nil {
+		if cfg.DerivedStorageMode == config.DerivedStorageSeparate {
+			// Install the fail-closed guard before any independent DB open. A
+			// damaged/unavailable derived DB must not create a window in which
+			// archive cleanup can delete primary facts without proof.
+			s.UsageArchives.SetDerivedCoverageGuard(usagearchiveGuard{s: s})
+		} else {
+			s.UsageArchives.SetDerivedCoverageGuard(nil)
+		}
+	}
 	if cfg.DerivedStorageMode != config.DerivedStorageSeparate {
+		s.closeSeparateDerivedRuntime()
 		return nil
 	}
 	if cfg.DBPath == "" || cfg.DerivedDBPath == "" {
-		return errors.New("separate derived storage requires primary and derived database paths")
+		s.markSeparateDerivedDegraded(errors.New("separate derived storage requires primary and derived database paths"))
+		return nil
 	}
 	sourceDB, err := sqliterepo.OpenReadOnly(cfg.DBPath)
 	if err != nil {
-		return err
+		s.markSeparateDerivedDegraded(err)
+		return nil
 	}
 	derivedDB, err := sqliterepo.OpenDerived(cfg.DerivedDBPath)
 	if err != nil {
 		_ = sourceDB.Close()
-		return err
+		s.markSeparateDerivedDegraded(err)
+		return nil
 	}
 	runtime := &separateDerivedRuntime{
-		sourceDB:  sourceDB,
-		derivedDB: derivedDB,
+		sourceDB:      sourceDB,
+		derivedDB:     derivedDB,
+		sourceRollups: usagerollup.New(sourceDB),
+		sourcePricing: usagepricing.New(sourceDB),
 	}
 	runtime.source = derivedstore.NewSourceWithArchiveDir(sourceDB, cfg.UsageArchiveDir)
 	runtime.sink = derivedstore.NewSink(derivedDB)
@@ -68,13 +96,49 @@ func (s *Store) ConfigureDerivedStorage(ctx context.Context, cfg config.Config) 
 		MaxBatches: cfg.DerivedCycleMaxBatches,
 		Yield:      cfg.DerivedYield,
 	})
+	if err := runtime.bootstrapLegacyDerived(ctx); err != nil {
+		_ = runtime.close()
+		s.markSeparateDerivedDegraded(fmt.Errorf("bootstrap separate derived storage: %w", err))
+		return nil
+	}
 	s.closeSeparateDerivedRuntime()
 	s.derivedRuntimeMu.Lock()
 	s.derivedRuntime = runtime
 	s.derivedRuntimeMu.Unlock()
-	s.UsageArchives.SetDerivedCoverageGuard(usagearchiveGuard{s: s})
+	if s.UsageArchives != nil {
+		s.UsageArchives.SetDerivedCoverageGuard(usagearchiveGuard{s: s})
+	}
 	_ = ctx // reserved for future startup validation without a primary write
 	return nil
+}
+
+// markSeparateDerivedDegraded records a sanitized startup failure without
+// falling back to the legacy primary writer path. Raw collection, billing and
+// control-plane operations may continue; the separate-derived readers report
+// degraded/pending until an operator repairs the independent database and
+// restarts CPAM.
+func (s *Store) markSeparateDerivedDegraded(err error) {
+	if s == nil {
+		return
+	}
+	s.derivedRuntimeMu.Lock()
+	defer s.derivedRuntimeMu.Unlock()
+	if err == nil {
+		s.derivedStorageError = ""
+		return
+	}
+	// Keep the public status code stable and do not expose filesystem paths,
+	// credentials, SQL text, or other potentially sensitive diagnostics.
+	s.derivedStorageError = "derived_runtime_unavailable"
+}
+
+func (s *Store) SeparateDerivedStartupError() string {
+	if s == nil {
+		return ""
+	}
+	s.derivedRuntimeMu.RLock()
+	defer s.derivedRuntimeMu.RUnlock()
+	return s.derivedStorageError
 }
 
 type usagearchiveGuard struct{ s *Store }
@@ -96,6 +160,15 @@ func (g usagearchiveGuard) ValidateArchiveDelete(ctx context.Context, run usagea
 func (s *Store) StartSeparateDerived(ctx context.Context) {
 	if runtime := s.separateRuntime(); runtime != nil {
 		runtime.engine.Start(ctx)
+	}
+}
+
+// StopSeparateDerived drains the isolated worker before its source/sink
+// connections are closed. It is deliberately a no-op when the mode is not
+// configured so primary storage shutdown remains unchanged.
+func (s *Store) StopSeparateDerived(ctx context.Context) {
+	if runtime := s.separateRuntime(); runtime != nil && runtime.engine != nil {
+		_ = runtime.engine.StopAndWait(ctx)
 	}
 }
 
@@ -126,12 +199,33 @@ func (s *Store) RunSeparateDerivedCycle(ctx context.Context) (derivedstore.Cycle
 	return runtime.engine.RunCycle(ctx)
 }
 
-func (s *Store) SeparateDerivedEnabled() bool { return s.separateRuntime() != nil }
+func (s *Store) SeparateDerivedEnabled() bool {
+	if s == nil {
+		return false
+	}
+	s.derivedRuntimeMu.RLock()
+	separate := s.derivedStorageMode == config.DerivedStorageSeparate
+	s.derivedRuntimeMu.RUnlock()
+	return separate
+}
+
+func (s *Store) SeparateDerivedRuntimeAvailable() bool {
+	return s.separateRuntime() != nil
+}
 
 func (s *Store) SeparateDerivedStatus(ctx context.Context) (derivedstore.Status, error) {
 	runtime := s.separateRuntime()
 	if runtime == nil {
-		return derivedstore.Status{}, errors.New("separate derived storage is not configured")
+		if !s.SeparateDerivedEnabled() {
+			return derivedstore.Status{}, errors.New("separate derived storage is not configured")
+		}
+		return derivedstore.Status{
+			Streams: []derivedstore.StreamState{{
+				Stream:        "runtime",
+				Status:        "degraded",
+				LastErrorCode: "derived_runtime_unavailable",
+			}},
+		}, nil
 	}
 	return runtime.sink.Status(ctx)
 }
@@ -146,7 +240,7 @@ func (s *Store) SeparateDerivedStatus(ctx context.Context) (derivedstore.Status,
 func (s *Store) SeparateDerivedArchiveDeleteReady(ctx context.Context, targetEventID int64) (bool, error) {
 	runtime := s.separateRuntime()
 	if runtime == nil {
-		return true, nil
+		return !s.SeparateDerivedEnabled(), nil
 	}
 	snapshot, err := runtime.source.Snapshot(ctx)
 	if err != nil {
@@ -183,6 +277,12 @@ func (s *Store) SeparateDerivedArchiveDeleteReady(ctx context.Context, targetEve
 func (s *Store) separateDerivedCheckpoint(ctx context.Context) (UsageRollupCheckpoint, bool, error) {
 	runtime := s.separateRuntime()
 	if runtime == nil {
+		if s.SeparateDerivedEnabled() {
+			return UsageRollupCheckpoint{
+				Name:      usagerollup.AccountHistoryCheckpointName,
+				LastError: "derived_runtime_unavailable",
+			}, true, nil
+		}
 		return UsageRollupCheckpoint{}, false, nil
 	}
 	state, err := runtime.sink.State(ctx, derivedstore.StreamAccountHistory)
@@ -201,6 +301,9 @@ func (s *Store) separateDerivedCheckpoint(ctx context.Context) (UsageRollupCheck
 func (s *Store) separateDerivedLatestEventID(ctx context.Context) (int64, bool, error) {
 	runtime := s.separateRuntime()
 	if runtime == nil {
+		if s.SeparateDerivedEnabled() {
+			return 0, true, nil
+		}
 		return 0, false, nil
 	}
 	snapshot, err := runtime.source.Snapshot(ctx)
@@ -213,6 +316,9 @@ func (s *Store) separateDerivedLatestEventID(ctx context.Context) (int64, bool, 
 func (s *Store) separateDerivedPricingCatchUp(ctx context.Context) (UsagePricingCatchUpResult, bool, error) {
 	runtime := s.separateRuntime()
 	if runtime == nil {
+		if s.SeparateDerivedEnabled() {
+			return UsagePricingCatchUpResult{Pending: true}, true, nil
+		}
 		return UsagePricingCatchUpResult{}, false, nil
 	}
 	runtime.engine.Wake()
@@ -265,6 +371,13 @@ func (r *separateDerivedRuntime) close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var first error
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if r.engine != nil {
+		if err := r.engine.StopAndWait(stopCtx); err != nil {
+			first = err
+		}
+	}
+	cancel()
 	if r.sourceDB != nil {
 		if err := r.sourceDB.Close(); err != nil && first == nil {
 			first = err
@@ -278,6 +391,41 @@ func (r *separateDerivedRuntime) close() error {
 		r.derivedDB = nil
 	}
 	return first
+}
+
+// loadLegacySnapshot is a display-only warm-up fallback. Both repository
+// handles use the query-only source connection, so this path can preserve the
+// last known account totals without opening a read transaction on Store.db
+// (whose DSN is also used by primary writers). It never reports fresh
+// coverage; the isolated worker remains the authority for readiness.
+func (r *separateDerivedRuntime) loadLegacySnapshot(ctx context.Context, accountKeys []string, prices map[string]ModelPrice) (UsagePricingAccountSnapshot, error) {
+	if r == nil || r.sourceDB == nil || r.sourceRollups == nil || r.sourcePricing == nil {
+		return UsagePricingAccountSnapshot{}, errors.New("separate derived source fallback is unavailable")
+	}
+	tx, err := r.sourceDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return UsagePricingAccountSnapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	coreRows, err := r.sourceRollups.AccountHistoryRowsTx(ctx, tx, accountKeys)
+	if err != nil {
+		return UsagePricingAccountSnapshot{}, err
+	}
+	rows, state, _, err := r.sourcePricing.LoadAccountRowsTx(ctx, tx, accountKeys)
+	if err != nil {
+		return UsagePricingAccountSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return UsagePricingAccountSnapshot{}, err
+	}
+	return UsagePricingAccountSnapshot{
+		CoreRows:                     coreRows,
+		Rows:                         rows,
+		State:                        state,
+		Available:                    false,
+		PricingIncompleteAccountKeys: map[string]struct{}{},
+		Prices:                       prices,
+	}, nil
 }
 
 func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys []string, prices map[string]ModelPrice) (UsagePricingAccountSnapshot, bool, error) {

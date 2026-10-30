@@ -142,6 +142,13 @@ func runServer() {
 	if err != nil {
 		log.Fatalf("open sqlite: %v", err)
 	}
+	if err := db.ConfigureDerivedStorage(context.Background(), cfg); err != nil {
+		_ = db.Close()
+		log.Fatalf("configure derived storage: %v", err)
+	}
+	if startupError := db.SeparateDerivedStartupError(); startupError != "" {
+		log.Printf("[startup] separate derived storage degraded: %s; raw collection and billing remain enabled", startupError)
+	}
 	defer func() {
 		if err := db.Close(); err != nil {
 			log.Printf("close sqlite: %v", err)
@@ -182,6 +189,8 @@ func runServer() {
 	}
 
 	serverApp := httpapi.New(cfg, db, manager)
+	separateDerivedEnabled := db.SeparateDerivedEnabled()
+	legacyBackgroundDerivations := cfg.BackgroundDerivationsEnabled && !separateDerivedEnabled
 	serverApp.AppContext().DatabaseMaintenance = walMaintenance
 	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := serverApp.AppContext().CodexInspectionService.Recover(recoveryCtx); err != nil {
@@ -221,7 +230,7 @@ func runServer() {
 	var usageDerivedRollupWorker *worker.UsagePricingRollupWorker
 	var usageHourlyAggregateWorker *worker.UsageHourlyAggregateWorker
 	var usageArchiveRetentionWorker *worker.UsageArchiveRetentionWorker
-	if cfg.BackgroundDerivationsEnabled {
+	if legacyBackgroundDerivations {
 		accountHistoryRollupWorker = worker.NewAccountHistoryRollupWorker(db)
 		usageDerivedRollupWorker = worker.NewUsagePricingRollupWorker(db)
 		serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
@@ -241,6 +250,9 @@ func runServer() {
 				usageHourlyAggregateWorker.Wake()
 			}
 		})
+	} else if separateDerivedEnabled {
+		serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(db.WakeSeparateDerived)
+		serverApp.AppContext().UsageService.SetEventsInsertedNotifier(db.WakeSeparateDerived)
 	}
 	automationRuntime := worker.NewAutomationRuntime(
 		automationSettingsService,
@@ -285,9 +297,14 @@ func runServer() {
 		log.Printf("[startup] start usage archive jobs: %v", err)
 	}
 
+	// cfg.BackgroundDerivationsEnabled remains the operator-controlled gate for
+	// both the legacy and the isolated implementations. The inner selector
+	// decides which implementation is allowed to run.
 	if cfg.BackgroundDerivationsEnabled {
-		if err := db.RunDerivedStartupMaintenance(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("[startup] post-listen index preparation failed; continuing without blocking background workers: %v", err)
+		if legacyBackgroundDerivations {
+			if err := db.RunDerivedStartupMaintenance(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("[startup] post-listen index preparation failed; continuing without blocking background workers: %v", err)
+			}
 		}
 	} else {
 		log.Printf("[startup] background derivations disabled; raw collection remains enabled")
@@ -304,11 +321,16 @@ func runServer() {
 			accountHistoryRollupWorker,
 			usageDerivedRollupWorker,
 			usageHourlyAggregateWorker,
+			worker.NewUsageEventWakeHandler(func() {
+				if separateDerivedEnabled {
+					db.WakeSeparateDerived()
+				}
+			}),
 		))
 		serverApp.AppContext().TokenRecoveryService.Start(ctx)
 		codexInspectionWorker.Start(ctx)
 		serverApp.AppContext().ProxyReplacementService.Start(ctx)
-		if cfg.BackgroundDerivationsEnabled {
+		if cfg.BackgroundDerivationsEnabled && legacyBackgroundDerivations {
 			accountHistoryRollupWorker.Start(ctx)
 			usageDerivedRollupWorker.Start(ctx)
 			if usageHourlyAggregateWorker != nil {
@@ -317,10 +339,13 @@ func runServer() {
 			db.StartDerivedMaintenance(ctx)
 			worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
 		}
+		if cfg.BackgroundDerivationsEnabled && separateDerivedEnabled {
+			db.StartSeparateDerived(ctx)
+		}
 		collectorWorker.Start(ctx)
 	}
 
-	if cfg.BackgroundDerivationsEnabled {
+	if cfg.BackgroundDerivationsEnabled && legacyBackgroundDerivations {
 		usageCacheAccountingMigrationWorker := worker.NewUsageCacheAccountingMigrationWorker(db, func() {
 			accountHistoryRollupWorker.Wake()
 			usageDerivedRollupWorker.Wake()
@@ -376,8 +401,14 @@ func runServer() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
-	if err := usageArchiveRetentionWorker.StopAndWait(shutdownCtx); err != nil {
-		log.Printf("shutdown usage archive retention: %v", err)
+	// Stop the isolated worker before Store.Close closes its source/sink
+	// connections. The runtime itself also guards this boundary, making the
+	// sequence safe when shutdown is triggered by a listener error.
+	db.StopSeparateDerived(shutdownCtx)
+	if usageArchiveRetentionWorker != nil {
+		if err := usageArchiveRetentionWorker.StopAndWait(shutdownCtx); err != nil {
+			log.Printf("shutdown usage archive retention: %v", err)
+		}
 	}
 	if err := serverApp.AppContext().UsageService.WaitArchiveJobs(shutdownCtx); err != nil {
 		log.Printf("shutdown usage archive jobs: %v", err)

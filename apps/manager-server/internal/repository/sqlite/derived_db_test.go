@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -129,6 +130,34 @@ func TestOpenReadOnlySourceCanBeginReadTransactionWhilePrimaryWriterIsOpen(t *te
 	}
 	if value != "before" {
 		t.Fatalf("read source value = %q, want committed snapshot", value)
+	}
+}
+
+func TestOpenDerivedRejectsPrimaryDatabaseWithoutMigratingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	primary, err := Open(path)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	if err := primary.Close(); err != nil {
+		t.Fatalf("close primary: %v", err)
+	}
+	if _, err := OpenDerived(path); err == nil || !strings.Contains(err.Error(), "primary schema") {
+		t.Fatalf("open derived on primary error = %v, want primary schema refusal", err)
+	}
+	// The refusal must happen before MigrateDerived runs; a typo in the derived
+	// path must never add disposable tables to usage.sqlite.
+	check, err := sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("reopen primary: %v", err)
+	}
+	t.Cleanup(func() { _ = check.Close() })
+	var derivedMeta int
+	if err := check.QueryRow(`select count(*) from sqlite_master where type = 'table' and name = 'derived_store_meta'`).Scan(&derivedMeta); err != nil {
+		t.Fatalf("inspect primary after refusal: %v", err)
+	}
+	if derivedMeta != 0 {
+		t.Fatal("primary database was migrated as derived storage")
 	}
 }
 

@@ -71,3 +71,22 @@ func assertDerivedTableMissing(t *testing.T, db *sql.DB, name string) {
 		t.Fatalf("primary table %q exists in derived database", name)
 	}
 }
+
+func TestOpenDerivedContainsIndependentHourlyAndMonitoringProjectionTables(t *testing.T) {
+	derived, err := OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	t.Cleanup(func() { _ = derived.Close() })
+
+	for _, table := range []string{
+		"usage_pricing_hourly_rollups_v1",
+		"usage_dashboard_hourly_rollups",
+		"usage_hourly_aggregate_v1",
+		"derived_monitoring_account_daily_rollups_v1",
+		"derived_monitoring_api_key_daily_rollups_v1",
+		"derived_monitoring_header_latest_v1",
+	} {
+		assertDerivedTableExists(t, derived, table)
+	}
+}

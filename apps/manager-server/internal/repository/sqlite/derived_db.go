@@ -63,11 +63,40 @@ func OpenDerived(path string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(1)
+	if err := rejectPrimarySchema(db, dbPath); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := MigrateDerived(db); err != nil {
 		_ = db.Close()
 		return nil, enrichOpenError(dbPath, err)
 	}
 	return db, nil
+}
+
+// rejectPrimarySchema is a destructive-boundary guard. A separate-derived
+// path must never be an existing usage.sqlite (including a symlink/hard-link
+// alias); otherwise the harmless-looking derived migration would mutate the
+// billing database schema before the caller notices the configuration typo.
+func rejectPrimarySchema(db *sql.DB, dbPath string) error {
+	var tableName string
+	err := db.QueryRow(`select name from sqlite_master
+		where type = 'table' and name in (
+			'usage_events', 'usage_event_identity_ledger', 'usage_source_identity',
+			'model_prices', 'settings'
+		) order by case name
+			when 'usage_events' then 1
+			when 'usage_event_identity_ledger' then 2
+			when 'usage_source_identity' then 3
+			when 'model_prices' then 4
+			else 5 end limit 1`).Scan(&tableName)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect derived SQLite target %q: %w", dbPath, err)
+	}
+	return fmt.Errorf("refusing derived SQLite path %q: primary schema table %q detected", dbPath, tableName)
 }
 
 func derivedDataSourceName(path string) string {

@@ -1,6 +1,7 @@
 package system
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -25,6 +26,25 @@ type dataMigrationStatus struct {
 	StartedAtMS   int64  `json:"startedAtMs,omitempty"`
 	UpdatedAtMS   int64  `json:"updatedAtMs"`
 	FinishedAtMS  int64  `json:"finishedAtMs,omitempty"`
+}
+
+type derivedStorageStreamStatus struct {
+	Name            string `json:"name"`
+	Status          string `json:"status"`
+	CoverageEventID int64  `json:"coverageEventId"`
+	TargetEventID   int64  `json:"targetEventId"`
+	LagEventID      int64  `json:"lagEventId"`
+	ProcessedEvents int64  `json:"processedEvents"`
+	LastSuccessAtMS int64  `json:"lastSuccessAtMs,omitempty"`
+	LastErrorCode   string `json:"lastErrorCode,omitempty"`
+}
+
+type derivedStorageStatus struct {
+	Mode          string                       `json:"mode"`
+	Enabled       bool                         `json:"enabled"`
+	WorkerEnabled bool                         `json:"workerEnabled"`
+	Degraded      bool                         `json:"degraded"`
+	Streams       []derivedStorageStreamStatus `json:"streams"`
 }
 
 func (h *Handler) Info(w http.ResponseWriter, r *http.Request) {
@@ -54,9 +74,16 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusInternalServerError, errors.New("database maintenance status unavailable"))
 		return
 	}
+	derivedStorage, err := derivedStatus(r.Context(), h.App)
+	if err != nil {
+		log.Printf("read separate derived storage status: %v", err)
+		response.Error(w, http.StatusInternalServerError, errors.New("derived storage status unavailable"))
+		return
+	}
 	if r.URL.Query().Get("scope") == "database-maintenance" {
 		response.JSON(w, http.StatusOK, map[string]any{
 			"databaseMaintenance": databaseMaintenance,
+			"derivedStorage":      derivedStorage,
 		})
 		return
 	}
@@ -91,9 +118,42 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 			FinishedAtMS:  migration.FinishedAtMS,
 		},
 		"databaseMaintenance": databaseMaintenance,
+		"derivedStorage":      derivedStorage,
 	}
 	if h.App.DatabaseMaintenance != nil {
 		payload["database"] = h.App.DatabaseMaintenance.Snapshot()
 	}
 	response.JSON(w, http.StatusOK, payload)
+}
+
+func derivedStatus(ctx context.Context, appCtx *app.Context) (derivedStorageStatus, error) {
+	status := derivedStorageStatus{Mode: "primary", Streams: []derivedStorageStreamStatus{}}
+	if appCtx == nil || appCtx.Store == nil || !appCtx.Store.SeparateDerivedEnabled() {
+		return status, nil
+	}
+	derived, err := appCtx.Store.SeparateDerivedStatus(ctx)
+	if err != nil {
+		return derivedStorageStatus{}, err
+	}
+	status.Mode = "separate"
+	status.Enabled = true
+	status.WorkerEnabled = appCtx.Config.BackgroundDerivationsEnabled
+	status.Degraded = !appCtx.Store.SeparateDerivedRuntimeAvailable()
+	for _, stream := range derived.Streams {
+		lag := stream.TargetEventID - stream.CoverageEventID
+		if lag < 0 {
+			lag = 0
+		}
+		status.Streams = append(status.Streams, derivedStorageStreamStatus{
+			Name:            string(stream.Stream),
+			Status:          stream.Status,
+			CoverageEventID: stream.CoverageEventID,
+			TargetEventID:   stream.TargetEventID,
+			LagEventID:      lag,
+			ProcessedEvents: stream.ProcessedEvents,
+			LastSuccessAtMS: stream.LastSuccessAtMS,
+			LastErrorCode:   stream.LastErrorCode,
+		})
+	}
+	return status, nil
 }

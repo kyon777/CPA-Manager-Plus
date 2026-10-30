@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/derivedstore"
@@ -53,6 +54,182 @@ func TestSeparateDerivedRuntimeServesAccountSnapshotFromDerivedDB(t *testing.T) 
 	}
 	if !snapshot.Available || len(snapshot.CoreRows) == 0 || len(snapshot.Rows) == 0 {
 		t.Fatalf("separate snapshot = %#v", snapshot)
+	}
+}
+
+func TestSeparateDerivedRuntimeDegradesWithoutReenablingPrimaryWriter(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+	// Point the derived path at the primary database. The guard must keep the
+	// service alive in degraded separate mode rather than falling back to a
+	// primary derived writer.
+	if err := st.ConfigureDerivedStorage(context.Background(), config.Config{
+		DBPath:             primaryPath,
+		DerivedDBPath:      primaryPath,
+		DerivedStorageMode: config.DerivedStorageSeparate,
+	}); err != nil {
+		t.Fatalf("degraded configuration returned fatal error: %v", err)
+	}
+	if !st.SeparateDerivedEnabled() || st.SeparateDerivedRuntimeAvailable() {
+		t.Fatalf("separate degraded state = enabled:%v runtime:%v", st.SeparateDerivedEnabled(), st.SeparateDerivedRuntimeAvailable())
+	}
+	status, err := st.SeparateDerivedStatus(context.Background())
+	if err != nil || len(status.Streams) != 1 || status.Streams[0].Status != "degraded" {
+		t.Fatalf("degraded status = %#v, err=%v", status, err)
+	}
+	catchUp, err := st.CatchUpAccountHistoryRollups(context.Background(), 10, 1000)
+	if err != nil {
+		t.Fatalf("degraded account-history catch-up: %v", err)
+	}
+	if !catchUp.Pending {
+		t.Fatalf("degraded account-history catch-up = %#v, want Pending=true", catchUp)
+	}
+}
+
+func TestSeparateDerivedRuntimeDoesNotWritePrimaryRollups(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+	insertEvent := func(hash string, timestamp int64, input, output int64) {
+		t.Helper()
+		_, err := db.Exec(`insert into usage_events(
+			event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+			resolved_model, auth_index, source, auth_file_snapshot,
+			auth_provider_snapshot, input_tokens, output_tokens, total_tokens,
+			failed, created_at_ms
+		) values (?, ?, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+			'gpt-test', 'gpt-test', 'idx-primary-isolation', 'credential-isolation.json',
+			'credential-isolation.json', 'codex', ?, ?, ?, 0, ?)`,
+			hash, timestamp, input, output, input+output, timestamp)
+		if err != nil {
+			t.Fatalf("seed usage event %s: %v", hash, err)
+		}
+	}
+	insertEvent("evt-primary-isolation-1", 100, 10, 2)
+	if _, err := st.CatchUpAccountHistoryRollups(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("seed primary account history: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("seed primary pricing: %v", err)
+	}
+	var primaryHistoryCalls, primaryPricingCalls int64
+	if err := db.QueryRow(`select coalesce(sum(calls), 0) from usage_account_model_rollups`).Scan(&primaryHistoryCalls); err != nil {
+		t.Fatalf("read primary history before isolation: %v", err)
+	}
+	if err := db.QueryRow(`select coalesce(sum(calls), 0) from usage_pricing_account_rollups_v1`).Scan(&primaryPricingCalls); err != nil {
+		t.Fatalf("read primary pricing before isolation: %v", err)
+	}
+	insertEvent("evt-primary-isolation-2", 200, 20, 4)
+	derivedPath := filepath.Join(t.TempDir(), "usage-derived.sqlite")
+	if err := st.ConfigureDerivedStorage(context.Background(), config.Config{
+		DBPath:                 primaryPath,
+		DerivedDBPath:          derivedPath,
+		DerivedStorageMode:     config.DerivedStorageSeparate,
+		DerivedSourceBatchSize: 10,
+		DerivedCycleMaxBatches: 4,
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	if _, err := st.RunSeparateDerivedCycle(context.Background()); err != nil {
+		t.Fatalf("run separate derived cycle: %v", err)
+	}
+	if err := db.QueryRow(`select coalesce(sum(calls), 0) from usage_account_model_rollups`).Scan(&primaryHistoryCalls); err != nil {
+		t.Fatalf("read primary history after isolation: %v", err)
+	}
+	if err := db.QueryRow(`select coalesce(sum(calls), 0) from usage_pricing_account_rollups_v1`).Scan(&primaryPricingCalls); err != nil {
+		t.Fatalf("read primary pricing after isolation: %v", err)
+	}
+	if primaryHistoryCalls != 1 || primaryPricingCalls != 1 {
+		t.Fatalf("separate worker mutated primary rollups: history calls=%d pricing calls=%d", primaryHistoryCalls, primaryPricingCalls)
+	}
+	derivedDB, err := sqliterepo.OpenDerived(derivedPath)
+	if err != nil {
+		t.Fatalf("open derived database: %v", err)
+	}
+	t.Cleanup(func() { _ = derivedDB.Close() })
+	var derivedHistoryCalls, derivedPricingCalls int64
+	if err := derivedDB.QueryRow(`select coalesce(sum(json_extract(payload_json, '$.calls')), 0)
+		from derived_materialized_rows where stream_name = ?`, derivedstore.StreamAccountHistory).Scan(&derivedHistoryCalls); err != nil {
+		t.Fatalf("read derived history: %v", err)
+	}
+	if err := derivedDB.QueryRow(`select coalesce(sum(json_extract(payload_json, '$.calls')), 0)
+		from derived_materialized_rows where stream_name = ?`, derivedstore.StreamPricing).Scan(&derivedPricingCalls); err != nil {
+		t.Fatalf("read derived pricing: %v", err)
+	}
+	if derivedHistoryCalls != 2 || derivedPricingCalls != 2 {
+		t.Fatalf("separate worker did not materialize both events: history calls=%d pricing calls=%d", derivedHistoryCalls, derivedPricingCalls)
+	}
+}
+
+func TestSeparateDerivedRuntimeBootstrapsVerifiedPrimaryRowsBeforeSparseTail(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+	insertEvent := func(hash string, timestamp int64, input, output int64) {
+		t.Helper()
+		_, err := db.Exec(`insert into usage_events(
+			event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+			resolved_model, auth_index, source, auth_file_snapshot,
+			auth_provider_snapshot, input_tokens, output_tokens, total_tokens,
+			failed, created_at_ms
+		) values (?, ?, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+			'gpt-test', 'gpt-test', 'idx-bootstrap', 'bootstrap.json', 'bootstrap.json',
+			'codex', ?, ?, ?, 0, ?)`,
+			hash, timestamp, input, output, input+output, timestamp)
+		if err != nil {
+			t.Fatalf("seed usage event %s: %v", hash, err)
+		}
+	}
+	insertEvent("evt-bootstrap-1", 100, 10, 2)
+	if _, err := st.CatchUpAccountHistoryRollups(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("seed primary account history: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("seed primary pricing: %v", err)
+	}
+	// Simulate an already-archived/deleted first fact. The verified primary
+	// rollups and their watermarks are the only safe baseline for a fresh
+	// separate database in this sparse source.
+	if _, err := db.Exec(`delete from usage_events where id = 1`); err != nil {
+		t.Fatalf("remove archived raw event: %v", err)
+	}
+	insertEvent("evt-bootstrap-2", 200, 20, 4)
+	derivedPath := filepath.Join(t.TempDir(), "usage-derived.sqlite")
+	if err := st.ConfigureDerivedStorage(context.Background(), config.Config{
+		DBPath:                 primaryPath,
+		DerivedDBPath:          derivedPath,
+		DerivedStorageMode:     config.DerivedStorageSeparate,
+		DerivedSourceBatchSize: 10,
+		DerivedCycleMaxBatches: 4,
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	if _, err := st.RunSeparateDerivedCycle(context.Background()); err != nil {
+		t.Fatalf("run separate derived cycle from verified baseline: %v", err)
+	}
+	key := AccountHistoryKey("", "", "bootstrap.json", "idx-bootstrap")
+	snapshot, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{key})
+	if err != nil {
+		t.Fatalf("load bootstrapped snapshot: %v", err)
+	}
+	if !snapshot.Available || len(snapshot.CoreRows) != 1 || snapshot.CoreRows[0].Calls != 2 {
+		t.Fatalf("bootstrapped account history = %#v", snapshot.CoreRows)
+	}
+	if len(snapshot.Rows) != 1 || snapshot.Rows[0].Calls != 2 {
+		t.Fatalf("bootstrapped pricing rows = %#v", snapshot.Rows)
 	}
 }
 
@@ -371,7 +548,7 @@ func TestSeparateDerivedRuntimeMarksSnapshotStaleWhenArchiveGenerationChanges(t 
 	}
 }
 
-func TestSeparateDerivedRuntimeFallsBackToVerifiedPrimaryRowsWhileWarming(t *testing.T) {
+func TestSeparateDerivedRuntimeBootstrapsVerifiedPrimaryRowsWhileWarming(t *testing.T) {
 	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
 	db, err := sqliterepo.Open(primaryPath)
 	if err != nil {
@@ -414,8 +591,62 @@ func TestSeparateDerivedRuntimeFallsBackToVerifiedPrimaryRowsWhileWarming(t *tes
 	if len(snapshot.Rows) == 0 || len(snapshot.CoreRows) == 0 {
 		t.Fatalf("warming snapshot did not preserve primary values: %#v", snapshot)
 	}
-	if snapshot.Available {
-		t.Fatal("warming separate snapshot reported fresh availability")
+	if !snapshot.Available {
+		t.Fatal("verified primary rows were not bootstrapped into an available separate snapshot")
+	}
+}
+
+func TestSeparateDerivedWarmupFallbackDoesNotWaitForPrimaryWriter(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := db.Exec(`insert into usage_events(
+		event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+		resolved_model, auth_index, source, auth_file_snapshot,
+		auth_provider_snapshot, input_tokens, output_tokens, total_tokens,
+		failed, created_at_ms
+	) values ('evt-warm-lock', 100, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+		'gpt-test', 'gpt-test', 'idx-lock', 'credential-lock.json', 'credential-lock.json',
+		'codex', 10, 2, 12, 0, 100)`); err != nil {
+		t.Fatalf("seed usage event: %v", err)
+	}
+	if _, err := st.CatchUpAccountHistoryRollups(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("build primary account history: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("build primary pricing: %v", err)
+	}
+	cfg := config.Config{
+		DBPath:                 primaryPath,
+		DerivedDBPath:          filepath.Join(t.TempDir(), "usage-derived.sqlite"),
+		DerivedStorageMode:     config.DerivedStorageSeparate,
+		DerivedSourceBatchSize: 10,
+		DerivedCycleMaxBatches: 4,
+	}
+	if err := st.ConfigureDerivedStorage(context.Background(), cfg); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	writer, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin primary writer: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Rollback() })
+	if _, err := writer.Exec(`insert or replace into settings(key, value, updated_at_ms) values ('derived-test-lock', '1', 1)`); err != nil {
+		t.Fatalf("hold primary writer: %v", err)
+	}
+	key := AccountHistoryKey("", "", "credential-lock.json", "idx-lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+	snapshot, err := st.LoadUsagePricingAccountSnapshot(ctx, []string{key})
+	if err != nil {
+		t.Fatalf("load warm snapshot under primary writer: %v", err)
+	}
+	if len(snapshot.CoreRows) == 0 || len(snapshot.Rows) == 0 {
+		t.Fatalf("warm snapshot lost known rows under primary writer: %#v", snapshot)
 	}
 }
 

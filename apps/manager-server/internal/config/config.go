@@ -185,6 +185,13 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		return Config{}, err
 	}
 	derivedDBPathFallback := filepath.Join(dataDir, "usage-derived.sqlite")
+	// Keep the disposable database beside an explicitly configured primary DB
+	// when the data directory itself was not explicitly selected. Otherwise a
+	// custom USAGE_DB_PATH (for example on a mounted volume) would silently put
+	// usage-derived.sqlite under the unrelated default /data tree.
+	if !dataDirExplicit && (hasEnv("USAGE_DB_PATH") || strings.TrimSpace(cfgFile.DBPath) != "") {
+		derivedDBPathFallback = filepath.Join(filepath.Dir(dbPath), "usage-derived.sqlite")
+	}
 	if cfgFile.DerivedDBPath != "" {
 		derivedDBPathFallback = resolveConfigPath(cfgFile.DerivedDBPath, cfgDir)
 	}

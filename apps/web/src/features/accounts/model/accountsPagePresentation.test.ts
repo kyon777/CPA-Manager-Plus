@@ -98,6 +98,26 @@ describe('accountsPagePresentation', () => {
     expect(title).not.toContain('1000.2M');
   });
 
+  it('keeps a verified amount visible while the history tail is pending', () => {
+    const item = {
+      matched: true,
+      total_requests: 41,
+      total_tokens: 5_200_000,
+      total_cost: 1.81,
+      success_rate: 0.902,
+      sync_status: 'pending',
+    } as MonitoringAccountHistoryItem;
+    const t = ((key: string, options?: Record<string, unknown>) =>
+      `${key}:${options?.requests ?? ''}:${options?.tokens ?? ''}:${options?.cost ?? ''}:${options?.rate ?? ''}`) as TFunction;
+
+    const title = getAccountHistoryTitle(t, item, false, '', 'en-US');
+
+    expect(title).toContain('41');
+    expect(title).toContain('5,200,000');
+    expect(title).toContain('$1.81');
+    expect(title).toContain('90.20%');
+  });
+
   it('formats detail timestamps with optional seconds using a numeric local format', () => {
     const timestamp = new Date(2026, 7, 26, 17, 44, 5, 0).getTime();
 

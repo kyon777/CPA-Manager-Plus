@@ -133,6 +133,14 @@ func (r *Reader) loadRows(ctx context.Context, filter store.AnalyticsFilter, das
 	if !r.enabled {
 		return Snapshot{}, false
 	}
+	// A separate-derived runtime deliberately never trusts the legacy primary
+	// hourly tables. Those tables stop receiving writes in this mode, so reading
+	// them would make a dashboard look fresh while it silently becomes stale.
+	// The caller falls back to bounded/raw read-only queries until the isolated
+	// hourly materialization is wired in a later stream.
+	if r.store != nil && r.store.SeparateDerivedEnabled() {
+		return Snapshot{}, false
+	}
 	if filter.FromMS >= filter.ToMS {
 		return Snapshot{
 			ModelStats: []store.ModelStat{},

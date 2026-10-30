@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/datamigration"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
@@ -188,6 +189,9 @@ type MaintenanceCounts struct {
 
 type Repository struct {
 	db *sql.DB
+
+	guardMu              sync.RWMutex
+	derivedCoverageGuard DerivedCoverageGuard
 }
 
 func New(db *sql.DB) *Repository {
@@ -665,6 +669,13 @@ func (r *Repository) BeginVerification(ctx context.Context, runID string, nowMS 
 }
 
 func (r *Repository) BeginDelete(ctx context.Context, runID string, nowMS int64) (Run, error) {
+	run, err := r.Run(ctx, runID)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := r.validateDerivedCoverage(ctx, run); err != nil {
+		return Run{}, err
+	}
 	return r.beginStage(ctx, runID, StatusDeleting, []string{StatusVerified, StatusDeleting}, nowMS)
 }
 
@@ -1240,6 +1251,15 @@ func (r *Repository) DeleteBatch(ctx context.Context, runID string, limit int, n
 	if err := validateRunContract(run); err != nil {
 		return DeleteBatchResult{}, err
 	}
+	// Re-check the process-local independent-derived guard for every delete
+	// batch, not only when the run first enters StatusDeleting.  The guard owns
+	// a separate SQLite connection, so it cannot participate in this primary
+	// transaction; the immediate pre-delete check nevertheless closes the
+	// dangerous window where the derived database is removed or loses coverage
+	// between batches of an already-started archive cleanup.
+	if err := r.validateDerivedCoverage(ctx, run); err != nil {
+		return DeleteBatchResult{}, err
+	}
 	aggregateState, err := validateCurrentDeleteReadiness(ctx, tx, run)
 	if err != nil {
 		return DeleteBatchResult{}, err
@@ -1347,6 +1367,14 @@ func (r *Repository) DeleteBatch(ctx context.Context, runID string, limit int, n
 				len(candidates),
 			)
 		}
+	}
+	// The independent guard is deliberately checked again after the primary
+	// projection handoff and immediately before irreversible deletes. This is
+	// not a cross-database transaction, but it prevents a long repair/query
+	// phase from turning an earlier healthy check into an unbounded delete
+	// window. A later batch performs the same check again.
+	if err := r.validateDerivedCoverage(ctx, run); err != nil {
+		return DeleteBatchResult{}, err
 	}
 	type dailyDeleted struct{ count, minMS, maxMS int64 }
 	daily := make(map[int64]dailyDeleted)

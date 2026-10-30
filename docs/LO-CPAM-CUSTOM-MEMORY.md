@@ -936,5 +936,17 @@ LO 已确认 CPAM 采用“主事实库 + 独立派生库”方案，后续实�
 - `USAGE_DERIVED_STORAGE_MODE=primary|separate` 默认为 `primary` 兼容旧版；`separate` 模式下绝不启动旧的主库派生 Worker/maintenance。`USAGE_BACKGROUND_DERIVATIONS_ENABLED` 只控制 Worker 是否运行，关闭后仍可读取最后已验证的独立派生快照。
 - 读路径合并派生库已验证 coverage 与主库水位线后的短尾部；price revision/generation/source epoch/archive proof 不一致时必须标记 stale/pending 或 fail-closed，不能用旧金额冒充 fresh，也不能清零已知金额。
 - 归档删除前必须验证独立派生库覆盖待删 raw event 范围；覆盖不足、独立库损坏或 epoch 不匹配时拒绝删除原始数据。
+
+当前实现边界（必须如实保留）：
+
+- 独立 Worker 已实际接管 `account-history` 和 `pricing` 两条流，包括水位线、价格 revision/generation、归档 source 合并与当前页有界 tail。
+- `dashboard-hourly` 和 `monitoring-*` 的独立 schema 已预留，但本版未将旧的统计转换逻辑写入新库；`separate` 模式下这些读取会有界回退到原始事件查询，不会读旧主库派生表冒充新数据。
+- 因此归档清理在所有必要 stream 完成覆盖前会 fail-closed；不能为了释放磁盘空间跳过这个保护。
+- 可见页尾读超过 50,000 事件间隔时不同步扫描整张历史，保留最后已验证快照并显示 pending/stale，由后台 Worker 追赶。
+- 首次创建独立库时，只在独立库导入主库中已验证且结构版本匹配的 legacy history/pricing 物化行作为安全起点；不复制原始事件或控制表。
+- 独立库打开、schema 校验或 legacy bootstrap 失败时，CPAM 不偷偷回退到主库派生写入；服务进入 separate/degraded 状态，原始采集、计费事实与控制面继续运行，派生读与归档删除保持 pending/fail-closed。
+- `CatchUpAccountHistoryRollups` 在 separate runtime 不可用时必须显式返回 `Pending=true`，不得用零水位把 degraded 状态伪装成已追平；归档删除 guard 在进入删除阶段、每个批次开始和原始删除前再次校验，尽量缩小跨库检查与不可逆删除之间的窗口。
+- `usage-derived.sqlite` 是独立部署产物，快照/回滚时必须与其 `-wal`/`-shm` 一起单独备份并保留路径配置；恢复 `usage.sqlite` 时不得把旧/损坏的派生文件误当成同一 source epoch，必要时删除派生库让 CPAM 重新 bootstrap，但绝不覆盖主库或 `data.key`。
+
 - 所有 CPAM 更新、构建和部署仍只改 CPAM；服务器只重启 `cpam.service`，绝不触碰 CPA Core、`cli-proxy-api`、`/home/cpa` 或 `cpa.service`。部署前后核对 CPA Core 身份、主库、`data.key`、secrets、OpenResty 和证书配置。
 - 实施顺序固定为：配置/只读源边界 → 独立 schema → 有界 source/sink → 双库 engine → Store 读路径 → 归档 guard → Worker/status → 前端金额显示 → 本地验证 → 服务器 staged（先 paused，再 enabled）部署。失败时可切回 `primary + USAGE_BACKGROUND_DERIVATIONS_ENABLED=false`，不恢复或覆盖主库。

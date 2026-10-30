@@ -603,13 +603,56 @@ func TestServerCompatStatusIncludesSanitizedDerivedMaintenanceState(t *testing.T
 	testutil.RequireStatus(t, boundedRR, http.StatusOK)
 	var boundedPayload map[string]json.RawMessage
 	testutil.DecodeJSON(t, boundedRR, &boundedPayload)
-	if len(boundedPayload) != 1 || boundedPayload["databaseMaintenance"] == nil {
+	if len(boundedPayload) != 2 || boundedPayload["databaseMaintenance"] == nil || boundedPayload["derivedStorage"] == nil {
 		t.Fatalf("bounded maintenance payload = %s", boundedRR.Body.String())
+	}
+	var primaryDerivedStorage struct {
+		Mode    string `json:"mode"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(boundedPayload["derivedStorage"], &primaryDerivedStorage); err != nil {
+		t.Fatalf("decode primary derived-storage status: %v", err)
+	}
+	if primaryDerivedStorage.Mode != "primary" || primaryDerivedStorage.Enabled {
+		t.Fatalf("primary derived-storage status = %#v", primaryDerivedStorage)
 	}
 	for _, forbidden := range []string{"dbPath", "events", "deadLetters", "dataMigration", "database"} {
 		if _, found := boundedPayload[forbidden]; found {
 			t.Fatalf("bounded maintenance payload includes %q: %s", forbidden, boundedRR.Body.String())
 		}
+	}
+}
+
+func TestServerCompatStatusExposesSanitizedSeparateDerivedStatus(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	cfg.DerivedStorageMode = config.DerivedStorageSeparate
+	cfg.DerivedDBPath = filepath.Join(t.TempDir(), "usage-derived.sqlite")
+	if cfg.DBPath == "" {
+		cfg.DBPath = filepath.Join(t.TempDir(), "usage.sqlite")
+	}
+	db := testutil.NewStore(t, cfg)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.ConfigureDerivedStorage(context.Background(), cfg); err != nil {
+		t.Fatalf("configure separate derived store: %v", err)
+	}
+	server := New(cfg, db, collector.NewManager(cfg, db))
+	rr := testutil.Request(t, server.Handler(), http.MethodGet, "/status?scope=database-maintenance", "", testutil.AdminKey)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	var payload struct {
+		DerivedStorage struct {
+			Mode    string `json:"mode"`
+			Enabled bool   `json:"enabled"`
+			Streams []struct {
+				Name string `json:"name"`
+			} `json:"streams"`
+		} `json:"derivedStorage"`
+	}
+	testutil.DecodeJSON(t, rr, &payload)
+	if payload.DerivedStorage.Mode != "separate" || !payload.DerivedStorage.Enabled {
+		t.Fatalf("derived storage status = %#v", payload.DerivedStorage)
+	}
+	if strings.Contains(rr.Body.String(), cfg.DerivedDBPath) || strings.Contains(rr.Body.String(), cfg.DBPath) {
+		t.Fatalf("derived storage status leaked a database path: %s", rr.Body.String())
 	}
 }
 

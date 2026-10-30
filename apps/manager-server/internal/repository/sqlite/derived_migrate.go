@@ -63,6 +63,7 @@ func MigrateDerived(db *sql.DB) error {
 			stream_name text not null,
 			generation text not null,
 			row_key text not null,
+			subject_key text not null default '',
 			payload_json text not null,
 			first_event_id integer not null default 0,
 			last_event_id integer not null default 0,
@@ -169,5 +170,64 @@ func MigrateDerived(db *sql.DB) error {
 			return fmt.Errorf("migrate derived SQLite schema: %w", err)
 		}
 	}
+	// Derived storage is disposable, but keep upgrades of an already-created
+	// candidate database forward-compatible when a new materialization column
+	// is added between restarts.
+	if err := ensureDerivedMaterializedSubjectKey(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`create index if not exists idx_derived_materialized_rows_subject
+		on derived_materialized_rows(stream_name, generation, subject_key, row_key)`); err != nil {
+		return fmt.Errorf("create derived materialization subject index: %w", err)
+	}
 	return nil
+}
+
+func ensureDerivedMaterializedSubjectKey(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(derived_materialized_rows)`)
+	if err != nil {
+		return fmt.Errorf("inspect derived materialization schema: %w", err)
+	}
+	defer rows.Close()
+	seen := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "subject_key" {
+			seen = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if seen {
+		// Older candidate databases may have the column but no subject key
+		// values. Recover the opaque key from the already-redacted payload so a
+		// restart does not make previously materialized rows invisible to the
+		// visible-page lookup.
+		if _, err := db.Exec(`update derived_materialized_rows
+			set subject_key = json_extract(payload_json, '$.accountKey')
+			where subject_key = '' and json_valid(payload_json)
+			and coalesce(json_extract(payload_json, '$.accountKey'), '') <> ''`); err != nil {
+			return fmt.Errorf("backfill derived materialization subject key: %w", err)
+		}
+		return nil
+	}
+	if _, err := db.Exec(`alter table derived_materialized_rows add column subject_key text not null default ''`); err != nil {
+		return fmt.Errorf("add derived materialization subject key: %w", err)
+	}
+	if _, err := db.Exec(`update derived_materialized_rows
+		set subject_key = json_extract(payload_json, '$.accountKey')
+		where subject_key = '' and json_valid(payload_json)
+		and coalesce(json_extract(payload_json, '$.accountKey'), '') <> ''`); err != nil {
+		return fmt.Errorf("backfill derived materialization subject key: %w", err)
+	}
+	_, err = db.Exec(`create index if not exists idx_derived_materialized_rows_subject
+		on derived_materialized_rows(stream_name, generation, subject_key, row_key)`)
+	return err
 }

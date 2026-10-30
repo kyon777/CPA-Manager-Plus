@@ -8,6 +8,10 @@
 
 **Tech Stack:** Go 1.24、`database/sql`、`modernc.org/sqlite`、现有 CPAM `store`/repository/worker 架构、React/TypeScript 管理端、Docker 本地 CPAM、服务器原生 `cpam.service`。
 
+## 当前执行状态（2026-10-30）
+
+本计划已经在隔离 worktree 中完成第一阶段实现与本地验证，但尚未部署到本地运行容器或服务器。已落地：配置与只读 source 边界、独立 schema、bounded source/sink、account-history/pricing 双流 engine、Store 读路径、独立 worker/status、归档删除的 fail-closed guard、当前页金额的非阻塞呈现，以及 degraded/pending 和每批删除前的安全复核。仍明确未完成：dashboard-hourly/monitoring 流接入独立 engine、在所有流覆盖前放行归档删除、双端 staged 部署与服务器验收；因此当前候选不能宣称“全量派生和归档清理已完成”。
+
 ---
 
 ## 不可变边界

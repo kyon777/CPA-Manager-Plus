@@ -80,6 +80,7 @@ type Source interface {
 	Identity(context.Context) (SourceIdentity, error)
 	Snapshot(context.Context) (SourceSnapshot, error)
 	EventsAfter(context.Context, int64, int64, int) ([]EventRecord, error)
+	EventsForSubjectsAfter(context.Context, []string, int64, int64, int) ([]EventRecord, error)
 	ArchivedEventsAfter(context.Context, int64, int64, int) ([]EventRecord, error)
 	PricingRevision(context.Context) (string, error)
 	ModelPrices(context.Context) (map[string]model.ModelPrice, error)
@@ -100,9 +101,12 @@ type StreamState struct {
 }
 
 type MaterializedRow struct {
-	Stream       Stream
-	Generation   string
-	Key          string
+	Stream     Stream
+	Generation string
+	Key        string
+	// SubjectKey is the opaque account identity used to fetch only the visible
+	// page's projections. It is never a file name, proxy URL, token, or email.
+	SubjectKey   string
 	PayloadJSON  string
 	FirstEventID int64
 	LastEventID  int64
@@ -166,6 +170,8 @@ type Status struct {
 type Sink interface {
 	State(context.Context, Stream) (StreamState, error)
 	Rows(context.Context, Stream, string) ([]MaterializedRow, error)
+	RowsByKeys(context.Context, Stream, string, []string) ([]MaterializedRow, error)
+	RowsForSubjects(context.Context, Stream, string, []string) ([]MaterializedRow, error)
 	Apply(context.Context, ApplyBatch) (StreamState, error)
 	Status(context.Context) (Status, error)
 }

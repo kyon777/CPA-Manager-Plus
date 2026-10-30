@@ -52,3 +52,22 @@ func TestLoadRejectsUnknownDerivedStorageMode(t *testing.T) {
 		t.Fatalf("LoadWithoutCreatingDefault() error = %v, want invalid mode rejection", err)
 	}
 }
+
+func TestLoadSeparateDerivedFollowsExplicitPrimaryDirectory(t *testing.T) {
+	clearConfigEnv(t)
+	dir := t.TempDir()
+	primaryDir := filepath.Join(dir, "mounted-state")
+	primaryPath := filepath.Join(primaryDir, "usage.sqlite")
+	t.Setenv(configEnvKey, filepath.Join(dir, "missing-config.json"))
+	t.Setenv("USAGE_DERIVED_STORAGE_MODE", "separate")
+	t.Setenv("USAGE_DB_PATH", primaryPath)
+
+	cfg, err := LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("LoadWithoutCreatingDefault() error = %v", err)
+	}
+	want := filepath.Join(primaryDir, "usage-derived.sqlite")
+	if cfg.DerivedDBPath != want {
+		t.Fatalf("DerivedDBPath = %q, want %q", cfg.DerivedDBPath, want)
+	}
+}

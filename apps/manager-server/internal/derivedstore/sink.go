@@ -33,7 +33,7 @@ func (s *sqlSink) Rows(ctx context.Context, stream Stream, generation string) ([
 		return []MaterializedRow{}, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `select stream_name, generation, row_key,
-		payload_json, first_event_id, last_event_id, updated_at_ms
+		subject_key, payload_json, first_event_id, last_event_id, updated_at_ms
 		from derived_materialized_rows where stream_name = ? and generation = ?
 		order by row_key`, string(stream), generation)
 	if err != nil {
@@ -44,7 +44,7 @@ func (s *sqlSink) Rows(ctx context.Context, stream Stream, generation string) ([
 	for rows.Next() {
 		var row MaterializedRow
 		var streamName string
-		if err := rows.Scan(&streamName, &row.Generation, &row.Key, &row.PayloadJSON,
+		if err := rows.Scan(&streamName, &row.Generation, &row.Key, &row.SubjectKey, &row.PayloadJSON,
 			&row.FirstEventID, &row.LastEventID, &row.UpdatedAtMS); err != nil {
 			return nil, err
 		}
@@ -55,6 +55,90 @@ func (s *sqlSink) Rows(ctx context.Context, stream Stream, generation string) ([
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *sqlSink) RowsByKeys(ctx context.Context, stream Stream, generation string, keys []string) ([]MaterializedRow, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("derived sink is unavailable")
+	}
+	keys = nonEmptyStrings(keys)
+	if len(keys) == 0 {
+		return []MaterializedRow{}, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(keys)), ",")
+	args := make([]any, 0, len(keys)+2)
+	args = append(args, string(stream), generation)
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	rows, err := s.db.QueryContext(ctx, `select stream_name, generation, row_key,
+		subject_key, payload_json, first_event_id, last_event_id, updated_at_ms
+		from derived_materialized_rows where stream_name = ? and generation = ?
+		and row_key in (`+placeholders+`) order by row_key`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanMaterializedRows(rows)
+}
+
+func (s *sqlSink) RowsForSubjects(ctx context.Context, stream Stream, generation string, subjects []string) ([]MaterializedRow, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("derived sink is unavailable")
+	}
+	subjects = nonEmptyStrings(subjects)
+	if len(subjects) == 0 {
+		return []MaterializedRow{}, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(subjects)), ",")
+	args := make([]any, 0, len(subjects)+2)
+	args = append(args, string(stream), generation)
+	for _, subject := range subjects {
+		args = append(args, subject)
+	}
+	rows, err := s.db.QueryContext(ctx, `select stream_name, generation, row_key,
+		subject_key, payload_json, first_event_id, last_event_id, updated_at_ms
+		from derived_materialized_rows where stream_name = ? and generation = ?
+		and subject_key in (`+placeholders+`) order by row_key`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanMaterializedRows(rows)
+}
+
+func scanMaterializedRows(rows *sql.Rows) ([]MaterializedRow, error) {
+	defer rows.Close()
+	result := make([]MaterializedRow, 0)
+	for rows.Next() {
+		var row MaterializedRow
+		var streamName string
+		if err := rows.Scan(&streamName, &row.Generation, &row.Key, &row.SubjectKey, &row.PayloadJSON,
+			&row.FirstEventID, &row.LastEventID, &row.UpdatedAtMS); err != nil {
+			return nil, err
+		}
+		row.Stream = Stream(streamName)
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func nonEmptyStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, error) {
@@ -129,16 +213,20 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 		if row.Generation == "" {
 			row.Generation = batch.Generation
 		}
+		if row.SubjectKey == "" {
+			row.SubjectKey = row.Key
+		}
 		if _, err := tx.ExecContext(ctx, `insert into derived_materialized_rows(
-			stream_name, generation, row_key, payload_json, first_event_id,
+			stream_name, generation, row_key, subject_key, payload_json, first_event_id,
 			last_event_id, updated_at_ms)
-			values (?, ?, ?, ?, ?, ?, ?)
+			values (?, ?, ?, ?, ?, ?, ?, ?)
 			on conflict(stream_name, generation, row_key) do update set
+			subject_key=excluded.subject_key,
 			payload_json=excluded.payload_json,
 			first_event_id=min(derived_materialized_rows.first_event_id, excluded.first_event_id),
 			last_event_id=max(derived_materialized_rows.last_event_id, excluded.last_event_id),
 			updated_at_ms=excluded.updated_at_ms`,
-			string(row.Stream), row.Generation, row.Key, row.PayloadJSON,
+			string(row.Stream), row.Generation, row.Key, row.SubjectKey, row.PayloadJSON,
 			row.FirstEventID, row.LastEventID, now); err != nil {
 			return StreamState{}, fmt.Errorf("write derived materialization %s: %w", row.Key, err)
 		}

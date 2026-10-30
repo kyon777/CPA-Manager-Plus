@@ -133,7 +133,13 @@ export const getAccountHistoryTitle = (
   if (error) return t('accounts.history_unavailable');
   if (loading && !item) return t('accounts.history_loading');
   if (!item || !item.matched) return t('accounts.history_empty');
-  if (item.sync_status === 'pending') return t('accounts.history_pending_title');
+  // A separate derived worker may still be catching up while the backend has
+  // already supplied a verified amount. Keep the full metrics visible in that
+  // case; only an actually empty amount should collapse to the old pending
+  // placeholder.
+  if (item.sync_status === 'pending' && item.total_cost === null) {
+    return t('accounts.history_pending_title');
+  }
   return t('accounts.history_title', {
     requests: formatHistoryNumber(item.total_requests, locale),
     tokens: formatHistoryNumber(item.total_tokens, locale),

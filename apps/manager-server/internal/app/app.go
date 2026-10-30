@@ -47,6 +47,10 @@ func New(ctx context.Context, cfg config.Config, options Options) (*Context, err
 	if err != nil {
 		return nil, err
 	}
+	if err := st.ConfigureDerivedStorage(ctx, cfg); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 	bootstrapResult, err := bootstrapsvc.Run(ctx, cfg, st, dataKeyCreated)
 	if err != nil {
 		_ = st.Close()

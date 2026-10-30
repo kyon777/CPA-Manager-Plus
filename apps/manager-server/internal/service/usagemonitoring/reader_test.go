@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -126,5 +127,28 @@ func TestAccountWindowStatsReturnsCancellationWithoutFallback(t *testing.T) {
 	}
 	if available || rows != nil {
 		t.Fatalf("account window projection rows = %#v available=%v", rows, available)
+	}
+}
+
+func TestSeparateDerivedModeDoesNotServeLegacyMonitoringProjection(t *testing.T) {
+	ctx := context.Background()
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	sqlDB, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db := store.New(sqlDB)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.ConfigureDerivedStorage(ctx, config.Config{
+		DBPath:                 primaryPath,
+		DerivedDBPath:          filepath.Join(t.TempDir(), "usage-derived.sqlite"),
+		DerivedStorageMode:     config.DerivedStorageSeparate,
+		DerivedSourceBatchSize: 10,
+		DerivedCycleMaxBatches: 2,
+	}); err != nil {
+		t.Fatalf("configure separate storage: %v", err)
+	}
+	if rows, available := New(db).AccountStats(ctx, store.AnalyticsFilter{}); available || rows != nil {
+		t.Fatalf("legacy monitoring projection was served in separate mode: rows=%#v available=%v", rows, available)
 	}
 }

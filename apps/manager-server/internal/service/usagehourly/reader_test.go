@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -105,6 +106,34 @@ func TestReaderMatchesRawCoreAndTimelines(t *testing.T) {
 	}
 	if _, ok := reader.AnalyticsTimeline(ctx, modelOnly, "day", time.UTC); ok {
 		t.Fatal("model-only projection unexpectedly exposed analytics timeline")
+	}
+}
+
+func TestReaderDoesNotServePrimaryHourlyRollupInSeparateDerivedMode(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := store.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	fromMS := int64(1_800_000_000_000)
+	toMS := fromMS + 3*hourMS
+	if _, err := db.InsertEvents(ctx, []usage.Event{
+		readerEvent("separate-hourly-rollup", fromMS+10*60*1000, "model-a", false, 10, 2, nil),
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	catchUpReaderRollup(t, ctx, db)
+	if err := db.ConfigureDerivedStorage(ctx, config.Config{
+		DBPath:             primaryPath,
+		DerivedStorageMode: config.DerivedStorageSeparate,
+		DerivedDBPath:      filepath.Join(t.TempDir(), "usage-derived.sqlite"),
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	if _, ok := New(db, true).Load(ctx, fromMS, toMS); ok {
+		t.Fatal("separate mode served the legacy primary hourly rollup")
 	}
 }
 
