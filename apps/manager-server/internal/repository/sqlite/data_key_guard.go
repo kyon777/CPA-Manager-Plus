@@ -158,6 +158,10 @@ func readOnlyDataSourceName(databasePath string) (string, error) {
 		return "", err
 	}
 	query := parsed.Query()
+	// dataSourceName configures primary writers with BEGIN IMMEDIATE. A
+	// separate-derived source must never inherit that lock policy: its bounded
+	// snapshots need to coexist with the collector's writer transaction.
+	query.Del("_txlock")
 	query.Set("mode", "ro")
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", derivedReadOnlyBusyTimeoutMS))
 	query.Add("_pragma", "query_only(1)")

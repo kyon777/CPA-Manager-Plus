@@ -1,10 +1,31 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
+	"net/url"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestReadOnlySourceDSNOmitsImmediateTransactionLock(t *testing.T) {
+	dsn, err := readOnlyDataSourceName(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("build read-only source DSN: %v", err)
+	}
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse read-only source DSN: %v", err)
+	}
+	query := parsed.Query()
+	if got := query.Get("_txlock"); got != "" {
+		t.Fatalf("read-only source transaction lock = %q, want unset", got)
+	}
+	if got := query.Get("mode"); got != "ro" {
+		t.Fatalf("read-only source mode = %q, want ro", got)
+	}
+}
 
 func TestOpenReadOnlySourceRejectsWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
@@ -68,6 +89,46 @@ func TestOpenReadOnlySourceRejectsMissingDatabase(t *testing.T) {
 	_, err := OpenReadOnly(filepath.Join(t.TempDir(), "missing.sqlite"))
 	if err == nil {
 		t.Fatalf("missing database error = %v", err)
+	}
+}
+
+func TestOpenReadOnlySourceCanBeginReadTransactionWhilePrimaryWriterIsOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	primary, err := Open(path)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	t.Cleanup(func() { _ = primary.Close() })
+	if _, err := primary.Exec(`insert into settings(key, value, updated_at_ms) values ('fixture', 'before', 1)`); err != nil {
+		t.Fatalf("seed primary: %v", err)
+	}
+	holdingWrite, err := primary.Begin()
+	if err != nil {
+		t.Fatalf("begin holding primary writer: %v", err)
+	}
+	t.Cleanup(func() { _ = holdingWrite.Rollback() })
+	if _, err := holdingWrite.Exec(`update settings set value = 'after' where key = 'fixture'`); err != nil {
+		t.Fatalf("hold primary writer: %v", err)
+	}
+
+	readOnly, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("open read-only source: %v", err)
+	}
+	t.Cleanup(func() { _ = readOnly.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	readTx, err := readOnly.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin read-only source transaction behind primary writer: %v", err)
+	}
+	defer readTx.Rollback()
+	var value string
+	if err := readTx.QueryRowContext(ctx, `select value from settings where key = 'fixture'`).Scan(&value); err != nil {
+		t.Fatalf("read source behind primary writer: %v", err)
+	}
+	if value != "before" {
+		t.Fatalf("read source value = %q, want committed snapshot", value)
 	}
 }
 
