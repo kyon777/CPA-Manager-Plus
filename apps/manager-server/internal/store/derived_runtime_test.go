@@ -2,10 +2,15 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/derivedstore"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 )
 
@@ -156,6 +161,94 @@ func TestSeparateDerivedRuntimeMergesVisibleAccountTailBeforeDerivedCatchUp(t *t
 	}
 	if len(snapshot.Rows) != 1 || snapshot.Rows[0].Calls != 2 || snapshot.Rows[0].TotalTokens != 24 {
 		t.Fatalf("pricing rows did not include visible account tail: %#v", snapshot.Rows)
+	}
+}
+
+func TestSeparateDerivedRuntimeBoundsVisibleTailDuringLargeBacklog(t *testing.T) {
+	template := derivedstore.EventRecord{
+		Provider: "codex", AuthIndex: "idx-1", Source: "credential.json",
+		AuthFileSnapshot: "credential.json", AuthProviderSnapshot: "codex",
+		Model: "gpt-test", RequestedModel: "gpt-test", ResolvedModel: "gpt-test",
+		InputTokens: 10, OutputTokens: 2, TotalTokens: 12,
+	}
+	accountKey := derivedstore.AccountKeyForEvent(template)
+	tail := make([]derivedstore.EventRecord, visibleAccountTailLimit+1)
+	for index := range tail {
+		event := template
+		event.ID = 101 + int64(index)
+		event.EventHash = fmt.Sprintf("tail-event-%d", event.ID)
+		tail[index] = event
+	}
+	snapshot := derivedstore.SourceSnapshot{
+		Identity:        derivedstore.SourceIdentity{Epoch: "source-epoch"},
+		TargetEventID:   tail[len(tail)-1].ID,
+		PricingRevision: "price-revision",
+	}
+	base := derivedstore.AccountAggregate{
+		AccountKey: accountKey, Model: "gpt-test", BillingModel: "gpt-test",
+		PricingModel: "gpt-test", Calls: 1, SuccessCalls: 1, TotalTokens: 12,
+	}
+	payload, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal aggregate: %v", err)
+	}
+	states := map[derivedstore.Stream]derivedstore.StreamState{
+		derivedstore.StreamAccountHistory: {
+			Stream: derivedstore.StreamAccountHistory, SourceEpoch: snapshot.Identity.Epoch,
+			Generation: derivedstore.GenerationFor(derivedstore.StreamAccountHistory, snapshot),
+			Status:     "ready", CoverageEventID: 100, TargetEventID: 100,
+		},
+		derivedstore.StreamPricing: {
+			Stream: derivedstore.StreamPricing, SourceEpoch: snapshot.Identity.Epoch,
+			Generation: derivedstore.GenerationFor(derivedstore.StreamPricing, snapshot),
+			Status:     "ready", CoverageEventID: 100, TargetEventID: 100,
+			PricingRevision: snapshot.PricingRevision,
+		},
+	}
+	source := &runtimeTailCountingSource{
+		snapshot: snapshot,
+		tail:     tail,
+	}
+	runtime := &separateDerivedRuntime{
+		source: source,
+		sink: runtimeStaticSink{
+			subjectKey: accountKey,
+			states:     states,
+			rows: map[derivedstore.Stream][]derivedstore.MaterializedRow{
+				derivedstore.StreamAccountHistory: {{
+					Stream:     derivedstore.StreamAccountHistory,
+					Generation: states[derivedstore.StreamAccountHistory].Generation,
+					Key:        "history-row", SubjectKey: accountKey, PayloadJSON: string(payload),
+				}},
+				derivedstore.StreamPricing: {{
+					Stream:     derivedstore.StreamPricing,
+					Generation: states[derivedstore.StreamPricing].Generation,
+					Key:        "pricing-row", SubjectKey: accountKey, PayloadJSON: string(payload),
+				}},
+			},
+		},
+	}
+
+	result, ready, err := runtime.loadAccountSnapshot(context.Background(), []string{accountKey}, map[string]ModelPrice{})
+	if err != nil {
+		t.Fatalf("load account snapshot: %v", err)
+	}
+	if ready || result.Available {
+		t.Fatal("large source backlog unexpectedly reported a fully caught-up snapshot")
+	}
+	if source.subjectTailCalls != 2 {
+		t.Fatalf("large source backlog queried visible tail %d times; want one bounded query per stream", source.subjectTailCalls)
+	}
+	if len(source.subjectTailLimits) != 2 {
+		t.Fatalf("large source backlog recorded %d tail limits; want one per stream", len(source.subjectTailLimits))
+	}
+	for _, limit := range source.subjectTailLimits {
+		if limit != visibleAccountTailLimit+1 {
+			t.Fatalf("visible tail limit = %d, want %d", limit, visibleAccountTailLimit+1)
+		}
+	}
+	if len(result.CoreRows) != 1 || result.CoreRows[0].Calls != 1 || len(result.Rows) != 1 || result.Rows[0].Calls != 1 {
+		t.Fatalf("large source backlog changed last verified account rows: %#v", result)
 	}
 }
 
@@ -469,4 +562,74 @@ func TestSeparateDerivedRuntimeDefersLegacyDerivedCatchUps(t *testing.T) {
 			}
 		})
 	}
+}
+
+type runtimeTailCountingSource struct {
+	snapshot          derivedstore.SourceSnapshot
+	tail              []derivedstore.EventRecord
+	subjectTailCalls  int
+	subjectTailLimits []int
+}
+
+func (s *runtimeTailCountingSource) Identity(context.Context) (derivedstore.SourceIdentity, error) {
+	return s.snapshot.Identity, nil
+}
+
+func (s *runtimeTailCountingSource) Snapshot(context.Context) (derivedstore.SourceSnapshot, error) {
+	return s.snapshot, nil
+}
+
+func (s *runtimeTailCountingSource) EventsAfter(context.Context, int64, int64, int) ([]derivedstore.EventRecord, error) {
+	return nil, errors.New("unexpected full source read")
+}
+
+func (s *runtimeTailCountingSource) EventsForSubjectsAfter(_ context.Context, _ []string, _ int64, _ int64, limit int) ([]derivedstore.EventRecord, error) {
+	s.subjectTailCalls++
+	s.subjectTailLimits = append(s.subjectTailLimits, limit)
+	return s.tail, nil
+}
+
+func (s *runtimeTailCountingSource) ArchivedEventsAfter(context.Context, int64, int64, int) ([]derivedstore.EventRecord, error) {
+	return nil, errors.New("unexpected archive source read")
+}
+
+func (s *runtimeTailCountingSource) PricingRevision(context.Context) (string, error) {
+	return s.snapshot.PricingRevision, nil
+}
+
+func (s *runtimeTailCountingSource) ModelPrices(context.Context) (map[string]model.ModelPrice, error) {
+	return map[string]model.ModelPrice{}, nil
+}
+
+type runtimeStaticSink struct {
+	states     map[derivedstore.Stream]derivedstore.StreamState
+	rows       map[derivedstore.Stream][]derivedstore.MaterializedRow
+	subjectKey string
+}
+
+func (s runtimeStaticSink) State(_ context.Context, stream derivedstore.Stream) (derivedstore.StreamState, error) {
+	return s.states[stream], nil
+}
+
+func (s runtimeStaticSink) Rows(context.Context, derivedstore.Stream, string) ([]derivedstore.MaterializedRow, error) {
+	return nil, errors.New("unexpected unbounded materialized read")
+}
+
+func (s runtimeStaticSink) RowsByKeys(context.Context, derivedstore.Stream, string, []string) ([]derivedstore.MaterializedRow, error) {
+	return nil, errors.New("unexpected key materialized read")
+}
+
+func (s runtimeStaticSink) RowsForSubjects(_ context.Context, stream derivedstore.Stream, _ string, subjects []string) ([]derivedstore.MaterializedRow, error) {
+	if len(subjects) != 1 || subjects[0] != s.subjectKey {
+		return nil, errors.New("unexpected account subjects")
+	}
+	return append([]derivedstore.MaterializedRow(nil), s.rows[stream]...), nil
+}
+
+func (s runtimeStaticSink) Apply(context.Context, derivedstore.ApplyBatch) (derivedstore.StreamState, error) {
+	return derivedstore.StreamState{}, errors.New("unexpected derived write")
+}
+
+func (s runtimeStaticSink) Status(context.Context) (derivedstore.Status, error) {
+	return derivedstore.Status{}, errors.New("unexpected derived status read")
 }
