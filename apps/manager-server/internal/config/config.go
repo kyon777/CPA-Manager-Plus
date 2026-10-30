@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -31,17 +32,41 @@ const (
 	DefaultServerErrorPriorityDemotionWorkers          = 8
 	DefaultServerErrorPriorityDemotionWakeBuffer       = 8192
 	DefaultProxyExitIPCheckURL                         = "https://api.ipify.org?format=json"
+	DefaultDerivedSourceBatchSize                      = 500
+	DefaultDerivedCycleMaxBatches                      = 2
+	DefaultDerivedYield                                = 100 * time.Millisecond
 	maxUsageArchiveRetentionDays                 int64 = math.MaxInt64 / int64(24*time.Hour)
 	minServerErrorPriorityDemotionWorkers              = 1
 	maxServerErrorPriorityDemotionWorkers              = 32
 	minServerErrorPriorityDemotionWakeBuffer           = 64
 	maxServerErrorPriorityDemotionWakeBuffer           = 32768
+	minDerivedSourceBatchSize                          = 50
+	maxDerivedSourceBatchSize                          = 5000
+	minDerivedCycleMaxBatches                          = 1
+	maxDerivedCycleMaxBatches                          = 8
+	minDerivedYieldMS                                  = 25
+	maxDerivedYieldMS                                  = 2000
+)
+
+// DerivedStorageMode determines where CPAM stores usage data that can be
+// rebuilt from the primary event source. It deliberately does not change the
+// primary usage database, which remains the source of truth for billing.
+type DerivedStorageMode string
+
+const (
+	DerivedStoragePrimary  DerivedStorageMode = "primary"
+	DerivedStorageSeparate DerivedStorageMode = "separate"
 )
 
 type Config struct {
 	HTTPAddr                              string
 	DataDir                               string
 	DBPath                                string
+	DerivedStorageMode                    DerivedStorageMode
+	DerivedDBPath                         string
+	DerivedSourceBatchSize                int
+	DerivedCycleMaxBatches                int
+	DerivedYield                          time.Duration
 	CPAUpstreamURL                        string
 	ManagementKey                         string
 	AdminKey                              string
@@ -91,6 +116,11 @@ type fileConfig struct {
 	HTTPAddr                           string   `json:"httpAddr,omitempty"`
 	DataDir                            string   `json:"dataDir,omitempty"`
 	DBPath                             string   `json:"dbPath,omitempty"`
+	DerivedStorageMode                 string   `json:"derivedStorageMode,omitempty"`
+	DerivedDBPath                      string   `json:"derivedDBPath,omitempty"`
+	DerivedSourceBatchSize             int      `json:"derivedSourceBatchSize,omitempty"`
+	DerivedCycleMaxBatches             int      `json:"derivedCycleMaxBatches,omitempty"`
+	DerivedYieldMS                     int      `json:"derivedYieldMs,omitempty"`
 	CPAUpstreamURL                     string   `json:"cpaUpstreamUrl,omitempty"`
 	ManagementKeyFile                  string   `json:"managementKeyFile,omitempty"`
 	AdminKeyFile                       string   `json:"adminKeyFile,omitempty"`
@@ -147,6 +177,23 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		dbPathFallback = resolveConfigPath(cfgFile.DBPath, cfgDir)
 	}
 	dbPath := env("USAGE_DB_PATH", dbPathFallback)
+	derivedStorageMode, err := parseDerivedStorageMode(env(
+		"USAGE_DERIVED_STORAGE_MODE",
+		stringFallback(cfgFile.DerivedStorageMode, string(DerivedStoragePrimary)),
+	))
+	if err != nil {
+		return Config{}, err
+	}
+	derivedDBPathFallback := filepath.Join(dataDir, "usage-derived.sqlite")
+	if cfgFile.DerivedDBPath != "" {
+		derivedDBPathFallback = resolveConfigPath(cfgFile.DerivedDBPath, cfgDir)
+	}
+	derivedDBPath := env("USAGE_DERIVED_DB_PATH", derivedDBPathFallback)
+	if derivedStorageMode == DerivedStorageSeparate {
+		if err := validateSeparateDerivedDBPaths(dbPath, derivedDBPath); err != nil {
+			return Config{}, err
+		}
+	}
 	usageArchiveBaseDir := dataDir
 	if !dataDirExplicit && (hasEnv("USAGE_DB_PATH") || strings.TrimSpace(cfgFile.DBPath) != "") {
 		usageArchiveBaseDir = filepath.Dir(dbPath)
@@ -180,9 +227,26 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 	}
 
 	return Config{
-		HTTPAddr:                           env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
-		DataDir:                            dataDir,
-		DBPath:                             dbPath,
+		HTTPAddr:           env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
+		DataDir:            dataDir,
+		DBPath:             dbPath,
+		DerivedStorageMode: derivedStorageMode,
+		DerivedDBPath:      derivedDBPath,
+		DerivedSourceBatchSize: clampInt(
+			envInt("USAGE_DERIVED_SOURCE_BATCH_SIZE", intFallback(cfgFile.DerivedSourceBatchSize, DefaultDerivedSourceBatchSize)),
+			minDerivedSourceBatchSize,
+			maxDerivedSourceBatchSize,
+		),
+		DerivedCycleMaxBatches: clampInt(
+			envInt("USAGE_DERIVED_CYCLE_MAX_BATCHES", intFallback(cfgFile.DerivedCycleMaxBatches, DefaultDerivedCycleMaxBatches)),
+			minDerivedCycleMaxBatches,
+			maxDerivedCycleMaxBatches,
+		),
+		DerivedYield: time.Duration(clampInt(
+			envInt("USAGE_DERIVED_YIELD_MS", intFallback(cfgFile.DerivedYieldMS, int(DefaultDerivedYield/time.Millisecond))),
+			minDerivedYieldMS,
+			maxDerivedYieldMS,
+		)) * time.Millisecond,
 		CPAUpstreamURL:                     env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
 		ManagementKey:                      readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
 		AdminKey:                           readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
@@ -334,6 +398,51 @@ func normalizeCollectorMode(value string) string {
 	default:
 		return "auto"
 	}
+}
+
+func parseDerivedStorageMode(value string) (DerivedStorageMode, error) {
+	switch DerivedStorageMode(strings.ToLower(strings.TrimSpace(value))) {
+	case "", DerivedStoragePrimary:
+		return DerivedStoragePrimary, nil
+	case DerivedStorageSeparate:
+		return DerivedStorageSeparate, nil
+	default:
+		return "", fmt.Errorf("USAGE_DERIVED_STORAGE_MODE must be one of %q or %q", DerivedStoragePrimary, DerivedStorageSeparate)
+	}
+}
+
+func validateSeparateDerivedDBPaths(primaryPath, derivedPath string) error {
+	primary, err := canonicalDatabasePath(primaryPath)
+	if err != nil {
+		return fmt.Errorf("resolve USAGE_DB_PATH: %w", err)
+	}
+	derived, err := canonicalDatabasePath(derivedPath)
+	if err != nil {
+		return fmt.Errorf("resolve USAGE_DERIVED_DB_PATH: %w", err)
+	}
+	if sameDatabasePath(primary, derived) {
+		return fmt.Errorf("USAGE_DERIVED_DB_PATH must differ from USAGE_DB_PATH")
+	}
+	return nil
+}
+
+func canonicalDatabasePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+func sameDatabasePath(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func hasEnv(key string) bool {
