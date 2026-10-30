@@ -177,6 +177,8 @@ type Store struct {
 	UsagePricing                 usagepricing.Repository
 	UsageMonitoring              usagemonitoring.Repository
 	UsageRollups                 usagerollup.Repository
+	derivedRuntime               *separateDerivedRuntime
+	derivedRuntimeMu             sync.RWMutex
 }
 
 func Open(path string, protector ...*security.Protector) (*Store, error) {
@@ -212,6 +214,7 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 }
 
 func (s *Store) Close() error {
+	s.closeSeparateDerivedRuntime()
 	if s.db == nil {
 		return nil
 	}
@@ -597,6 +600,9 @@ func (s *Store) UsageCacheAccountingMigrationReady(ctx context.Context) (bool, e
 }
 
 func (s *Store) CatchUpUsageHourlyAggregate(ctx context.Context, limit int, nowMS int64) (UsageHourlyAggregateCatchUpResult, error) {
+	if s.deferSeparateDerivedCatchUp() {
+		return UsageHourlyAggregateCatchUpResult{Pending: true}, nil
+	}
 	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
 	if err != nil {
 		return UsageHourlyAggregateCatchUpResult{}, err
@@ -640,6 +646,9 @@ func (s *Store) SQLitePageStats(ctx context.Context) (SQLitePageStats, error) {
 }
 
 func (s *Store) CatchUpUsagePricing(ctx context.Context, limit int, nowMS int64) (UsagePricingCatchUpResult, error) {
+	if result, separate, err := s.separateDerivedPricingCatchUp(ctx); separate {
+		return result, err
+	}
 	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
 	if err != nil {
 		return UsagePricingCatchUpResult{}, err
@@ -659,6 +668,9 @@ func (s *Store) RecordUsagePricingFailure(ctx context.Context, rollupErr error, 
 }
 
 func (s *Store) CatchUpUsageMonitoringStats(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	if s.deferSeparateDerivedCatchUp() {
+		return UsageMonitoringCatchUpResult{Pending: true}, nil
+	}
 	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
 	if err != nil {
 		return UsageMonitoringCatchUpResult{}, err
@@ -670,6 +682,9 @@ func (s *Store) CatchUpUsageMonitoringStats(ctx context.Context, limit int, nowM
 }
 
 func (s *Store) CatchUpUsageMonitoringProjection(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	if s.deferSeparateDerivedCatchUp() {
+		return UsageMonitoringCatchUpResult{Pending: true}, nil
+	}
 	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
 	if err != nil {
 		return UsageMonitoringCatchUpResult{}, err
@@ -681,10 +696,16 @@ func (s *Store) CatchUpUsageMonitoringProjection(ctx context.Context, limit int,
 }
 
 func (s *Store) CatchUpUsageMonitoringMetadata(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	if s.deferSeparateDerivedCatchUp() {
+		return UsageMonitoringCatchUpResult{Pending: true}, nil
+	}
 	return s.UsageMonitoring.CatchUpMetadata(ctx, limit, nowMS)
 }
 
 func (s *Store) CatchUpCodexLegacyIdentityEvidence(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	if s.deferSeparateDerivedCatchUp() {
+		return UsageMonitoringCatchUpResult{Pending: true}, nil
+	}
 	return s.UsageMonitoring.CatchUpCodexLegacyIdentityEvidence(ctx, limit, nowMS)
 }
 
@@ -819,6 +840,41 @@ func (s *Store) UsagePricingAccountRows(ctx context.Context, accountKeys []strin
 }
 
 func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys []string) (UsagePricingAccountSnapshot, error) {
+	if runtime := s.separateRuntime(); runtime != nil {
+		// Keep the separate read path on the query-only source connection. This
+		// avoids routing every visible-page refresh through the primary model
+		// price repository while the isolated worker is rebuilding.
+		prices, err := runtime.source.ModelPrices(ctx)
+		if err != nil {
+			return UsagePricingAccountSnapshot{}, err
+		}
+		snapshot, ready, err := runtime.loadAccountSnapshot(ctx, accountKeys, prices)
+		if err != nil {
+			return UsagePricingAccountSnapshot{}, err
+		}
+		if !ready {
+			// Never synchronously rebuild the primary database from an HTTP request
+			// in separate mode. The background engine will advance the watermark;
+			// the snapshot still contains the last verified rows when available.
+			runtime.engine.Wake()
+			if len(snapshot.Rows) == 0 && len(snapshot.CoreRows) == 0 {
+				// During first warm-up, serve the last read-only primary projection
+				// rather than replacing known amounts with an empty page. This path
+				// never invokes a primary catch-up/write operation and remains marked
+				// stale until the isolated database proves its own coverage.
+				fallback, fallbackErr := s.loadUsagePricingAccountSnapshotPrimary(ctx, accountKeys)
+				if fallbackErr == nil {
+					fallback.Available = false
+					return fallback, nil
+				}
+			}
+		}
+		return snapshot, nil
+	}
+	return s.loadUsagePricingAccountSnapshotPrimary(ctx, accountKeys)
+}
+
+func (s *Store) loadUsagePricingAccountSnapshotPrimary(ctx context.Context, accountKeys []string) (UsagePricingAccountSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
@@ -889,6 +945,21 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 }
 
 func (s *Store) CatchUpAccountHistoryRollups(ctx context.Context, limit int, nowMS int64) (UsageRollupCatchUpResult, error) {
+	if s.SeparateDerivedEnabled() {
+		s.WakeSeparateDerived()
+		checkpoint, err := s.AccountHistoryRollupCheckpoint(ctx)
+		if err != nil {
+			return UsageRollupCatchUpResult{}, err
+		}
+		latest, err := s.LatestUsageEventID(ctx)
+		if err != nil {
+			return UsageRollupCatchUpResult{}, err
+		}
+		return UsageRollupCatchUpResult{
+			LastEventID: checkpoint.LastEventID,
+			Pending:     latest > checkpoint.LastEventID,
+		}, nil
+	}
 	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
 	if err != nil {
 		return UsageRollupCatchUpResult{}, err
@@ -900,6 +971,9 @@ func (s *Store) CatchUpAccountHistoryRollups(ctx context.Context, limit int, now
 }
 
 func (s *Store) CatchUpDashboardHourlyRollups(ctx context.Context, limit int, nowMS int64) (UsageRollupCatchUpResult, error) {
+	if s.deferSeparateDerivedCatchUp() {
+		return UsageRollupCatchUpResult{Pending: true}, nil
+	}
 	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
 	if err != nil {
 		return UsageRollupCatchUpResult{}, err
@@ -911,6 +985,9 @@ func (s *Store) CatchUpDashboardHourlyRollups(ctx context.Context, limit int, no
 }
 
 func (s *Store) AccountHistoryRollupCheckpoint(ctx context.Context) (UsageRollupCheckpoint, error) {
+	if checkpoint, separate, err := s.separateDerivedCheckpoint(ctx); separate {
+		return checkpoint, err
+	}
 	return s.UsageRollups.Checkpoint(ctx, usagerollup.AccountHistoryCheckpointName)
 }
 
@@ -919,6 +996,9 @@ func (s *Store) DashboardHourlyRollupCheckpoint(ctx context.Context) (UsageRollu
 }
 
 func (s *Store) LatestUsageEventID(ctx context.Context) (int64, error) {
+	if latest, separate, err := s.separateDerivedLatestEventID(ctx); separate {
+		return latest, err
+	}
 	return s.UsageRollups.LatestEventID(ctx)
 }
 
