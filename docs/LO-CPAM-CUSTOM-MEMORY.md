@@ -839,3 +839,39 @@ future CPAM updates.
 - Keep the management/usage HTTP timeout at 240000 ms. Do not restore the old
   initial/full-history pass, full-refresh revision, or any UI behavior that
   silently expands a current-page request into an inventory scan.
+
+## 2026-10-30: Durable Token Recovery display and CPA upload-timeout reconciliation
+
+This CPAM-only correction must survive every future upstream merge. It does
+not change CPA Core / `cli-proxy-api`, credential scheduling, proxy routing,
+priority handling, usage events, Credits, pricing, billing, quota collection,
+Token Acquisition concurrency, or the eight-slot CPA credential-write gate.
+
+- The normal credential list obtains only the current visible Codex page's
+  redacted `token_recovery_tasks` state through one bounded Manager SQLite
+  read. It must not download credential JSON or make one SQLite lookup per
+  row. Returned states remain positional by `clientKey` and contain no token,
+  API key, credential JSON, or proxy secret.
+- Display matching order is exact `(file_name, auth_index, account_email)`,
+  then same physical file plus `auth_index`, then a **unique** same
+  file/provider/email fallback. The final fallback is display-only: it must
+  never be used to queue recovery, select a write target, or mutate CPA. If
+  two durable tasks match that file/email, return no fallback state rather
+  than attach a label to the wrong credential.
+- `succeeded`, failed, and automatic-attempt labels are durable state from
+  `token_recovery_tasks`, not browser-local markers. A historical succeeded
+  task must render normally but must not trigger a credential-list reload.
+  Only a task first observed as queued/running in the same browser session and
+  then observed as `succeeded` may perform one deduplicated target-file
+  reconciliation reload.
+- A CPA auth-file **upload** timeout is ambiguous: Core may have applied the
+  uploaded bytes after CPAM's client deadline. After the original write lock
+  and eight-slot write gate are released, CPAM may perform at most three
+  short, read-only downloads and verify the exact in-memory merged token
+  result. It must never issue a second Token Acquisition request or a second
+  upload. Verified bytes complete the durable task as `succeeded`; an
+  unverified outcome remains the existing redacted `cpa_auth_file_timeout`
+  terminal state for manual review.
+- Preserve focused coverage for stale-auth-index display, ambiguous-email
+  fail-closed behavior, historical-success no-reload, pending-to-success
+  one-time reload, and timeout-after-applied-upload reconciliation.

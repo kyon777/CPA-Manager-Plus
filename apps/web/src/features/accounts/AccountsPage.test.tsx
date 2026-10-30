@@ -11136,6 +11136,112 @@ describe('AccountsPage replacement flows', () => {
     expect(readText(status)).toBe('accounts.recovery_failed_reason:proxy handshake timed out');
     expect(status.props.title).toBe('accounts.recovery_failed_reason:proxy handshake timed out');
   });
+
+  it('does not reload credentials for a historical succeeded recovery task', async () => {
+    const file = {
+      ...makeCodexFile('historical-success.json', 'auth-history', 'history@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+    } as AuthFileItem;
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    mocks.credentialRuntimeItemsByClientKey = new Map([
+      [
+        selectionKey,
+        {
+          clientKey: selectionKey,
+          recoveryTask: {
+            id: 42,
+            fileName: file.name,
+            authIndex: 'auth-history',
+            accountEmail: 'history@example.com',
+            provider: 'codex',
+            status: 'succeeded',
+            mode: 'auto',
+            completedAtMs: 100,
+          },
+        },
+      ],
+    ]);
+
+    await renderAccountsPage();
+    await flushPromises();
+
+    expect(
+      mocks.loadFiles.mock.calls.filter(([options]) => options?.throwOnError === true)
+    ).toHaveLength(0);
+  });
+
+  it('reloads a credential once when this browser observed its recovery become successful', async () => {
+    const file = {
+      ...makeCodexFile('pending-success.json', 'auth-pending', 'pending@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+    } as AuthFileItem;
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    mocks.credentialRuntimeItemsByClientKey = new Map([
+      [
+        selectionKey,
+        {
+          clientKey: selectionKey,
+          recoveryTask: {
+            id: 43,
+            fileName: file.name,
+            authIndex: 'auth-pending',
+            accountEmail: 'pending@example.com',
+            provider: 'codex',
+            status: 'manual_running',
+            mode: 'manual',
+          },
+        },
+      ],
+    ]);
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    expect(
+      mocks.loadFiles.mock.calls.filter(([options]) => options?.throwOnError === true)
+    ).toHaveLength(0);
+
+    mocks.credentialRuntimeItemsByClientKey = new Map([
+      [
+        selectionKey,
+        {
+          clientKey: selectionKey,
+          recoveryTask: {
+            id: 43,
+            fileName: file.name,
+            authIndex: 'auth-pending',
+            accountEmail: 'pending@example.com',
+            provider: 'codex',
+            status: 'succeeded',
+            mode: 'manual',
+            completedAtMs: 200,
+          },
+        },
+      ],
+    ]);
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+    });
+    await flushPromises();
+    expect(
+      mocks.loadFiles.mock.calls.filter(([options]) => options?.throwOnError === true)
+    ).toHaveLength(1);
+
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+    });
+    await flushPromises();
+    expect(
+      mocks.loadFiles.mock.calls.filter(([options]) => options?.throwOnError === true)
+    ).toHaveLength(1);
+  });
   it('renders historical usage alongside the quota trigger', async () => {
     const file = mocks.files[0];
     const selectionKey = getAuthFileSelectionKey(file);

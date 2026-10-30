@@ -177,6 +177,67 @@ func TestGetFindsEmailOnlyTaskAfterAuthIndexBecomesAvailable(t *testing.T) {
 	}
 }
 
+func TestGetBatchForDisplayPreservesExactAuthIndexAndUniqueEmailFallbacks(t *testing.T) {
+	repo := newTestRepository(t)
+	ctx := context.Background()
+
+	exact, err := repo.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "Exact.json", AuthIndex: "7", AccountEmail: "exact@example.com", Provider: "codex", ObservedAtMS: 100,
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic(exact) = %v", err)
+	}
+	staleIndex, err := repo.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "fallback.json", AuthIndex: "old-auth-index", AccountEmail: "fallback@example.com", Provider: "codex", ObservedAtMS: 101,
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic(stale-index) = %v", err)
+	}
+
+	items, err := repo.GetBatchForDisplay(ctx, []model.TokenRecoveryTarget{
+		{FileName: "exact.JSON", AuthIndex: "7", AccountEmail: "EXACT@example.com", Provider: "codex"},
+		{FileName: "fallback.json", AuthIndex: "new-auth-index", AccountEmail: "fallback@example.com", Provider: "codex"},
+		{FileName: "missing.json", AuthIndex: "9", AccountEmail: "missing@example.com", Provider: "codex"},
+	})
+	if err != nil {
+		t.Fatalf("GetBatchForDisplay() = %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("GetBatchForDisplay() count = %d, want 3", len(items))
+	}
+	if items[0].ID != exact.ID {
+		t.Fatalf("exact batch task = %#v, want %#v", items[0], exact)
+	}
+	if items[1].ID != staleIndex.ID {
+		t.Fatalf("email fallback batch task = %#v, want %#v", items[1], staleIndex)
+	}
+	if items[2].ID != 0 {
+		t.Fatalf("missing batch task = %#v, want zero value", items[2])
+	}
+}
+
+func TestGetBatchForDisplayDoesNotFallbackWhenEmailIsAmbiguous(t *testing.T) {
+	repo := newTestRepository(t)
+	ctx := context.Background()
+	for _, authIndex := range []string{"old-a", "old-b"} {
+		if _, err := repo.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+			FileName: "ambiguous.json", AuthIndex: authIndex, AccountEmail: "person@example.com", Provider: "codex",
+		}); err != nil {
+			t.Fatalf("SignalAutomatic(%s) = %v", authIndex, err)
+		}
+	}
+
+	items, err := repo.GetBatchForDisplay(ctx, []model.TokenRecoveryTarget{{
+		FileName: "ambiguous.json", AuthIndex: "new-index", AccountEmail: "person@example.com", Provider: "codex",
+	}})
+	if err != nil {
+		t.Fatalf("GetBatchForDisplay() = %v", err)
+	}
+	if len(items) != 1 || items[0].ID != 0 {
+		t.Fatalf("ambiguous email fallback = %#v, want zero task", items)
+	}
+}
+
 func TestClaimNextQueuedHasExactlyOneConcurrentWinner(t *testing.T) {
 	repo := newTestRepository(t)
 	_, err := repo.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{

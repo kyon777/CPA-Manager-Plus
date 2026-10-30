@@ -140,7 +140,8 @@ func TestHandlerBatchQueryReturnsExistingAndNullTask(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/query", bytes.NewBufferString(`{
   "targets":[
     {"clientKey":"existing","fileName":"a.json","authIndex":"7","accountEmail":"person@example.com","provider":"codex"},
-    {"clientKey":"missing","fileName":"b.json","authIndex":"9","accountEmail":"missing@example.com","provider":"codex"}
+    {"clientKey":"missing","fileName":"b.json","authIndex":"9","accountEmail":"missing@example.com","provider":"codex"},
+    {"clientKey":"invalid","fileName":"invalid.json","accountEmail":"invalid@example.com","provider":"not-codex"}
   ]
 }`))
 	request.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
@@ -161,7 +162,7 @@ func TestHandlerBatchQueryReturnsExistingAndNullTask(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(response.Items) != 2 {
+	if len(response.Items) != 3 {
 		t.Fatalf("response items = %#v", response.Items)
 	}
 	if response.Items[0].ClientKey != "existing" || string(response.Items[0].Task) == "null" || response.Items[0].ErrorCode != "" {
@@ -169,6 +170,47 @@ func TestHandlerBatchQueryReturnsExistingAndNullTask(t *testing.T) {
 	}
 	if response.Items[1].ClientKey != "missing" || string(response.Items[1].Task) != "null" || response.Items[1].ErrorCode != "" {
 		t.Fatalf("missing query item = %#v", response.Items[1])
+	}
+	if response.Items[2].ClientKey != "invalid" || string(response.Items[2].Task) != "null" || response.Items[2].ErrorCode != "invalid_target" {
+		t.Fatalf("invalid query item = %#v", response.Items[2])
+	}
+}
+
+func TestHandlerBatchQueryUsesDisplayFallbackForStaleAuthIndex(t *testing.T) {
+	handler := newTestHandler(t)
+	created, err := handler.App.TokenRecoveryService.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
+		FileName: "physical.json", AuthIndex: "old-index", AccountEmail: "person@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/token-recovery/query", bytes.NewBufferString(`{
+  "targets":[
+    {"clientKey":"row","fileName":"physical.json","authIndex":"new-index","accountEmail":"person@example.com","provider":"codex"}
+  ]
+}`))
+	request.Header.Set("Authorization", "Bearer "+tokenRecoveryHandlerAdminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Items []struct {
+			ClientKey string `json:"clientKey"`
+			Task      *struct {
+				ID int64 `json:"id"`
+			} `json:"task"`
+			ErrorCode string `json:"errorCode"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 1 || response.Items[0].ClientKey != "row" || response.Items[0].Task == nil || response.Items[0].Task.ID != created.ID || response.Items[0].ErrorCode != "" {
+		t.Fatalf("display fallback response = %#v, want task %#v", response.Items, created)
 	}
 }
 

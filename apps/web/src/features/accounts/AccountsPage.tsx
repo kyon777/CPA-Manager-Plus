@@ -123,6 +123,7 @@ import {
   formatRecoveryState,
   hasAutomaticRecoveryAttempt,
   isAutomaticRecoveryCoolingDown,
+  isPendingRecoveryStatus,
 } from '@/features/accounts/model/credentialRuntimeMetadata';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
@@ -1428,6 +1429,7 @@ export function AccountsPage() {
     () => undefined
   );
   const handledRuntimeRecoveryCompletionsRef = useRef(new Set<string>());
+  const observedRuntimeRecoveryPendingRef = useRef(new Set<string>());
   const handleCredentialMutation = useCallback((mutation: AuthFilesCredentialMutation) => {
     credentialMutationHandlerRef.current(mutation);
   }, []);
@@ -10556,12 +10558,27 @@ export function AccountsPage() {
 
   useEffect(() => {
     handledRuntimeRecoveryCompletionsRef.current.clear();
+    observedRuntimeRecoveryPendingRef.current.clear();
   }, [managerConnectionFingerprint]);
 
   useEffect(() => {
     for (const candidate of pageRecoveryCandidates) {
       const task = credentialRuntimeItemsByClientKey.get(candidate.clientKey)?.recoveryTask;
-      if (task?.status !== 'succeeded') continue;
+      if (!task?.id) continue;
+      const taskKey = [
+        managerConnectionFingerprint,
+        candidate.clientKey,
+        task.id,
+      ].join('\u0000');
+      if (isPendingRecoveryStatus(task.status)) {
+        observedRuntimeRecoveryPendingRef.current.add(taskKey);
+        continue;
+      }
+      if (task.status !== 'succeeded') {
+        observedRuntimeRecoveryPendingRef.current.delete(taskKey);
+        continue;
+      }
+      if (!observedRuntimeRecoveryPendingRef.current.delete(taskKey)) continue;
       const completionTimestamp =
         task.completedAtMs ?? task.updatedAtMs ?? task.lastSignalAtMs ?? task.createdAtMs ?? 0;
       const completionKey = [

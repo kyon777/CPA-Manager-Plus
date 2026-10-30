@@ -22,6 +22,7 @@ type Repository interface {
 	SignalAutomatic(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, error)
 	RequestManual(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, error)
 	Get(context.Context, model.TokenRecoveryTarget) (model.TokenRecoveryTask, bool, error)
+	GetBatchForDisplay(context.Context, []model.TokenRecoveryTarget) ([]model.TokenRecoveryTask, error)
 	GetByID(context.Context, int64) (model.TokenRecoveryTask, bool, error)
 	ClaimNextQueued(context.Context) (model.TokenRecoveryTask, bool, error)
 	ClaimNextEligible(context.Context, bool) (model.TokenRecoveryTask, bool, error)
@@ -212,6 +213,138 @@ func (r *repository) Get(ctx context.Context, target model.TokenRecoveryTarget) 
 		return model.TokenRecoveryTask{}, false, err
 	}
 	return getCompatibleTask(ctx, r.db, normalized, identityKey)
+}
+
+// GetBatchForDisplay resolves normal task compatibility plus the display-only
+// unique-email fallback for a visible page in one bounded read per provider.
+// The returned slice is positional: a zero-value task means that the matching
+// target has no durable recovery state. This path is deliberately read-only so
+// browser polling never mutates a recovery cycle.
+func (r *repository) GetBatchForDisplay(ctx context.Context, targets []model.TokenRecoveryTarget) ([]model.TokenRecoveryTask, error) {
+	items := make([]model.TokenRecoveryTask, len(targets))
+	if len(targets) == 0 {
+		return items, nil
+	}
+
+	type displayTarget struct {
+		target      model.TokenRecoveryTarget
+		identityKey string
+	}
+	normalizedTargets := make([]displayTarget, len(targets))
+	fileNamesByProvider := make(map[string]map[string]struct{})
+	for index, target := range targets {
+		normalized, identityKey, err := normalizeTarget(target)
+		if err != nil {
+			return nil, err
+		}
+		normalizedTargets[index] = displayTarget{target: normalized, identityKey: identityKey}
+		if fileNamesByProvider[normalized.Provider] == nil {
+			fileNamesByProvider[normalized.Provider] = make(map[string]struct{})
+		}
+		fileNamesByProvider[normalized.Provider][strings.ToLower(normalized.FileName)] = struct{}{}
+	}
+
+	candidatesByFile := make(map[string][]model.TokenRecoveryTask)
+	for provider, fileNames := range fileNamesByProvider {
+		files := make([]string, 0, len(fileNames))
+		for fileName := range fileNames {
+			files = append(files, fileName)
+		}
+		candidates, err := r.getDisplayCandidates(ctx, provider, files)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range candidates {
+			key := displayCandidateFileKey(candidate.Provider, candidate.FileName)
+			candidatesByFile[key] = append(candidatesByFile[key], candidate)
+		}
+	}
+
+	for index, target := range normalizedTargets {
+		items[index], _ = compatibleDisplayTask(target.target, target.identityKey, candidatesByFile[displayCandidateFileKey(target.target.Provider, target.target.FileName)])
+	}
+	return items, nil
+}
+
+func (r *repository) getDisplayCandidates(ctx context.Context, provider string, fileNames []string) ([]model.TokenRecoveryTask, error) {
+	const maxSQLiteParameters = 900
+	items := make([]model.TokenRecoveryTask, 0)
+	for start := 0; start < len(fileNames); start += maxSQLiteParameters {
+		end := start + maxSQLiteParameters
+		if end > len(fileNames) {
+			end = len(fileNames)
+		}
+		chunk := fileNames[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, provider)
+		for _, fileName := range chunk {
+			args = append(args, fileName)
+		}
+		rows, err := r.db.QueryContext(ctx, selectTasks+` where provider = ? and lower(file_name) in (`+placeholders+`) order by id asc`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			item, err := scanTask(rows)
+			if err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			items = append(items, item)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func displayCandidateFileKey(provider, fileName string) string {
+	return strings.ToLower(strings.TrimSpace(provider)) + "\x1f" + strings.ToLower(strings.TrimSpace(fileName))
+}
+
+func compatibleDisplayTask(target model.TokenRecoveryTarget, identityKey string, candidates []model.TokenRecoveryTask) (model.TokenRecoveryTask, bool) {
+	for _, candidate := range candidates {
+		if recoveryIdentityKey(candidate.FileName, candidate.AuthIndex, candidate.AccountEmail) == identityKey {
+			return candidate, true
+		}
+	}
+	if target.AuthIndex != "" {
+		for _, candidate := range candidates {
+			if candidate.AuthIndex == target.AuthIndex {
+				return candidate, true
+			}
+		}
+	}
+	if target.AuthIndex == "" || target.AccountEmail == "" {
+		return model.TokenRecoveryTask{}, false
+	}
+	var matched model.TokenRecoveryTask
+	found := false
+	for _, candidate := range candidates {
+		if !strings.EqualFold(candidate.AccountEmail, target.AccountEmail) {
+			continue
+		}
+		if found {
+			// A credential import can rotate auth_index while the old task stays
+			// durable. More than one task sharing this file/email is ambiguous for
+			// display, so fail closed rather than attaching a status to the wrong
+			// current record.
+			return model.TokenRecoveryTask{}, false
+		}
+		matched = candidate
+		found = true
+	}
+	return matched, found
+}
+
+func recoveryIdentityKey(fileName, authIndex, accountEmail string) string {
+	return strings.ToLower(strings.TrimSpace(fileName)) + "\x1f" + strings.TrimSpace(authIndex) + "\x1f" + strings.ToLower(strings.TrimSpace(accountEmail))
 }
 
 func (r *repository) GetByID(ctx context.Context, id int64) (model.TokenRecoveryTask, bool, error) {

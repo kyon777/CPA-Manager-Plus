@@ -423,6 +423,13 @@ func (s *Store) GetTokenRecovery(ctx context.Context, target TokenRecoveryTarget
 	return s.TokenRecoveries.Get(ctx, target)
 }
 
+// GetTokenRecoveryBatchForDisplay returns only redacted, positional recovery
+// state for a visible page. It is intentionally read-only and never changes a
+// recovery task while the browser polls its status.
+func (s *Store) GetTokenRecoveryBatchForDisplay(ctx context.Context, targets []TokenRecoveryTarget) ([]TokenRecoveryTask, error) {
+	return s.TokenRecoveries.GetBatchForDisplay(ctx, targets)
+}
+
 func (s *Store) GetTokenRecoveryByID(ctx context.Context, id int64) (TokenRecoveryTask, bool, error) {
 	return s.TokenRecoveries.GetByID(ctx, id)
 }

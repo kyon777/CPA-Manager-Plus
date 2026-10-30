@@ -48,15 +48,35 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items := make([]batchItem, len(batchTargets))
+		validTargets := make([]model.TokenRecoveryTarget, 0, len(batchTargets))
+		validItemIndexes := make([]int, 0, len(batchTargets))
 		for index, batchTarget := range batchTargets {
 			items[index].ClientKey = batchTarget.ClientKey
-			task, found, err := h.App.TokenRecoveryService.Get(r.Context(), batchTarget.Target)
-			if err != nil {
-				items[index].ErrorCode = tokenRecoveryItemErrorCode(err)
+			if !validDisplayTarget(batchTarget.Target) {
+				items[index].ErrorCode = "invalid_target"
 				continue
 			}
-			if found {
-				items[index].Task = &task
+			validTargets = append(validTargets, batchTarget.Target)
+			validItemIndexes = append(validItemIndexes, index)
+		}
+		if len(validTargets) > 0 {
+			tasks, err := h.App.TokenRecoveryService.GetBatchForDisplay(r.Context(), validTargets)
+			if err != nil {
+				for _, index := range validItemIndexes {
+					items[index].ErrorCode = tokenRecoveryItemErrorCode(err)
+				}
+			} else if len(tasks) != len(validItemIndexes) {
+				for _, index := range validItemIndexes {
+					items[index].ErrorCode = "recovery_failed"
+				}
+			} else {
+				for index := range tasks {
+					if tasks[index].ID == 0 {
+						continue
+					}
+					itemIndex := validItemIndexes[index]
+					items[itemIndex].Task = &tasks[index]
+				}
 			}
 		}
 		response.JSON(w, http.StatusOK, map[string]any{"items": items})
@@ -288,6 +308,12 @@ func targetFromQuery(r *http.Request) model.TokenRecoveryTarget {
 		AccountEmail: query.Get("accountEmail"),
 		Provider:     provider,
 	}
+}
+
+func validDisplayTarget(target model.TokenRecoveryTarget) bool {
+	return strings.TrimSpace(target.FileName) != "" &&
+		strings.EqualFold(strings.TrimSpace(target.Provider), "codex") &&
+		(strings.TrimSpace(target.AuthIndex) != "" || strings.TrimSpace(target.AccountEmail) != "")
 }
 
 func tokenRecoveryErrorStatus(err error) int {

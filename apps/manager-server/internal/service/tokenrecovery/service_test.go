@@ -772,6 +772,72 @@ func TestServiceReportsCPAAuthFileUploadTimeout(t *testing.T) {
 	}
 }
 
+func TestServiceCompletesTimedOutUploadAfterReadOnlyVerification(t *testing.T) {
+	files := &timeoutAfterPersistedUploadRecoveryAuthFiles{raw: []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old-access","refresh_token":"old-refresh","id_token":"old-id"}`)}
+	acquirer := &fakeAcquirer{result: tokenacquisition.Result{
+		Email: "person@example.com", AccessToken: "new-access", RefreshToken: "new-refresh", IDToken: "new-id",
+	}}
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-upload-reconcile.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewWithOptions(Options{
+		Tasks:               st,
+		SetupResolver:       staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:           files,
+		Acquirer:            acquirer,
+		MutationCoordinator: cpaauthfiles.NewMutationCoordinator(),
+		IdlePollInterval:    time.Millisecond,
+	})
+	service.Start(ctx)
+
+	task, err := service.SignalAutomatic(ctx, model.TokenRecoveryTarget{
+		FileName: "physical account.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex", ObservedAtMS: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() error = %v", err)
+	}
+	completed := waitForTaskStatus(t, ctx, service, task.ID, model.TokenRecoveryStatusSucceeded)
+	if completed.LastErrorCode != "" || completed.LastErrorMessage != "" {
+		t.Fatalf("completed task retained timeout failure = %#v", completed)
+	}
+	if got, want := files.uploadCount(), 1; got != want {
+		t.Fatalf("uploads = %d, want %d; reconciliation must not upload again", got, want)
+	}
+	if got := acquirer.callCount(); got != 1 {
+		t.Fatalf("token acquisition calls = %d, want 1", got)
+	}
+}
+
+func TestServiceGetBatchForDisplayReturnsPositionalDurableState(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "token-recovery-display-batch.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	service := NewWithOptions(Options{Tasks: st})
+	created, err := service.SignalAutomatic(context.Background(), model.TokenRecoveryTarget{
+		FileName: "a.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex",
+	})
+	if err != nil {
+		t.Fatalf("SignalAutomatic() = %v", err)
+	}
+
+	items, err := service.GetBatchForDisplay(context.Background(), []model.TokenRecoveryTarget{
+		{FileName: "a.json", AuthIndex: "7", AccountEmail: "person@example.com", Provider: "codex"},
+		{FileName: "missing.json", AuthIndex: "9", AccountEmail: "missing@example.com", Provider: "codex"},
+	})
+	if err != nil {
+		t.Fatalf("GetBatchForDisplay() = %v", err)
+	}
+	if len(items) != 2 || items[0].ID != created.ID || items[1].ID != 0 {
+		t.Fatalf("GetBatchForDisplay() = %#v, want created then zero task", items)
+	}
+}
+
 func TestServiceStoresCPAAuthFileUploadFailureStage(t *testing.T) {
 	files := &uploadFailureRecoveryAuthFiles{raw: []byte(`{"auth_index":"7","email":"person@example.com","access_token":"old-access","refresh_token":"old-refresh","id_token":"old-id"}`)}
 	acquirer := &fakeAcquirer{result: tokenacquisition.Result{
@@ -993,6 +1059,32 @@ func (f *timeoutOnUploadRecoveryAuthFiles) Download(_ context.Context, _ string,
 
 func (f *timeoutOnUploadRecoveryAuthFiles) Upload(_ context.Context, _ string, _ string, _ string, _ []byte) error {
 	return fmt.Errorf("POST /v0/management/auth-files: %w", context.DeadlineExceeded)
+}
+
+type timeoutAfterPersistedUploadRecoveryAuthFiles struct {
+	mu      sync.Mutex
+	raw     []byte
+	uploads int
+}
+
+func (f *timeoutAfterPersistedUploadRecoveryAuthFiles) Download(_ context.Context, _ string, _ string, _ string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]byte(nil), f.raw...), nil
+}
+
+func (f *timeoutAfterPersistedUploadRecoveryAuthFiles) Upload(_ context.Context, _ string, _ string, _ string, raw []byte) error {
+	f.mu.Lock()
+	f.raw = append([]byte(nil), raw...)
+	f.uploads++
+	f.mu.Unlock()
+	return fmt.Errorf("POST /v0/management/auth-files: %w", context.DeadlineExceeded)
+}
+
+func (f *timeoutAfterPersistedUploadRecoveryAuthFiles) uploadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.uploads
 }
 
 type blockingWriteRecoveryAuthFiles struct {

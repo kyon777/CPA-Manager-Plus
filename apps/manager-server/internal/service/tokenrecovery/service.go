@@ -35,6 +35,9 @@ const (
 	terminalStateWriteAttempts             = 4
 	terminalStateWriteInitialBackoff       = 25 * time.Millisecond
 	terminalStateWriteTimeout              = 30 * time.Second
+	timedOutUploadVerificationAttempts     = 3
+	timedOutUploadVerificationRetryDelay   = 250 * time.Millisecond
+	timedOutUploadVerificationTimeout      = 8 * time.Second
 )
 
 var (
@@ -82,6 +85,14 @@ type TaskStore interface {
 	FailTokenRecovery(context.Context, int64, string, string) (store.TokenRecoveryTask, error)
 	FailRunningTokenRecoveriesOnStartup(context.Context) (int64, error)
 	FailStaleRunningTokenRecoveries(context.Context, int64) (int64, error)
+}
+
+// displayTaskStore is intentionally optional. It lets the production SQLite
+// store serve one bounded read for the current browser page without expanding
+// the recovery scheduler's narrow TaskStore contract or breaking alternate
+// task-store implementations used by focused tests.
+type displayTaskStore interface {
+	GetTokenRecoveryBatchForDisplay(context.Context, []store.TokenRecoveryTarget) ([]store.TokenRecoveryTask, error)
 }
 
 type SetupResolver interface {
@@ -306,6 +317,30 @@ func (s *Service) Get(ctx context.Context, target model.TokenRecoveryTarget) (mo
 	return s.tasks.GetTokenRecovery(ctx, target)
 }
 
+// GetBatchForDisplay reads current-page recovery state without changing a
+// recovery cycle. Production stores implement the bounded batch path; custom
+// TaskStore implementations retain the equivalent, compatibility-safe lookup
+// fallback.
+func (s *Service) GetBatchForDisplay(ctx context.Context, targets []model.TokenRecoveryTarget) ([]model.TokenRecoveryTask, error) {
+	if s == nil || s.tasks == nil {
+		return nil, ErrRecoveryUnavailable
+	}
+	if batchStore, ok := s.tasks.(displayTaskStore); ok {
+		return batchStore.GetTokenRecoveryBatchForDisplay(ctx, targets)
+	}
+	items := make([]model.TokenRecoveryTask, len(targets))
+	for index, target := range targets {
+		item, found, err := s.tasks.GetTokenRecovery(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			items[index] = item
+		}
+	}
+	return items, nil
+}
+
 func (s *Service) GetByID(ctx context.Context, id int64) (model.TokenRecoveryTask, bool, error) {
 	if s == nil || s.tasks == nil {
 		return model.TokenRecoveryTask{}, false, ErrRecoveryUnavailable
@@ -504,13 +539,20 @@ func (s *Service) recover(ctx context.Context, task model.TokenRecoveryTask) err
 	if err != nil {
 		return err
 	}
-	return s.writeCurrentCredential(ctx, task.FileName, resolvedLocator, credential.Email, AcquisitionResult{
+	result := AcquisitionResult{
 		Email:            acquired.Email,
 		AccessToken:      acquired.AccessToken,
 		RefreshToken:     acquired.RefreshToken,
 		IDToken:          acquired.IDToken,
 		ChatGPTAccountID: acquired.ChatGPTAccountID,
-	})
+	}
+	if err := s.writeCurrentCredential(ctx, task.FileName, resolvedLocator, credential.Email, result); err != nil {
+		if isTimedOutUpload(err) && s.reconcileTimedOutUpload(ctx, task.FileName, resolvedLocator, credential.Email, result) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) readCurrentCredential(ctx context.Context, fileName string, locator Locator) (Credential, Locator, error) {
@@ -627,6 +669,53 @@ func (s *Service) writeCurrentCredential(ctx context.Context, fileName string, l
 		return classifyCPAAuthFileOperationError("verify", err)
 	}
 	return VerifyMergedAuthJSON(verifiedRaw, mergeLocator, result)
+}
+
+// reconcileTimedOutUpload handles the one ambiguous CPA Core boundary where
+// the upload request timed out after Core may already have applied the bytes.
+// It deliberately performs only short, serialized reads and never starts a
+// second token acquisition or upload. A durable success is therefore written
+// only when the exact in-memory result can be verified in Core.
+func (s *Service) reconcileTimedOutUpload(ctx context.Context, fileName string, locator Locator, originalEmail string, result AcquisitionResult) bool {
+	if s == nil || s.authFiles == nil || s.mutationCoordinator == nil || ctx == nil {
+		return false
+	}
+	// Upload owns a shorter child deadline than the recovery task. Detach this
+	// read-only confirmation from a canceled request context, then apply its own
+	// strict deadline; no new external work or mutation may occur here.
+	verificationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timedOutUploadVerificationTimeout)
+	defer cancel()
+	setup, err := s.resolveSetup(verificationCtx)
+	if err != nil {
+		return false
+	}
+	mergeLocator := Locator{AuthIndex: locator.AuthIndex, AccountEmail: originalEmail}
+	for attempt := 0; attempt < timedOutUploadVerificationAttempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(timedOutUploadVerificationRetryDelay)
+			select {
+			case <-verificationCtx.Done():
+				stopTerminalStateRetryTimer(timer)
+				return false
+			case <-timer.C:
+			}
+		}
+		release, err := s.mutationCoordinator.Acquire(verificationCtx, fileName)
+		if err != nil {
+			return false
+		}
+		raw, downloadErr := s.authFiles.Download(verificationCtx, setup.CPAUpstreamURL, setup.ManagementKey, fileName)
+		release()
+		if downloadErr == nil && VerifyMergedAuthJSON(raw, mergeLocator, result) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func isTimedOutUpload(err error) bool {
+	var timeoutErr *cpaAuthFileOperationTimeoutError
+	return errors.As(err, &timeoutErr) && timeoutErr != nil && timeoutErr.operation == "upload"
 }
 
 func (s *Service) acquireWriteSlot(ctx context.Context) error {
