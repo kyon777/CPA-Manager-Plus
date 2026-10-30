@@ -892,3 +892,30 @@ Token Acquisition concurrency, or the eight-slot CPA credential-write gate.
   one-time reload, timeout-after-applied-upload reconciliation, known-batch
   polling transport recovery, terminal retry beyond four lock collisions, and
   shared-writer lease serialization.
+
+## 2026-10-30: Token Recovery 成功后立即退出“需重新授权”筛选
+
+This CPAM-only UI reconciliation rule is mandatory during every later upstream
+merge. It does not change CPA Core / `cli-proxy-api`, token acquisition,
+credential bytes, proxy routing, inspection execution, request routing,
+usage events, Credits, quota, pricing, billing, or priority scheduling.
+
+- A durable `token_recovery_tasks.status=succeeded` row is an authoritative
+  successful credential-write boundary for the exact current Codex credential.
+  The Accounts reauth filter must immediately retire stale raw-status,
+  inspection, Header, and prior recovery-action authentication evidence at or
+  before `completed_at_ms`; the row must therefore leave `需重新授权` without a
+  second Token Acquisition request, CPA write, or full credential inventory
+  reload.
+- This applies both to a queued/running task observed becoming successful in
+  the open browser and to an already-successful historical task first returned
+  after the page opens. Historical success remains a bounded display-state
+  update only; it must not cause a credential reload.
+- The recovery dialog forwards the durable task and its completion timestamp
+  to Accounts. The timestamp must be preserved instead of substituting the
+  browser clock. Install the status boundary before a target-file reload and
+  install it again against the reloaded target, so an old raw 401 arriving in
+  that reload cannot re-enter the filter while the reload is in flight.
+- Fail closed for a newer real failure: a raw/request/inspection 401 whose
+  evidence timestamp is later than the successful task completion must remain
+  in `需重新授权`. Do not turn this UI rule into a blanket status clear.

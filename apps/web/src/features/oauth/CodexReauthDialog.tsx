@@ -39,7 +39,7 @@ type CodexReauthDialogProps = {
   managerRequestScope?: ApiClientRequestScope;
   onClose: () => void;
   onSuccess?: () => void | Promise<void>;
-  onServerRecoverySuccess?: () => void | Promise<void>;
+  onServerRecoverySuccess?: (task: TokenRecoveryTask) => void | Promise<void>;
 };
 
 const POLL_INTERVAL_MS = 3000;
@@ -248,7 +248,11 @@ export function CodexReauthDialog({
       if (tokenRecoverySuccessHandledRef.current === completionKey) return;
       tokenRecoverySuccessHandledRef.current = completionKey;
       try {
-        await (onServerRecoverySuccess ?? onSuccess)?.();
+        if (onServerRecoverySuccess) {
+          await onServerRecoverySuccess(task);
+        } else {
+          await onSuccess?.();
+        }
         if (
           tokenRecoveryGenerationRef.current !== generation ||
           !isCurrentTokenRecoveryOperation(generation, operationContext)

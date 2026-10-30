@@ -359,6 +359,7 @@ import {
   type ProxyOverloadSummaryResponse,
   type TokenRecoveryBatchTargetRequest,
   type TokenRecoveryTargetRequest,
+  type TokenRecoveryTask,
   type CredentialRuntimeMetadataItem,
   type UsageHeaderSnapshot,
   type UsageHeaderSnapshotsResponse,
@@ -3312,6 +3313,12 @@ export function AccountsPage() {
         supersedeAuthenticationActionEvidence?: boolean;
         supersedeQuotaActionEvidence?: boolean;
         supersedeCooldownEvidence?: boolean;
+        // A server-side Token Acquisition success has an authoritative completion
+        // timestamp. Keep it instead of replacing it with the browser's current
+        // clock so a newer 401 is never hidden by an older recovery task.
+        authenticationAtMs?: number;
+        invalidatedAtMs?: number;
+        inventoryFiles?: readonly AuthFileItem[];
       } = {}
     ): void => {
       const keys = new Set(selectionKeys.filter((key) => key.length > 0));
@@ -3328,13 +3335,19 @@ export function AccountsPage() {
       if (options.supersedeCooldownEvidence) {
         quotaCooldownRequestIdRef.current += 1;
       }
-      const invalidatedAtMs = Date.now();
-      const matchedFiles = files.filter((file) => keys.has(getAuthFileSelectionKey(file)));
+      const invalidatedAtMs = options.invalidatedAtMs ?? Date.now();
+      const authenticationAtMs = options.authenticationAtMs ?? 0;
+      const inventoryFiles = options.inventoryFiles ?? files;
+      const matchedFiles = inventoryFiles.filter((file) =>
+        keys.has(getAuthFileSelectionKey(file))
+      );
       const statusBoundariesBySelectionKey = new Map(
         matchedFiles.map((file) => {
           const currentBoundary = buildCurrentCredentialEvidenceBoundary({
             targetFiles: [file],
+            inventoryFiles,
             localAtMs: invalidatedAtMs,
+            authenticationAtMs,
           });
           return [
             getAuthFileSelectionKey(file),
@@ -3395,6 +3408,47 @@ export function AccountsPage() {
       invalidateInspectionSummaryRequest,
       setCredentialStatusBoundaries,
     ]
+  );
+
+  const applyServerTokenRecoverySuccessBoundary = useCallback(
+    (
+      target: TokenRecoveryTargetRequest,
+      completedAtMs: number,
+      inventoryFiles: readonly AuthFileItem[] = files
+    ): boolean => {
+      const completionAtMs = Math.trunc(completedAtMs);
+      if (!Number.isFinite(completionAtMs) || completionAtMs <= 0) return false;
+
+      const fileName = target.fileName?.trim() ?? '';
+      if (!fileName) return false;
+      const matchingFiles = inventoryFiles.filter(
+        (file) => file.name === fileName && normalizeAccountProvider(file) === CODEX_CONFIG.type
+      );
+      const targetAuthIndex = normalizeAuthIndex(target.authIndex);
+      const recoveredFile = targetAuthIndex
+        ? matchingFiles.find(
+            (file) => normalizeAuthIndex(file['auth_index'] ?? file.authIndex) === targetAuthIndex
+          )
+        : matchingFiles.length === 1
+          ? matchingFiles[0]
+          : undefined;
+      if (!recoveredFile) return false;
+
+      // Do not reload the whole credential inventory for a task that completed
+      // before this browser opened. Persist a timestamped status boundary instead:
+      // stale 401 evidence is retired, while any 401 newer than the successful
+      // write remains eligible for the reauth filter.
+      invalidateCodexCredentialStatusForSelectionKeys(
+        [getAuthFileSelectionKey(recoveredFile)],
+        {
+          authenticationAtMs: completionAtMs,
+          invalidatedAtMs: completionAtMs,
+          inventoryFiles,
+        }
+      );
+      return true;
+    },
+    [files, invalidateCodexCredentialStatusForSelectionKeys]
   );
 
   const invalidateProviderCredentialEvidence = useCallback(
@@ -4068,9 +4122,22 @@ export function AccountsPage() {
   ]);
 
   const handleServerTokenRecoverySuccessForTarget = useCallback(
-    async (target: TokenRecoveryTargetRequest) => {
+    async (
+      target: TokenRecoveryTargetRequest,
+      options: { authenticationAtMs?: number } = {}
+    ) => {
       const fileName = target.fileName?.trim() ?? '';
       if (!fileName) throw new Error(t('notification.refresh_failed'));
+      const candidateAuthenticationAtMs = Math.trunc(options.authenticationAtMs ?? Date.now());
+      const authenticationAtMs =
+        Number.isFinite(candidateAuthenticationAtMs) && candidateAuthenticationAtMs > 0
+          ? candidateAuthenticationAtMs
+          : Date.now();
+
+      // Retire stale authentication evidence as soon as Manager Server confirms
+      // the write.  Do this before the inventory reload so the reauth filter does
+      // not invite an accidental second manual recovery while reload is in flight.
+      applyServerTokenRecoverySuccessBoundary(target, authenticationAtMs);
 
       // TokenAcquisition may rotate the Codex ChatGPT account id. Manager Server
       // validates the email before the Core write, so browser reconciliation must
@@ -4089,6 +4156,9 @@ export function AccountsPage() {
           (!targetAuthIndex ||
             normalizeAuthIndex(file['auth_index'] ?? file.authIndex) === targetAuthIndex)
       );
+      // Capture the reloaded source too: an old raw 401 can arrive with the
+      // inventory response after the success boundary was first installed.
+      applyServerTokenRecoverySuccessBoundary(target, authenticationAtMs, reloadedFiles);
       publishAccountCredentialMutationRevision({
         connectionFingerprint,
         provider: 'codex',
@@ -4099,6 +4169,7 @@ export function AccountsPage() {
       });
     },
     [
+      applyServerTokenRecoverySuccessBoundary,
       connectionFingerprint,
       invalidateCodexCredentialEvidenceForSourceFiles,
       reloadInspectionCredentialArtifacts,
@@ -4106,12 +4177,15 @@ export function AccountsPage() {
     ]
   );
 
-  const handleServerTokenRecoverySuccess = useCallback(async () => {
+  const handleServerTokenRecoverySuccess = useCallback(async (task: TokenRecoveryTask) => {
     const target = codexReauthTarget
       ? buildCodexTokenRecoveryTarget(codexReauthTarget)
       : null;
     if (!target) throw new Error(t('notification.refresh_failed'));
-    await handleServerTokenRecoverySuccessForTarget(target);
+    await handleServerTokenRecoverySuccessForTarget(target, {
+      authenticationAtMs:
+        task.completedAtMs ?? task.updatedAtMs ?? task.lastSignalAtMs ?? task.createdAtMs,
+    });
   }, [codexReauthTarget, handleServerTokenRecoverySuccessForTarget, t]);
   const handleReauthAccount = useCallback(
     (file: AuthFileItem) => {
@@ -10578,7 +10652,7 @@ export function AccountsPage() {
         observedRuntimeRecoveryPendingRef.current.delete(taskKey);
         continue;
       }
-      if (!observedRuntimeRecoveryPendingRef.current.delete(taskKey)) continue;
+      const observedPending = observedRuntimeRecoveryPendingRef.current.delete(taskKey);
       const completionTimestamp =
         task.completedAtMs ?? task.updatedAtMs ?? task.lastSignalAtMs ?? task.createdAtMs ?? 0;
       const completionKey = [
@@ -10589,12 +10663,19 @@ export function AccountsPage() {
       ].join('\u0000');
       if (handledRuntimeRecoveryCompletionsRef.current.has(completionKey)) continue;
       handledRuntimeRecoveryCompletionsRef.current.add(completionKey);
-      void handleServerTokenRecoverySuccessForTarget(candidate).catch((error) => {
+      if (!observedPending) {
+        applyServerTokenRecoverySuccessBoundary(candidate, completionTimestamp);
+        continue;
+      }
+      void handleServerTokenRecoverySuccessForTarget(candidate, {
+        authenticationAtMs: completionTimestamp,
+      }).catch((error) => {
         const reason = error instanceof Error ? error.message.trim() : '';
         showNotification(reason || t('notification.refresh_failed'), 'error');
       });
     }
   }, [
+    applyServerTokenRecoverySuccessBoundary,
     credentialRuntimeItemsByClientKey,
     handleServerTokenRecoverySuccessForTarget,
     managerConnectionFingerprint,

@@ -11166,12 +11166,49 @@ describe('AccountsPage replacement flows', () => {
       ],
     ]);
 
-    await renderAccountsPage();
+    const renderer = await renderAccountsPage();
     await flushPromises();
 
     expect(
       mocks.loadFiles.mock.calls.filter(([options]) => options?.throwOnError === true)
     ).toHaveLength(0);
+    expect(getAccountCardText(renderer, selectionKey)).not.toContain('accounts.health_reauth');
+  });
+
+  it('keeps a reauth row when its raw 401 is newer than a historical recovery success', async () => {
+    const file = {
+      ...makeCodexFile('historical-new-401.json', 'auth-history-new', 'history-new@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+      updatedAtMs: 200,
+    } as AuthFileItem;
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    mocks.credentialRuntimeItemsByClientKey = new Map([
+      [
+        selectionKey,
+        {
+          clientKey: selectionKey,
+          recoveryTask: {
+            id: 44,
+            fileName: file.name,
+            authIndex: 'auth-history-new',
+            accountEmail: 'history-new@example.com',
+            provider: 'codex',
+            status: 'succeeded',
+            mode: 'auto',
+            completedAtMs: 100,
+          },
+        },
+      ],
+    ]);
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(getAccountCardText(renderer, selectionKey)).toContain('accounts.health_reauth');
   });
 
   it('reloads a credential once when this browser observed its recovery become successful', async () => {
@@ -11233,6 +11270,7 @@ describe('AccountsPage replacement flows', () => {
     expect(
       mocks.loadFiles.mock.calls.filter(([options]) => options?.throwOnError === true)
     ).toHaveLength(1);
+    expect(getAccountCardText(renderer, selectionKey)).not.toContain('accounts.health_reauth');
 
     await act(async () => {
       renderer.update(<AccountsPage />);

@@ -895,7 +895,13 @@ describe('CodexReauthDialog connection lifecycle', () => {
       await findButton(renderer, 'codex_reauth.server_recovery_action').props.onClick();
     });
 
-    expect(onServerRecoverySuccess).toHaveBeenCalledTimes(1);
+    expect(onServerRecoverySuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 8,
+        status: 'succeeded',
+        completedAtMs: 123,
+      })
+    );
     expect(onSuccess).not.toHaveBeenCalled();
 
     act(() => renderer.unmount());
