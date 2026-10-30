@@ -919,3 +919,22 @@ usage events, Credits, quota, pricing, billing, or priority scheduling.
 - Fail closed for a newer real failure: a raw/request/inspection 401 whose
   evidence timestamp is later than the successful task completion must remain
   in `需重新授权`. Do not turn this UI rule into a blanket status clear.
+
+## 2026-10-30：独立派生 SQLite 存储（方案 2，设计已确认）
+
+LO 已确认 CPAM 采用“主事实库 + 独立派生库”方案，后续实现/更新必须保留本节约束。完整设计与部署计划：
+
+- `docs/superpowers/specs/2026-10-30-separate-derived-sqlite-design.md`
+- `docs/superpowers/plans/2026-10-30-separate-derived-sqlite.md`
+
+核心边界：
+
+- 主库 `/data/usage.sqlite`（服务器对应 `/home/cpam/data/usage.sqlite`）仍是唯一计费事实源；保留 `usage_events`、identity ledger、model prices、Credits、额度、归档、Token Recovery、代理、巡检和优先级状态。
+- 新的 `usage-derived.sqlite` 只保存可重建的 account-history、pricing、dashboard hourly、monitoring 等物化结果、coverage/generation/checkpoint 与派生索引；不保存 Token、认证 JSON、管理 Key、代理 URL 或原始错误正文。
+- `usage_event_identity_ledger` 和 `usage_archive_*` 不得搬到派生库；派生库使用自己的 applied-event ledger 和 source epoch。
+- 派生 Worker 必须先用主库只读连接读取有界事件批次，结束主库事务后再写独立库；禁止 `ATTACH`、跨库写事务、长主库快照和 HTTP 请求内同步全量 catch-up。
+- `USAGE_DERIVED_STORAGE_MODE=primary|separate` 默认为 `primary` 兼容旧版；`separate` 模式下绝不启动旧的主库派生 Worker/maintenance。`USAGE_BACKGROUND_DERIVATIONS_ENABLED` 只控制 Worker 是否运行，关闭后仍可读取最后已验证的独立派生快照。
+- 读路径合并派生库已验证 coverage 与主库水位线后的短尾部；price revision/generation/source epoch/archive proof 不一致时必须标记 stale/pending 或 fail-closed，不能用旧金额冒充 fresh，也不能清零已知金额。
+- 归档删除前必须验证独立派生库覆盖待删 raw event 范围；覆盖不足、独立库损坏或 epoch 不匹配时拒绝删除原始数据。
+- 所有 CPAM 更新、构建和部署仍只改 CPAM；服务器只重启 `cpam.service`，绝不触碰 CPA Core、`cli-proxy-api`、`/home/cpa` 或 `cpa.service`。部署前后核对 CPA Core 身份、主库、`data.key`、secrets、OpenResty 和证书配置。
+- 实施顺序固定为：配置/只读源边界 → 独立 schema → 有界 source/sink → 双库 engine → Store 读路径 → 归档 guard → Worker/status → 前端金额显示 → 本地验证 → 服务器 staged（先 paused，再 enabled）部署。失败时可切回 `primary + USAGE_BACKGROUND_DERIVATIONS_ENABLED=false`，不恢复或覆盖主库。
