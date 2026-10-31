@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +31,20 @@ type separateDerivedRuntime struct {
 	mu            sync.RWMutex
 }
 
-// visibleAccountTailLimit is deliberately finite: a page read may merge a
-// short live tail, but it must never turn into a full-history recovery query.
-// If the tail exceeds this bound, the verified derived rows remain visible and
-// the asynchronous worker continues to own completeness.
-const visibleAccountTailLimit = 5000
+const (
+	// visibleAccountTailLimit is deliberately finite: a page read may merge a
+	// short live tail, but it must never turn into a full-history recovery query.
+	// If the tail exceeds this bound, the verified derived rows remain visible and
+	// the asynchronous worker continues to own completeness.
+	visibleAccountTailLimit = 5000
+
+	// currentPagePricingRecoveryTimeout keeps an incomplete price for one
+	// account from stalling all current-page request/token/cost cards behind a
+	// slow primary pricing-tail query. The derived worker remains responsible
+	// for the durable catch-up; the next display refresh can fill the one
+	// incomplete account once its materialized row arrives.
+	currentPagePricingRecoveryTimeout = time.Second
+)
 
 // ConfigureDerivedStorage opens the independent source/sink pair. It is a
 // no-op for primary mode, preserving the legacy single-database path.
@@ -571,19 +581,23 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 	// otherwise an unrelated event can turn a fast page request into a large
 	// primary pricing-tail scan.
 	if len(incomplete) > 0 {
-		exactRows, exactIncomplete, exactErr := r.loadExactCurrentPagePricing(ctx, keys, core)
-		if exactErr == nil {
-			pricing = exactRows
-			incomplete = exactIncomplete
-		} else {
-			// The page remains usable if the optional exact source read is
-			// temporarily unavailable. Mark all core accounts unpriced so
-			// monitoring safely retains request/token totals without presenting a
-			// stale amount as current.
-			incomplete = make(map[string]struct{}, len(core))
-			for _, row := range core {
-				incomplete[row.AccountKey] = struct{}{}
+		recoveryKeys := make([]string, 0, len(incomplete))
+		for key := range incomplete {
+			recoveryKeys = append(recoveryKeys, key)
+		}
+		sort.Strings(recoveryKeys)
+		recoveryCore := make([]AccountHistoryRollupRow, 0, len(core))
+		for _, row := range core {
+			if _, needsRecovery := incomplete[row.AccountKey]; needsRecovery {
+				recoveryCore = append(recoveryCore, row)
 			}
+		}
+		recoveryCtx, cancelRecovery := context.WithTimeout(ctx, currentPagePricingRecoveryTimeout)
+		exactRows, exactIncomplete, exactErr := r.loadExactCurrentPagePricing(recoveryCtx, recoveryKeys, recoveryCore)
+		cancelRecovery()
+		if exactErr == nil {
+			pricing = replaceIncompletePricingRows(pricing, exactRows, incomplete)
+			incomplete = exactIncomplete
 		}
 	}
 	ready := historyReady && pricingReady
@@ -595,6 +609,20 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
 	}, ready, nil
+}
+
+// replaceIncompletePricingRows retains verified derived rows for every
+// complete page account and substitutes only the accounts re-read from the
+// primary query-only source. An unsuccessful recovery deliberately leaves the
+// caller's original incomplete set intact instead of blanking the whole page.
+func replaceIncompletePricingRows(existing, recovered []UsagePricingAccountRow, incomplete map[string]struct{}) []UsagePricingAccountRow {
+	result := make([]UsagePricingAccountRow, 0, len(existing)+len(recovered))
+	for _, row := range existing {
+		if _, replace := incomplete[row.AccountKey]; !replace {
+			result = append(result, row)
+		}
+	}
+	return append(result, recovered...)
 }
 
 func derivedStateReady(state derivedstore.StreamState, expectedGeneration string, snapshot derivedstore.SourceSnapshot, stream derivedstore.Stream, target int64) bool {

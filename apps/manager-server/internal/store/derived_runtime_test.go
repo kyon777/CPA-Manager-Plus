@@ -336,7 +336,7 @@ func TestSeparateDerivedRuntimeReturnsLastVerifiedRowsWhileTailIsPending(t *test
 	}
 }
 
-func TestSeparateDerivedSnapshotRecoversExactCurrentPagePricingWhenDerivedPricingLags(t *testing.T) {
+func TestSeparateDerivedSnapshotRecoversOnlyIncompleteCurrentPagePricing(t *testing.T) {
 	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
 	db, err := sqliterepo.Open(primaryPath)
 	if err != nil {
@@ -349,12 +349,78 @@ func TestSeparateDerivedSnapshotRecoversExactCurrentPagePricingWhenDerivedPricin
 	}); err != nil {
 		t.Fatalf("save model prices: %v", err)
 	}
+	insertEvent := func(hash, authIndex, source string, timestamp int64) {
+		t.Helper()
+		if _, err := db.Exec(`insert into usage_events(
+		event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+		resolved_model, auth_index, source, auth_file_snapshot,
+		auth_provider_snapshot, input_tokens, output_tokens, total_tokens,
+		failed, created_at_ms
+	) values (?, ?, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+		'gpt-test', 'gpt-test', ?, ?, ?, 'codex', 10, 2, 12, 0, ?)`,
+			hash, timestamp, authIndex, source, source, timestamp); err != nil {
+			t.Fatalf("seed usage event %s: %v", hash, err)
+		}
+	}
+	insertEvent("exact-page-complete", "idx-complete", "complete.json", 100)
+	insertEvent("exact-page-missing", "idx-missing", "missing.json", 200)
+	if _, err := st.CatchUpAccountHistoryRollups(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("build primary history: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("build primary pricing: %v", err)
+	}
+	if err := st.ConfigureDerivedStorage(context.Background(), config.Config{
+		DBPath: primaryPath, DerivedDBPath: filepath.Join(t.TempDir(), "usage-derived.sqlite"),
+		DerivedStorageMode: config.DerivedStorageSeparate, DerivedSourceBatchSize: 10, DerivedCycleMaxBatches: 1,
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	runtime := st.separateRuntime()
+	if runtime == nil {
+		t.Fatal("separate runtime unavailable")
+	}
+	completeKey := AccountHistoryKey("", "", "complete.json", "idx-complete")
+	missingKey := AccountHistoryKey("", "", "missing.json", "idx-missing")
+	// Keep the stream checkpoint at its verified primary target but remove one
+	// local pricing row. The source recovery must receive only that incomplete
+	// account, and it must not discard the other complete page row.
+	if _, err := runtime.derivedDB.Exec(`delete from derived_materialized_rows where stream_name = ? and subject_key = ?`, string(derivedstore.StreamPricing), missingKey); err != nil {
+		t.Fatalf("remove derived pricing row: %v", err)
+	}
+	trackedPricing := &trackingCurrentPagePricingRepository{Repository: runtime.sourcePricing}
+	runtime.sourcePricing = trackedPricing
+	snapshot, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{completeKey, missingKey})
+	if err != nil {
+		t.Fatalf("load current-page snapshot: %v", err)
+	}
+	if len(snapshot.Rows) != 2 {
+		t.Fatalf("current-page pricing rows = %#v", snapshot.Rows)
+	}
+	if len(trackedPricing.loadAccountRowsTxKeys) != 1 || trackedPricing.loadAccountRowsTxKeys[0] != missingKey {
+		t.Fatalf("source pricing recovery keys = %#v, want only %q", trackedPricing.loadAccountRowsTxKeys, missingKey)
+	}
+	for _, key := range []string{completeKey, missingKey} {
+		if _, incomplete := snapshot.PricingIncompleteAccountKeys[key]; incomplete {
+			t.Fatalf("complete source pricing for %q was marked incomplete", key)
+		}
+	}
+}
+
+func TestSeparateDerivedSnapshotBoundsExactCurrentPagePricingRecovery(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
 	if _, err := db.Exec(`insert into usage_events(
 		event_hash, timestamp_ms, timestamp, provider, model, requested_model,
 		resolved_model, auth_index, source, auth_file_snapshot,
 		auth_provider_snapshot, input_tokens, output_tokens, total_tokens,
 		failed, created_at_ms
-	) values ('exact-page-pricing', 100, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+	) values ('bounded-page-pricing', 100, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
 		'gpt-test', 'gpt-test', 'idx-1', 'credential.json', 'credential.json',
 		'codex', 10, 2, 12, 0, 100)`); err != nil {
 		t.Fatalf("seed usage event: %v", err)
@@ -375,22 +441,28 @@ func TestSeparateDerivedSnapshotRecoversExactCurrentPagePricingWhenDerivedPricin
 	if runtime == nil {
 		t.Fatal("separate runtime unavailable")
 	}
-	// Keep the stream checkpoint at its verified primary target but remove its
-	// local materialized row. This reproduces a pricing generation that has not
-	// yet materialized the visible account while account-history is available.
-	if _, err := runtime.derivedDB.Exec(`delete from derived_materialized_rows where stream_name = ?`, string(derivedstore.StreamPricing)); err != nil {
+	key := AccountHistoryKey("", "", "credential.json", "idx-1")
+	if _, err := runtime.derivedDB.Exec(`delete from derived_materialized_rows where stream_name = ? and subject_key = ?`, string(derivedstore.StreamPricing), key); err != nil {
 		t.Fatalf("remove derived pricing row: %v", err)
 	}
-	key := AccountHistoryKey("", "", "credential.json", "idx-1")
-	snapshot, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{key})
+	waitingPricing := &waitingCurrentPagePricingRepository{Repository: runtime.sourcePricing}
+	runtime.sourcePricing = waitingPricing
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started := time.Now()
+	snapshot, err := st.LoadUsagePricingAccountSnapshot(ctx, []string{key})
+	elapsed := time.Since(started)
 	if err != nil {
-		t.Fatalf("load current-page snapshot: %v", err)
+		t.Fatalf("load bounded current-page snapshot: %v", err)
 	}
-	if len(snapshot.Rows) != 1 || snapshot.Rows[0].AccountKey != key || snapshot.Rows[0].TotalTokens != 12 {
-		t.Fatalf("current-page pricing rows = %#v", snapshot.Rows)
+	if elapsed > 2*time.Second {
+		t.Fatalf("source pricing recovery blocked the page for %s", elapsed)
 	}
-	if _, incomplete := snapshot.PricingIncompleteAccountKeys[key]; incomplete {
-		t.Fatalf("complete source pricing for %q was marked incomplete", key)
+	if waitingPricing.deadlineRemaining > 1500*time.Millisecond {
+		t.Fatalf("source pricing recovery deadline = %s, want short page budget", waitingPricing.deadlineRemaining)
+	}
+	if _, incomplete := snapshot.PricingIncompleteAccountKeys[key]; !incomplete {
+		t.Fatalf("timed-out pricing recovery did not mark %q incomplete", key)
 	}
 }
 
@@ -937,6 +1009,31 @@ type rejectingCurrentPagePricingRepository struct {
 func (r *rejectingCurrentPagePricingRepository) LoadAccountRowsTx(context.Context, *sql.Tx, []string) ([]usagepricing.AccountRow, usagepricing.State, bool, error) {
 	r.loadAccountRowsTxCalled = true
 	return nil, usagepricing.State{}, false, errors.New("unexpected source pricing fallback")
+}
+
+type trackingCurrentPagePricingRepository struct {
+	usagepricing.Repository
+	loadAccountRowsTxKeys []string
+}
+
+func (r *trackingCurrentPagePricingRepository) LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, keys []string) ([]usagepricing.AccountRow, usagepricing.State, bool, error) {
+	r.loadAccountRowsTxKeys = append([]string(nil), keys...)
+	return r.Repository.LoadAccountRowsTx(ctx, tx, keys)
+}
+
+type waitingCurrentPagePricingRepository struct {
+	usagepricing.Repository
+	deadlineRemaining time.Duration
+}
+
+func (r *waitingCurrentPagePricingRepository) LoadAccountRowsTx(ctx context.Context, _ *sql.Tx, _ []string) ([]usagepricing.AccountRow, usagepricing.State, bool, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, usagepricing.State{}, false, errors.New("source pricing recovery has no deadline")
+	}
+	r.deadlineRemaining = time.Until(deadline)
+	<-ctx.Done()
+	return nil, usagepricing.State{}, false, ctx.Err()
 }
 
 func (s *runtimeTailCountingSource) Identity(context.Context) (derivedstore.SourceIdentity, error) {

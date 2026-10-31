@@ -978,11 +978,13 @@ Credits、额度、模型价格写入、归档事实、CPA Core、`cli-proxy-api
   只读事务复用 `UsagePricing.LoadAccountRowsTx`，再仅对仍不完整的这些键调用
   `LoadAccountRowsFromRetainedEventsTx`。这避免一个无关账号的单个 lag 事件把当前页变成主库长尾扫描。
   可证明完整时立即返回精确 `total_cost`，即使 `sync_status=pending`；无法证明的单个账号才返回金额
-  `null`。严禁退化为全量账号、全库 raw history 扫描、HTTP 内写主库或重启/唤醒多个 writer。
+  `null`。该单账号 source recovery 使用最多 **1 秒**的子 context；超时/错误时必须保留其他账号已
+  验证的 derived 价格，仅把原本不完整的账号保持为 `null`，绝不能让一个慢主库 pricing-tail 查询阻塞
+  整个当前页。严禁退化为全量账号、全库 raw history 扫描、HTTP 内写主库或重启/唤醒多个 writer。
 - 页面 request/token 仍可由已验证 account-history 返回；价格 source 回退临时失败时，仅把受影响
   core 账号标记 unpriced，不能让整个 `account-history` HTTP 请求卡死，更不能显示零金额或旧 revision
   冒充精确金额。
 - 未来合并至少保留以下回归：pricing burst 的 history-first 有界顺序、source target/coverage
   分离、live target `catching_up` 状态、全局 lag 但当前页 coverage 完整时禁止 source pricing 回退、
-  derived pricing 行缺失时当前页 source 精确金额恢复，以及 full package 的
+  不完整单账号 recovery 的 1 秒上界/完整同页价格保留、derived pricing 行缺失时当前页 source 精确金额恢复，以及 full package 的
   store/monitoring/http status 验证。
