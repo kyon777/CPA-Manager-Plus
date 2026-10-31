@@ -942,7 +942,7 @@ LO 已确认 CPAM 采用“主事实库 + 独立派生库”方案，后续实�
 - 独立 Worker 已实际接管 `account-history` 和 `pricing` 两条流，包括水位线、价格 revision/generation、归档 source 合并与当前页有界 tail。
 - `dashboard-hourly` 和 `monitoring-*` 的独立 schema 已预留，但本版未将旧的统计转换逻辑写入新库；`separate` 模式下这些读取会有界回退到原始事件查询，不会读旧主库派生表冒充新数据。
 - 因此归档清理在所有必要 stream 完成覆盖前会 fail-closed；不能为了释放磁盘空间跳过这个保护。
-- 可见页尾读超过 50,000 事件间隔时不同步扫描整张历史，保留最后已验证快照并显示 pending/stale，由后台 Worker 追赶。
+- 可见页尾读超过 5,000 事件间隔时不同步扫描整张历史，保留最后已验证快照并显示 pending/stale，由后台 Worker 追赶。
 - 首次创建独立库时，只在独立库导入主库中已验证且结构版本匹配的 legacy history/pricing 物化行作为安全起点；不复制原始事件或控制表。
 - 独立库打开、schema 校验或 legacy bootstrap 失败时，CPAM 不偷偷回退到主库派生写入；服务进入 separate/degraded 状态，原始采集、计费事实与控制面继续运行，派生读与归档删除保持 pending/fail-closed。
 - `CatchUpAccountHistoryRollups` 在 separate runtime 不可用时必须显式返回 `Pending=true`，不得用零水位把 degraded 状态伪装成已追平；归档删除 guard 在进入删除阶段、每个批次开始和原始删除前再次校验，尽量缩小跨库检查与不可逆删除之间的窗口。
@@ -950,3 +950,37 @@ LO 已确认 CPAM 采用“主事实库 + 独立派生库”方案，后续实�
 
 - 所有 CPAM 更新、构建和部署仍只改 CPAM；服务器只重启 `cpam.service`，绝不触碰 CPA Core、`cli-proxy-api`、`/home/cpa` 或 `cpa.service`。部署前后核对 CPA Core 身份、主库、`data.key`、secrets、OpenResty 和证书配置。
 - 实施顺序固定为：配置/只读源边界 → 独立 schema → 有界 source/sink → 双库 engine → Store 读路径 → 归档 guard → Worker/status → 前端金额显示 → 本地验证 → 服务器 staged（先 paused，再 enabled）部署。失败时可切回 `primary + USAGE_BACKGROUND_DERIVATIONS_ENABLED=false`，不恢复或覆盖主库。
+
+## 2026-10-31：独立 pricing 追赶、当前页精确金额与真实 lag（必须保留）
+
+本节补充并优先于上文中任何“独立 pricing 未追平就让当前页金额为空”的表述。它只改变
+CPAM 的可重建派生调度与**只读**展示路径；绝不改变 `usage.sqlite` 事实、`usage_events`、
+Credits、额度、模型价格写入、归档事实、CPA Core、`cli-proxy-api`、`/home/cpa`、`cpa.service`
+或任何计费写入语义。
+
+- 独立 runtime 的 pricing 快车道配置必须保留：
+  `USAGE_DERIVED_PRICING_CATCHUP_BATCH_SIZE`（默认 `1000`）、
+  `USAGE_DERIVED_PRICING_CATCHUP_MAX_BATCHES`（默认 `4`）、
+  `USAGE_DERIVED_PRICING_CATCHUP_LAG_EVENTS`（默认 `10000`）。服务器可用受控值
+  `2000 / 8 / 10000`。pricing 的 generation/epoch/pricing revision/archive generation
+  不一致，或真实 lag 达阈值时，每轮最多先跑一个普通 account-history 批次，再跑有上限的
+  pricing burst；仍只有一个 derived SQLite writer。
+- `derivedstore.ApplyBatch` 必须携带完整 source snapshot 的 `SourceTargetEventID`。它与
+  `ToEventID` 分离：后者只能推进已提交 coverage，前者只记录当轮主库真实 target。禁止再把
+  小批的 `ToEventID` 写成 target，造成“`ready + lag=0`”的伪完成。
+- `Store.SeparateDerivedStatus` 每次读取状态都必须通过 runtime 的 `mode=ro + query_only=ON`
+  source snapshot 刷新公开 target；HTTP `/status?scope=database-maintenance` 在
+  `coverage < target` 时必须显示 `catching_up` 和真实 `lagEventId`。
+- **B 方案在 separate runtime 也必须成立：**当 pricing 派生未追平或当前页 pricing 行无法和
+  account-history 核验时，`LoadUsagePricingAccountSnapshot` 只针对本 HTTP 请求携带的账号键
+  （当前页上限 50）通过 `sourceDB` 的只读事务复用 `UsagePricing.LoadAccountRowsTx`，再仅对
+  仍不完整的这些键调用 `LoadAccountRowsFromRetainedEventsTx`。结果必须经过
+  `accountPricingCoverageIncompleteKeys` 核验；可证明完整时立即返回精确 `total_cost`，即使
+  `sync_status=pending`；无法证明的单个账号才返回金额 `null`。严禁退化为全量账号、全库 raw
+  history 扫描、HTTP 内写主库或重启/唤醒多个 writer。
+- 页面 request/token 仍可由已验证 account-history 返回；价格 source 回退临时失败时，仅把受影响
+  core 账号标记 unpriced，不能让整个 `account-history` HTTP 请求卡死，更不能显示零金额或旧 revision
+  冒充精确金额。
+- 未来合并至少保留以下回归：pricing burst 的 history-first 有界顺序、source target/coverage
+  分离、live target `catching_up` 状态、derived pricing 行缺失时当前页 source 精确金额恢复，以及
+  full package 的 store/monitoring/http status 验证。
