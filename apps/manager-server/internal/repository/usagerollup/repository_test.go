@@ -734,6 +734,67 @@ func TestCatchUpAccountHistoryRebuildSeparatesCodexWorkspaceMembers(t *testing.T
 	}
 }
 
+func TestCatchUpAccountHistoryRebuildUnifiesCodexEmailAcrossWorkspaceIntroduction(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+
+	initialImport := rollupTestEvent("codex-import-without-workspace", 1_700_100_001_000, "gpt-5", "", "merge@example.com", "", "auth-before", false, 100, 0, 0, 0, 0, 0, 100)
+	initialImport.Provider = "codex"
+	initialImport.AuthProviderSnapshot = "codex"
+	initialImport.AuthFileSnapshot = "merge-before.json"
+	initialImport.Source = initialImport.AuthFileSnapshot
+
+	refreshedToken := rollupTestEvent("codex-refresh-with-workspace", 1_700_100_002_000, "gpt-5", "", "merge@example.com", "", "auth-after", false, 200, 0, 0, 0, 0, 0, 200)
+	refreshedToken.Provider = "codex"
+	refreshedToken.AuthProviderSnapshot = "codex"
+	refreshedToken.AuthFileSnapshot = "merge-after.json"
+	refreshedToken.Source = refreshedToken.AuthFileSnapshot
+	refreshedToken.AuthAccountIDSnapshot = "workspace-added-by-refresh"
+
+	if _, err := events.InsertBatch(ctx, []usage.Event{initialImport, refreshedToken}); err != nil {
+		t.Fatalf("insert pre/post refresh Codex events: %v", err)
+	}
+	if _, err := db.Exec(`delete from usage_account_model_rollups`); err != nil {
+		t.Fatalf("clear account rollups: %v", err)
+	}
+	scheduleRollupRebuildForTest(t, db, AccountHistoryCheckpointName, 2)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := repo.CatchUpAccountHistory(ctx, 1, 1_700_100_010_000+int64(attempt)); err != nil {
+			t.Fatalf("rebuild Codex email merge batch %d: %v", attempt, err)
+		}
+	}
+
+	initialKey, initialValid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     initialImport.AuthFileSnapshot,
+		AuthIndex:            initialImport.AuthIndex,
+		AuthProviderSnapshot: "codex",
+		AccountSnapshot:      initialImport.AccountSnapshot,
+		Source:               initialImport.Source,
+	})
+	refreshedKey, refreshedValid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:      refreshedToken.AuthFileSnapshot,
+		AuthIndex:             refreshedToken.AuthIndex,
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: refreshedToken.AuthAccountIDSnapshot,
+		AccountSnapshot:       refreshedToken.AccountSnapshot,
+		Source:                refreshedToken.Source,
+	})
+	if !initialValid || !refreshedValid || initialKey != refreshedKey {
+		t.Fatalf("Codex email identity split across refresh: before=%q (%v) after=%q (%v)", initialKey, initialValid, refreshedKey, refreshedValid)
+	}
+
+	rows, err := repo.AccountHistoryRows(ctx, []string{initialKey})
+	if err != nil {
+		t.Fatalf("query merged Codex account history: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Calls != 2 || rows[0].InputTokens != 300 || rows[0].TotalTokens != 300 {
+		t.Fatalf("merged Codex account history rows = %#v", rows)
+	}
+}
+
 func newRollupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))

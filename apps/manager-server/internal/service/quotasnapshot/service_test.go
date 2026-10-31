@@ -2127,6 +2127,7 @@ func TestWriteUsageEventsSkipsZeroOnlyCodexHeaderPlaceholder(t *testing.T) {
 
 	legacyAccount := quotaSnapshotTestAccount()
 	legacyAccount.AuthIndex = "auth-legacy-placeholder"
+	legacyAccount.AccountSnapshot = "legacy-placeholder@example.com"
 	remaining := 100.0
 	if _, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
 		Provider: "codex", Account: legacyAccount, Windows: []WindowInput{{

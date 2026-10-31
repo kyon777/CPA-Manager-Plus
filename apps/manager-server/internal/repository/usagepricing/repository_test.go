@@ -470,6 +470,63 @@ func TestPricingAccountRollupSeparatesCodexMembersSharingWorkspace(t *testing.T)
 	}
 }
 
+func TestPricingAccountRollupUnifiesCodexEmailAcrossWorkspaceIntroduction(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+
+	beforeRefresh := pricingEvent("codex-price-before-workspace", 3_700_001, 100)
+	beforeRefresh.Provider = "codex"
+	beforeRefresh.AccountSnapshot = "merge@example.com"
+	beforeRefresh.AuthFileSnapshot = "merge-before.json"
+	beforeRefresh.AuthIndex = "auth-before"
+	beforeRefresh.AuthProviderSnapshot = "codex"
+	beforeRefresh.Source = beforeRefresh.AuthFileSnapshot
+
+	afterRefresh := pricingEvent("codex-price-after-workspace", 3_700_002, 200)
+	afterRefresh.Provider = "codex"
+	afterRefresh.AccountSnapshot = "merge@example.com"
+	afterRefresh.AuthFileSnapshot = "merge-after.json"
+	afterRefresh.AuthIndex = "auth-after"
+	afterRefresh.AuthProviderSnapshot = "codex"
+	afterRefresh.AuthAccountIDSnapshot = "workspace-added-by-refresh"
+	afterRefresh.Source = afterRefresh.AuthFileSnapshot
+
+	if _, err := st.UsageEvents.InsertBatch(ctx, []usage.Event{beforeRefresh, afterRefresh}); err != nil {
+		t.Fatalf("insert pre/post refresh Codex pricing events: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 10_000); err != nil {
+		t.Fatalf("catch up merged Codex pricing events: %v", err)
+	}
+
+	beforeKey, beforeValid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     beforeRefresh.AuthFileSnapshot,
+		AuthIndex:            beforeRefresh.AuthIndex,
+		AuthProviderSnapshot: "codex",
+		AccountSnapshot:      beforeRefresh.AccountSnapshot,
+		Source:               beforeRefresh.Source,
+	})
+	afterKey, afterValid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:      afterRefresh.AuthFileSnapshot,
+		AuthIndex:             afterRefresh.AuthIndex,
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: afterRefresh.AuthAccountIDSnapshot,
+		AccountSnapshot:       afterRefresh.AccountSnapshot,
+		Source:                afterRefresh.Source,
+	})
+	if !beforeValid || !afterValid || beforeKey != afterKey {
+		t.Fatalf("Codex pricing identity split across refresh: before=%q (%v) after=%q (%v)", beforeKey, beforeValid, afterKey, afterValid)
+	}
+
+	rows, _, available, err := st.UsagePricingAccountRows(ctx, []string{beforeKey})
+	if err != nil {
+		t.Fatalf("load merged Codex pricing row: %v", err)
+	}
+	if !available || len(rows) != 1 || rows[0].Calls != 2 || rows[0].InputTokens != 300 || rows[0].TotalTokens != 320 {
+		t.Fatalf("merged Codex pricing rows available=%v rows=%#v", available, rows)
+	}
+}
+
 func TestPricingRollupRateUpdatesKeepRevisionAndThresholdUpdatesRebuild(t *testing.T) {
 	ctx := context.Background()
 	cfg := testutil.NewConfig(t)

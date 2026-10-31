@@ -172,6 +172,21 @@ func TestSinkResetsCoverageWhenGenerationChanges(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("apply first generation: %v", err)
 	}
+	// Simulate an orphaned generation left by an interrupted/older deployment.
+	// A generation switch must remove every stale generation for this stream,
+	// not only the generation recorded in derived_stream_state.
+	if _, err := db.Exec(`insert into derived_materialized_rows(
+		stream_name, generation, row_key, subject_key, payload_json,
+		first_event_id, last_event_id, updated_at_ms
+	) values (?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(StreamPricing), "pricing-v1:orphan", "orphan", "orphan", `{"calls":1}`, 8, 8, 1); err != nil {
+		t.Fatalf("insert orphan derived row: %v", err)
+	}
+	if _, err := db.Exec(`insert into derived_applied_events(
+		stream_name, generation, event_id, event_hash, applied_at_ms
+	) values (?, ?, ?, ?, ?)`, string(StreamPricing), "pricing-v1:orphan", 8, "orphan", 1); err != nil {
+		t.Fatalf("insert orphan applied event: %v", err)
+	}
 	state, err := sink.Apply(context.Background(), ApplyBatch{
 		Stream: StreamPricing, SourceEpoch: "epoch-a", Generation: "pricing-v1:b", ToEventID: 2,
 		Events: []EventRecord{{ID: 2, EventHash: "new"}},
@@ -187,8 +202,29 @@ func TestSinkResetsCoverageWhenGenerationChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read old generation: %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("old generation rows = %#v", rows)
+	if len(rows) != 0 {
+		t.Fatalf("stale generation rows were retained = %#v", rows)
+	}
+	rows, err = sink.Rows(context.Background(), StreamPricing, "pricing-v1:orphan")
+	if err != nil {
+		t.Fatalf("read orphan generation: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("orphan generation rows were retained = %#v", rows)
+	}
+	var oldApplied int
+	if err := db.QueryRow(`select count(*) from derived_applied_events where stream_name = ? and generation = ?`, string(StreamPricing), "pricing-v1:a").Scan(&oldApplied); err != nil {
+		t.Fatalf("count stale applied events: %v", err)
+	}
+	if oldApplied != 0 {
+		t.Fatalf("stale applied events were retained = %d", oldApplied)
+	}
+	var orphanApplied int
+	if err := db.QueryRow(`select count(*) from derived_applied_events where stream_name = ? and generation = ?`, string(StreamPricing), "pricing-v1:orphan").Scan(&orphanApplied); err != nil {
+		t.Fatalf("count orphan applied events: %v", err)
+	}
+	if orphanApplied != 0 {
+		t.Fatalf("orphan applied events were retained = %d", orphanApplied)
 	}
 }
 

@@ -180,7 +180,23 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 		return StreamState{}, fmt.Errorf("derived source epoch mismatch for %s: have %s, got %s", batch.Stream, existingEpoch, batch.SourceEpoch)
 	}
 	generationChanged := existing && existingGeneration != "" && existingGeneration != batch.Generation
+	// A prior process may have left more than one stale generation behind
+	// (for example, after a crash between the state update and cleanup). The
+	// current generation is the only readable one, so purge every other
+	// materialization/ledger row for this stream before accepting new rows.
+	if !existing || existingGeneration != batch.Generation {
+		if _, err := tx.ExecContext(ctx, `delete from derived_materialized_rows where stream_name = ? and generation <> ?`, string(batch.Stream), batch.Generation); err != nil {
+			return StreamState{}, fmt.Errorf("clear stale derived materializations for %s: %w", batch.Stream, err)
+		}
+		if _, err := tx.ExecContext(ctx, `delete from derived_applied_events where stream_name = ? and generation <> ?`, string(batch.Stream), batch.Generation); err != nil {
+			return StreamState{}, fmt.Errorf("clear stale derived applied events for %s: %w", batch.Stream, err)
+		}
+	}
 	if generationChanged {
+		// A generation change means the identity or pricing algorithm changed.
+		// The stream state is reset atomically below after all stale generations
+		// have been removed, so the new email-key generation cannot coexist with
+		// the old workspace/file buckets.
 		if _, err := tx.ExecContext(ctx, `update derived_stream_state set
 			source_epoch=?, generation=?, status='rebuilding', coverage_event_id=0,
 			target_event_id=?, pricing_revision=?, archive_generation=?, processed_events=0,

@@ -269,21 +269,13 @@ func accountWindowCanUseDaily(window AccountWindowUsageQuery) bool {
 		Source:                window.Source,
 	}
 	if normalizeWindowProvider(window.AuthProviderSnapshot) == "codex" {
-		workspace, workspaceOK := usageidentity.NormalizeCodexWorkspaceSnapshot(window.AuthAccountIDSnapshot)
-		_, memberOK := usageidentity.NormalizeCodexMemberSnapshot(window.AccountSnapshot)
-		if !workspaceOK || !memberOK {
+		// Workspace/account-id is mutable provenance, not part of the Codex
+		// bucket anymore. A daily row is safe whenever the canonical email key
+		// is valid; this deliberately allows an initial no-workspace event and a
+		// later workspace-bearing reauth event to share the same fast-path row.
+		if !usageidentity.HasCanonicalCodexMember(fields) {
 			return false
 		}
-		resolvedWorkspace, resolvedOK := usageidentity.ResolveCodexWorkspace(fields)
-		if !resolvedOK || resolvedWorkspace != workspace {
-			return false
-		}
-		// The daily table can safely serve only a complete workspace/member key.
-		// Events carrying the legacy Workspace provenance marker are excluded
-		// while upserting because that evidence is not persisted in the daily row;
-		// the account-window query adds those events back through
-		// projection/raw residuals. Generic Codex project IDs do not carry
-		// Workspace identity evidence and remain safe in the daily rollup.
 	}
 	expectedKey, valid := usageidentity.AccountKey(fields)
 	return valid && accountWindowKey(window) == expectedKey
@@ -329,6 +321,9 @@ func accountWindowIdentityFields(window AccountWindowUsageQuery) usageidentity.F
 
 func accountWindowKeys(window AccountWindowUsageQuery) (string, string) {
 	accountKey := accountWindowKey(window)
+	if usageidentity.HasCanonicalCodexMember(accountWindowIdentityFields(window)) {
+		return accountKey, accountKey
+	}
 	legacyAccountKey := accountKey
 	if window.LegacyAccountKeyChecked {
 		if key := strings.TrimSpace(window.LegacyAccountKey); key != "" {

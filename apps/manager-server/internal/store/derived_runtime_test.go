@@ -15,6 +15,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func TestSeparateDerivedRuntimeServesAccountSnapshotFromDerivedDB(t *testing.T) {
@@ -56,6 +57,89 @@ func TestSeparateDerivedRuntimeServesAccountSnapshotFromDerivedDB(t *testing.T) 
 	}
 	if !snapshot.Available || len(snapshot.CoreRows) == 0 || len(snapshot.Rows) == 0 {
 		t.Fatalf("separate snapshot = %#v", snapshot)
+	}
+}
+
+func TestSeparateDerivedRuntimeUnifiesCodexEmailAcrossWorkspaceIntroduction(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+
+	insertEvent := func(hash, fileName, authIndex, workspace string, timestampMS, inputTokens int64) {
+		t.Helper()
+		if _, err := db.Exec(`insert into usage_events(
+			event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+			resolved_model, auth_index, source, auth_file_snapshot,
+			auth_provider_snapshot, auth_account_id_snapshot, account_snapshot,
+			input_tokens, output_tokens, total_tokens, failed, created_at_ms
+		) values (?, ?, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+			'gpt-test', 'gpt-test', ?, ?, ?, 'codex', ?, 'merge@example.com',
+			?, 0, ?, 0, ?)`,
+			hash, timestampMS, authIndex, fileName, fileName, workspace,
+			inputTokens, inputTokens, timestampMS); err != nil {
+			t.Fatalf("seed %s: %v", hash, err)
+		}
+	}
+	// This is the exact production transition: the first imported credential
+	// has only an email; a later reauthenticated file adds Workspace metadata.
+	insertEvent("merge-before-workspace", "imported.json", "auth-before", "", 100, 100)
+	insertEvent("merge-after-workspace", "refreshed.json", "auth-after", "workspace-added-by-reauth", 200, 200)
+
+	derivedPath := filepath.Join(t.TempDir(), "usage-derived.sqlite")
+	if err := st.ConfigureDerivedStorage(context.Background(), config.Config{
+		DBPath:                 primaryPath,
+		DerivedDBPath:          derivedPath,
+		DerivedStorageMode:     config.DerivedStorageSeparate,
+		DerivedSourceBatchSize: 10,
+		DerivedCycleMaxBatches: 4,
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	if _, err := st.RunSeparateDerivedCycle(context.Background()); err != nil {
+		t.Fatalf("replay Codex email identity: %v", err)
+	}
+
+	key, valid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     "imported.json",
+		AuthIndex:            "auth-before",
+		AuthProviderSnapshot: "codex",
+		AccountSnapshot:      "merge@example.com",
+	})
+	if !valid {
+		t.Fatal("canonical Codex email key is invalid")
+	}
+	snapshot, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{key})
+	if err != nil {
+		t.Fatalf("load merged derived snapshot: %v", err)
+	}
+	if !snapshot.Available || len(snapshot.CoreRows) != 1 || len(snapshot.Rows) != 1 {
+		t.Fatalf("merged separate snapshot = %#v", snapshot)
+	}
+	if snapshot.CoreRows[0].AccountKey != key || snapshot.CoreRows[0].Calls != 2 || snapshot.CoreRows[0].InputTokens != 300 || snapshot.CoreRows[0].TotalTokens != 300 {
+		t.Fatalf("merged derived account-history row = %#v", snapshot.CoreRows[0])
+	}
+	if snapshot.Rows[0].AccountKey != key || snapshot.Rows[0].Calls != 2 || snapshot.Rows[0].InputTokens != 300 || snapshot.Rows[0].TotalTokens != 300 {
+		t.Fatalf("merged derived pricing row = %#v", snapshot.Rows[0])
+	}
+
+	derivedDB, err := sqliterepo.OpenDerived(derivedPath)
+	if err != nil {
+		t.Fatalf("open derived database: %v", err)
+	}
+	t.Cleanup(func() { _ = derivedDB.Close() })
+	for _, stream := range []derivedstore.Stream{derivedstore.StreamAccountHistory, derivedstore.StreamPricing} {
+		var buckets int
+		if err := derivedDB.QueryRow(`select count(distinct subject_key)
+			from derived_materialized_rows where stream_name = ?`, string(stream)).Scan(&buckets); err != nil {
+			t.Fatalf("count %s buckets: %v", stream, err)
+		}
+		if buckets != 1 {
+			t.Fatalf("%s bucket count = %d, want 1 for one Codex email", stream, buckets)
+		}
 	}
 }
 

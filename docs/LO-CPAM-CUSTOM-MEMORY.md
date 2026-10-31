@@ -988,3 +988,48 @@ Credits、额度、模型价格写入、归档事实、CPA Core、`cli-proxy-api
   分离、live target `catching_up` 状态、全局 lag 但当前页 coverage 完整时禁止 source pricing 回退、
   不完整单账号 recovery 的 1 秒上界/完整同页价格保留、derived pricing 行缺失时当前页 source 精确金额恢复，以及 full package 的
   store/monitoring/http status 验证。
+
+## 2026-10-31: Codex email identity merge across reauthentication (must retain)
+
+This CPAM-only identity migration is mandatory during every later upstream merge.
+It does not modify CPA Core, cli-proxy-api, raw `usage_events`, credential bytes,
+request routing, Credits, quota enforcement, dashboard billing, or any primary
+fact-writing behavior.
+
+- For `provider=codex`, a valid normalized ASCII `account_snapshot` email is the
+  sole canonical account aggregation identity:
+  `usage-account-history:3:codex-member:<provider>:<email>`.  A Workspace /
+  `auth_account_id_snapshot`, project marker, auth file, auth index, source, and
+  label are mutable provenance only. They MUST NOT split the same email into
+  separate account-history, pricing, account-window, or separate-derived buckets.
+- This specifically covers the normal transition where a first imported
+  credential has no Workspace ID and the Token Recovery / automatic reauth
+  replacement later has one. Both before/after events must merge by email. A
+  missing or invalid email must continue to use the physical file/index fallback;
+  never merge incomplete snapshots merely because a Workspace matches.
+- `usageidentity.CodexIdentityRevision` is `3`. Go `AccountKey`,
+  `SQLAccountKeyExpression`, and `SQLAccountKeyExpressionWithoutProject` must
+  stay byte-for-byte semantically equivalent. Non-Codex provider keys must remain
+  unchanged.
+- Primary account-history/pricing migration must recognize the prior deployed
+  `identity-3:codex-2:model-1` state, park stale account-history rows, reset only
+  rebuildable state / disposable account price cache, and rebuild from retained
+  raw/archive facts. Do NOT edit or delete `usage_events` to perform this merge.
+  The online bounded derived-cleanup worker reclaims old primary pricing revisions
+  after the current revision is available.
+- In `usage-derived.sqlite`, both account-history and pricing generation strings
+  include `codex-3`. On a generation change, `derivedstore.sqlSink.Apply` must
+  atomically delete *every* non-current generation's materialized rows AND
+  applied-event ledger rows for that stream before accepting the new generation;
+  do not only delete the generation named in `derived_stream_state` because an
+  interrupted deployment can leave orphan generations behind.
+- Separate-derived reads must accept only exact current source/generation rows
+  during this identity migration. Do not append old file/index compatibility
+  aliases to a valid canonical email target, and do not surface a stale
+  workspace/file generation as a second bucket while the new email generation is
+  rebuilding. A stale `LegacyAccountKey` carried by the client must be ignored
+  for valid Codex email targets.
+- Required regressions: no-workspace -> Workspace reauth same email; changed
+  Workspace/file same email; different emails remain separate; primary
+  account-history/pricing aggregation; separate-derived materialization; and
+  stale/orphan generation purge.

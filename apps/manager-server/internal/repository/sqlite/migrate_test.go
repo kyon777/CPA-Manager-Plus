@@ -3187,6 +3187,12 @@ func TestAccountHistoryIdentityFormatUpgradeUsesDedicatedCodexLegacyTable(t *tes
 			unwantedLegacyTable: usageAccountModelIdentityLegacy,
 		},
 		{
+			name:                "codex-v2-structured",
+			version:             legacyAccountHistoryStructureRevisionCodexV2,
+			wantLegacyTable:     usageAccountModelCodexIdentityLegacy,
+			unwantedLegacyTable: usageAccountModelIdentityLegacy,
+		},
+		{
 			name:                "v1",
 			version:             "1",
 			wantLegacyTable:     usageAccountModelCodexIdentityLegacy,

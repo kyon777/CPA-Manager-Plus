@@ -16,7 +16,7 @@ const (
 	codexAccountIDSnapshotPrefix = "codex-account-id:v1:"
 	// CodexIdentityRevision changes independently from FormatVersion because
 	// the other providers must retain their existing AccountKey values.
-	CodexIdentityRevision = "2"
+	CodexIdentityRevision = "3"
 	// CodexLegacyIdentityEvidenceSchemaVersion changes independently from
 	// monitoring SchemaVersion.
 	CodexLegacyIdentityEvidenceSchemaVersion = 1
@@ -100,8 +100,9 @@ func SQLProjectIDSnapshotExpression(alias string) string {
 }
 
 // Fields contains the credential snapshots available on a usage event or an
-// account-history request. Display values are deliberately lower priority than
-// credential identity fields so two credentials sharing an email never merge.
+// account-history request. For Codex, the normalized member email is the
+// durable identity; workspace/account-id and credential-file metadata are
+// mutable provenance and must not split one member into multiple buckets.
 type Fields struct {
 	AuthFileSnapshot      string
 	AuthIndex             string
@@ -119,17 +120,24 @@ type Fields struct {
 func AccountKey(fields Fields) (string, bool) {
 	provider := normalizeProvider(fields.AuthProviderSnapshot)
 	if provider == "codex" {
-		workspaceID, workspaceOK := ResolveCodexWorkspace(fields)
-		// A provenance marker in the historical project snapshot is legacy
-		// evidence only. It may validate a legacy alias, but it must not
-		// promote an old event into the new stable member bucket.
-		if workspaceOK && strings.Trim(fields.AuthAccountIDSnapshot, " ") != "" {
-			if member, ok := stableCodexMemberSnapshot(fields); ok {
-				return encodeCodexKey("codex-member", provider, workspaceID, member), true
-			}
+		// The initial import may not contain a Workspace/account id, while a
+		// refreshed token does. Workspace metadata is mutable and must not split
+		// one email account into two usage buckets.
+		if member, ok := stableCodexMemberSnapshot(fields); ok {
+			return encodeCodexKey("codex-member", provider, member), true
 		}
 	}
 	return LegacyAccountKey(fields)
+}
+
+// HasCanonicalCodexMember reports whether the snapshots carry the canonical
+// Codex email identity used by AccountKey. Callers that still understand the
+// pre-email legacy file/workspace aliases must not append those aliases when
+// this returns true: doing so would re-introduce a second bucket during a
+// read even though the canonical SQL identity has already merged the events.
+func HasCanonicalCodexMember(fields Fields) bool {
+	_, ok := stableCodexMemberSnapshot(fields)
+	return normalizeProvider(fields.AuthProviderSnapshot) == "codex" && ok
 }
 
 // LegacyAccountKey returns the format-v2 credential identity. Account-window
@@ -211,8 +219,8 @@ func SQLAccountKeyExpression(alias string) string {
 // SQLAccountKeyExpressionWithoutProject mirrors SQLAccountKeyExpression for
 // derived tables that intentionally do not persist auth_project_id_snapshot.
 // Their remaining identity columns are sufficient for file/index and Codex
-// workspace/member keys, which are the only keys eligible for the
-// account-window daily fast path.
+// email/member keys, which are the only keys eligible for the account-window
+// daily fast path.
 func SQLAccountKeyExpressionWithoutProject(alias string) string {
 	return sqlAccountKeyExpression(alias, true)
 }
@@ -233,7 +241,6 @@ func sqlAccountKeyExpression(alias string, withoutProject bool) string {
 	source := trimmed("source")
 	account := trimmed("account_snapshot")
 	label := trimmed("auth_label_snapshot")
-	accountID := trimmed("auth_account_id_snapshot")
 	projectID := "''"
 	if !withoutProject {
 		projectID = trimmed("auth_project_id_snapshot")
@@ -253,14 +260,9 @@ func sqlAccountKeyExpression(alias string, withoutProject bool) string {
 		return value + " <> '' and length(" + value + ") = length(cast(" + value + " as blob)) and " +
 			value + " not glob '*[^!-~]*'"
 	}
-	directWorkspacePresent := accountID + " <> ''"
-	markedWorkspacePresent := "substr(" + projectID + ", 1, length(" + marker + ")) = " + marker
-	markedWorkspaceValid := "(" + markedWorkspacePresent + " = 0 or " + legacyMarkerAccountID + " <> '')"
-	codexWorkspaceValid := markedWorkspaceValid + " and (" +
-		"(" + directWorkspacePresent + " = 0) or (" + markedWorkspacePresent + " = 0) or " +
-		accountID + " = " + legacyMarkerAccountID + ")"
-	codexWorkspaceID := accountID
-	codexMemberValid := providerNormalized + " = 'codex' and " + directWorkspacePresent + " and " + codexWorkspaceValid + " and " +
+	// Workspace/account-id and historical project markers are mutable metadata;
+	// they intentionally do not participate in the Codex bucket discriminator.
+	codexMemberValid := providerNormalized + " = 'codex' and " +
 		printableASCII(account) + " and " +
 		"instr(" + codexMember + ", '@') > 1 and " +
 		"instr(" + codexMember + ", '@') < length(" + codexMember + ") and " +
@@ -281,7 +283,7 @@ func sqlAccountKeyExpression(alias string, withoutProject bool) string {
 	}
 
 	return "case " +
-		"when " + codexMemberValid + " then " + key("codex-member", providerNormalized, codexWorkspaceID, codexMember) + " " +
+		"when " + codexMemberValid + " then " + key("codex-member", providerNormalized, codexMember) + " " +
 		"when " + authFile + " <> '' and " + authIndex + " <> '' then " + key("file-index", authFile, authIndex) + " " +
 		"when " + providerNormalized + " = 'codex' and " + authFile + " <> '' then " + key("file", authFile, providerNormalized) + " " +
 		"when " + providerNormalized + " <> 'codex' and " + authFile + " <> '' and " + legacyProjectID + " <> '' then " + key("file-project", authFile, providerNormalized, legacyProjectID) + " " +

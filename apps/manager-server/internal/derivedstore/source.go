@@ -298,10 +298,17 @@ func scanEventRecord(row scanner) (EventRecord, error) {
 }
 
 func accountKey(event EventRecord) string {
+	providerSnapshot := strings.TrimSpace(event.AuthProviderSnapshot)
+	if providerSnapshot == "" {
+		// Older imports can carry the provider only on the raw event. Keep this
+		// Go transform aligned with SQLAccountKeyExpression, which already uses
+		// provider as the fallback before deciding whether an email is Codex.
+		providerSnapshot = strings.TrimSpace(event.Provider)
+	}
 	key, _ := usageidentity.AccountKey(usageidentity.Fields{
 		AuthFileSnapshot:      event.AuthFileSnapshot,
 		AuthIndex:             event.AuthIndex,
-		AuthProviderSnapshot:  event.AuthProviderSnapshot,
+		AuthProviderSnapshot:  providerSnapshot,
 		AuthAccountIDSnapshot: event.AuthAccountIDSnapshot,
 		AuthProjectIDSnapshot: event.AuthProjectIDSnapshot,
 		AccountSnapshot:       event.AccountSnapshot,

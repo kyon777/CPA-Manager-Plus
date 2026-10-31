@@ -492,11 +492,12 @@ func mergeSourceEvents(raw, archived []EventRecord, limit int) ([]EventRecord, e
 // revision; an account-history generation does not, because its counters are
 // independent of model rates.
 func GenerationFor(stream Stream, snapshot SourceSnapshot) string {
+	identityRevision := usageidentity.CodexIdentityRevision
 	switch stream {
 	case StreamPricing:
-		return pricingGenerationPrefix + snapshot.Identity.Epoch + ":" + snapshot.PricingRevision
+		return pricingGenerationPrefix + snapshot.Identity.Epoch + ":codex-" + identityRevision + ":" + snapshot.PricingRevision
 	default:
-		return accountHistoryGenerationPrefix + snapshot.Identity.Epoch
+		return accountHistoryGenerationPrefix + snapshot.Identity.Epoch + ":codex-" + identityRevision
 	}
 }
 

@@ -1730,7 +1730,21 @@ func ResolveAccountWindowLegacyKeys(
 	legacyConflicts := make(map[string]struct{})
 	for index := range resolved {
 		window := &resolved[index]
+		// Canonical Codex email targets already select both the pre-workspace
+		// and post-reauth events through SQLAccountKeyExpression. Appending the
+		// old physical file/index alias here would make a stale derived bucket
+		// visible again and could double-count it during a generation rebuild.
+		if usageidentity.HasCanonicalCodexMember(accountWindowIdentityFields(*window)) {
+			// A caller may have carried an old compatibility alias forward from a
+			// cached page. Clear it explicitly; otherwise accountWindowQueryKeys
+			// could still append the stale file/index bucket after this resolver
+			// correctly decided that email is the canonical identity.
+			window.LegacyAccountKey = ""
+			window.LegacyAccountKeyChecked = true
+			continue
+		}
 		if !codexLegacyWindowTarget(*window) {
+			window.LegacyAccountKeyChecked = true
 			continue
 		}
 		cacheKey := codexLegacyWindowCacheKey(*window)
@@ -1832,6 +1846,9 @@ func accountWindowQueryKey(window AccountWindowUsageQuery) string {
 
 func accountWindowQueryKeys(window AccountWindowUsageQuery) (string, string) {
 	accountKey := accountWindowQueryKey(window)
+	if usageidentity.HasCanonicalCodexMember(accountWindowIdentityFields(window)) {
+		return accountKey, accountKey
+	}
 	legacyAccountKey := accountKey
 	if window.LegacyAccountKeyChecked {
 		if key := strings.TrimSpace(window.LegacyAccountKey); key != "" {

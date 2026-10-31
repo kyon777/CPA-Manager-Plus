@@ -2806,6 +2806,7 @@ func TestRunPersistsPlanQuotaWindowsAndErrorDetail(t *testing.T) {
 		Accounts: []quotasnapshotsvc.QueryAccount{{
 			RowKey: "row-1", Provider: "codex", Account: quotasnapshotsvc.AccountTarget{
 				AuthFileSnapshot: "auth-a.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-1",
+				AccountSnapshot: "alice@example.com",
 			},
 		}},
 	})

@@ -2620,7 +2620,7 @@ func TestAccountHistoryAutoMergesSafeCodexLegacyFileIndex(t *testing.T) {
 	}
 }
 
-func TestAccountHistoryRejectsConflictingCodexLegacyFileIndex(t *testing.T) {
+func TestAccountHistoryMergesSameEmailAcrossCodexWorkspaceAndFileSnapshots(t *testing.T) {
 	db := newMonitoringTestStore(t)
 	ctx := context.Background()
 	baseMS := int64(1_700_007_000_000)
@@ -2661,8 +2661,8 @@ func TestAccountHistoryRejectsConflictingCodexLegacyFileIndex(t *testing.T) {
 	if len(resp.Items) != 1 || !resp.Items[0].Matched {
 		t.Fatalf("conflicting account history = %#v", resp.Items)
 	}
-	if resp.Items[0].TotalRequests != 1 || resp.Items[0].TotalTokens != 12 {
-		t.Fatalf("conflicting legacy bucket was merged = %#v, want only stable account event", resp.Items[0])
+	if resp.Items[0].TotalRequests != 3 || resp.Items[0].TotalTokens != 134 {
+		t.Fatalf("same-email Codex buckets were not merged = %#v, want requests=3 tokens=134", resp.Items[0])
 	}
 }
 
@@ -2937,14 +2937,20 @@ func TestAccountWindowUsageReturnsWindowScopedTotalsAndComputedCost(t *testing.T
 	first.ResolvedModel = "resolved-a"
 	first.AccountSnapshot = "quota@example.com"
 	first.AuthFileSnapshot = "codex.json"
+	first.Provider = "codex"
+	first.AuthProviderSnapshot = "codex"
 	second := monitoringEvent("window-usage-2", baseMS+2_000, "model-a", "auth-1", "source-a", true, 0, 0, 0, 0, 0, nil)
 	second.ResolvedModel = "resolved-a"
 	second.AccountSnapshot = "quota@example.com"
 	second.AuthFileSnapshot = "codex.json"
+	second.Provider = "codex"
+	second.AuthProviderSnapshot = "codex"
 	outside := monitoringEvent("window-usage-outside", baseMS+9_000, "model-a", "auth-1", "source-a", false, 9, 9, 0, 0, 18, nil)
 	outside.ResolvedModel = "resolved-a"
 	outside.AccountSnapshot = "quota@example.com"
 	outside.AuthFileSnapshot = "codex.json"
+	outside.Provider = "codex"
+	outside.AuthProviderSnapshot = "codex"
 	if _, err := db.InsertEvents(ctx, []usage.Event{first, second, outside}); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
@@ -3084,10 +3090,10 @@ func TestAccountWindowUsageSeparatesCredentialsSharingEmailAndAuthIndex(t *testi
 	if len(resp.Items) != 2 {
 		t.Fatalf("items = %#v", resp.Items)
 	}
-	if !resp.Items[0].Matched || resp.Items[0].TotalRequests != 1 || resp.Items[0].TotalTokens != 15 {
+	if !resp.Items[0].Matched || resp.Items[0].TotalRequests != 2 || resp.Items[0].TotalTokens != 45 {
 		t.Fatalf("first credential usage = %#v", resp.Items[0])
 	}
-	if !resp.Items[1].Matched || resp.Items[1].TotalRequests != 1 || resp.Items[1].TotalTokens != 30 {
+	if !resp.Items[1].Matched || resp.Items[1].TotalRequests != 2 || resp.Items[1].TotalTokens != 45 {
 		t.Fatalf("second credential usage = %#v", resp.Items[1])
 	}
 }
@@ -3414,6 +3420,8 @@ func TestAccountWindowUsagePricesContextLongContextAndServiceTierBands(t *testin
 	for _, event := range []*usage.Event{&contextTier, &standardTier, &priorityTier, &longContext} {
 		event.AccountSnapshot = "quota-bands@example.com"
 		event.AuthFileSnapshot = "codex.json"
+		event.Provider = "codex"
+		event.AuthProviderSnapshot = "codex"
 	}
 	if _, err := db.InsertEvents(ctx, []usage.Event{contextTier, standardTier, priorityTier, longContext}); err != nil {
 		t.Fatalf("insert events: %v", err)

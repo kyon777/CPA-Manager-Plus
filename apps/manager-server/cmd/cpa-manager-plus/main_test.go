@@ -448,8 +448,10 @@ func TestBackgroundDerivationsDisabledServesHTTPWithoutStartingDerivedCleanup(t 
 	observer := openMigrationObserver(t, dbPath)
 	t.Cleanup(func() { _ = observer.Close() })
 	var cleanupJobsBefore int
-	if err := observer.QueryRow(`select count(*) from usage_derived_cleanup_jobs`).Scan(&cleanupJobsBefore); err != nil {
-		t.Fatalf("count initial derived cleanup jobs: %v", err)
+	var cleanupGenerationBefore, cleanupRowsBefore int64
+	if err := observer.QueryRow(`select count(*), coalesce(max(generation), 0), coalesce(sum(processed_rows), 0)
+		from usage_derived_cleanup_jobs`).Scan(&cleanupJobsBefore, &cleanupGenerationBefore, &cleanupRowsBefore); err != nil {
+		t.Fatalf("read initial derived cleanup jobs: %v", err)
 	}
 
 	server := startManagerServerProcessWithEnv(t, tempDir, dbPath, map[string]string{
@@ -465,11 +467,30 @@ func TestBackgroundDerivationsDisabledServesHTTPWithoutStartingDerivedCleanup(t 
 	assertManagerEndpoint(t, server.addr, "/usage-service/info")
 
 	var cleanupJobs int
-	if err := observer.QueryRow(`select count(*) from usage_derived_cleanup_jobs`).Scan(&cleanupJobs); err != nil {
-		t.Fatalf("count derived cleanup jobs: %v", err)
+	var cleanupRows int64
+	if err := observer.QueryRow(`select count(*), coalesce(sum(processed_rows), 0)
+		from usage_derived_cleanup_jobs`).Scan(&cleanupJobs, &cleanupRows); err != nil {
+		t.Fatalf("read derived cleanup jobs: %v", err)
 	}
-	if cleanupJobs != cleanupJobsBefore {
-		t.Fatalf("background derivations disabled, but cleanup jobs changed: before=%d after=%d", cleanupJobsBefore, cleanupJobs)
+	// A synchronous schema migration may park an obsolete FTS/projection pair and
+	// persist an online_cleanup job before the HTTP listener is exposed. That
+	// metadata write is not background cleanup. With the gate disabled, no job
+	// may process rows or leave its newly scheduled state.
+	if cleanupJobs < cleanupJobsBefore {
+		t.Fatalf("background derivations disabled, but cleanup jobs were removed: before=%d after=%d", cleanupJobsBefore, cleanupJobs)
+	}
+	if cleanupRows != cleanupRowsBefore {
+		t.Fatalf("background derivations disabled, but derived cleanup progressed: before=%d after=%d", cleanupRowsBefore, cleanupRows)
+	}
+	if cleanupJobs > cleanupJobsBefore {
+		var progressedJobs int
+		if err := observer.QueryRow(`select count(*) from usage_derived_cleanup_jobs
+			where generation > ? and (status != 'online_cleanup' or processed_rows != 0)`, cleanupGenerationBefore).Scan(&progressedJobs); err != nil {
+			t.Fatalf("inspect newly scheduled derived cleanup jobs: %v", err)
+		}
+		if progressedJobs != 0 {
+			t.Fatalf("background derivations disabled, but newly scheduled cleanup started: jobs=%d", progressedJobs)
+		}
 	}
 	if after := readUsageEventsSummaryFromDB(t, observer); after != before {
 		t.Fatalf("usage_events changed with background derivations disabled: before=%+v after=%+v", before, after)

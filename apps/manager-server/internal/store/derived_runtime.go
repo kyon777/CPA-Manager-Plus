@@ -499,25 +499,32 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, false, err
 	}
-	// A rebuild is intentionally asynchronous. If a previous generation has
-	// already verified rows for the requested page, expose those rows while the
-	// source tail is being applied instead of replacing the page with an empty
-	// "syncing" shell. The Available bit remains false until both streams cover
-	// the same source watermark, so callers can label the values as stale.
+	// A rebuild is intentionally asynchronous. Rows from the previous identity
+	// generation must not be exposed while the new canonical email generation is
+	// being rebuilt: that would briefly show the old workspace/file bucket and
+	// can make a page appear to contain two accounts. Only read materialization
+	// rows when both streams advertise the exact generation for this source
+	// snapshot. The Available bit remains false until both streams cover the
+	// same source watermark, so callers can label the values as stale.
+	expectedCoreGeneration := derivedstore.GenerationFor(derivedstore.StreamAccountHistory, snapshot)
+	expectedPricingGeneration := derivedstore.GenerationFor(derivedstore.StreamPricing, snapshot)
+	coreGenerationMatches := strings.TrimSpace(coreState.Generation) != "" && coreState.Generation == expectedCoreGeneration
+	pricingGenerationMatches := strings.TrimSpace(pricingState.Generation) != "" && pricingState.Generation == expectedPricingGeneration
 	var coreRows, pricingRows []derivedstore.MaterializedRow
-	if strings.TrimSpace(coreState.Generation) != "" {
+	if coreGenerationMatches && pricingGenerationMatches {
 		coreRows, err = r.sink.RowsForSubjects(ctx, derivedstore.StreamAccountHistory, coreState.Generation, keys)
 		if err != nil {
 			return UsagePricingAccountSnapshot{}, false, err
 		}
-	}
-	if strings.TrimSpace(pricingState.Generation) != "" {
 		pricingRows, err = r.sink.RowsForSubjects(ctx, derivedstore.StreamPricing, pricingState.Generation, keys)
 		if err != nil {
 			return UsagePricingAccountSnapshot{}, false, err
 		}
 	}
 	mergeTail := func(stream derivedstore.Stream, state derivedstore.StreamState, rows []derivedstore.MaterializedRow) ([]derivedstore.MaterializedRow, error) {
+		if !coreGenerationMatches || !pricingGenerationMatches {
+			return rows, nil
+		}
 		if len(keys) == 0 || snapshot.TargetEventID <= state.CoverageEventID {
 			return rows, nil
 		}
@@ -571,8 +578,8 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 		}
 		pricing = append(pricing, toPricingAccountRow(aggregate))
 	}
-	historyReady := derivedStateReady(coreState, derivedstore.GenerationFor(derivedstore.StreamAccountHistory, snapshot), snapshot, derivedstore.StreamAccountHistory, snapshot.TargetEventID)
-	pricingReady := derivedStateReady(pricingState, derivedstore.GenerationFor(derivedstore.StreamPricing, snapshot), snapshot, derivedstore.StreamPricing, snapshot.TargetEventID)
+	historyReady := derivedStateReady(coreState, expectedCoreGeneration, snapshot, derivedstore.StreamAccountHistory, snapshot.TargetEventID)
+	pricingReady := derivedStateReady(pricingState, expectedPricingGeneration, snapshot, derivedstore.StreamPricing, snapshot.TargetEventID)
 	incomplete := accountPricingCoverageIncompleteKeys(core, pricing)
 	// Global pricing lag is a readiness signal, not evidence that this bounded
 	// page is incomplete. mergeTail has already incorporated every visible

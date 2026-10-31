@@ -417,7 +417,7 @@ func TestAccountWindowProjectionMatchesRawAcrossCoverageTailAndIdentity(t *testi
 	}
 
 	projected := assertMatchesRaw("complete coverage")
-	if len(projected) != 1 || projected[0].Calls != 1 || projected[0].InputTokens != 150 || projected[0].ContextThresholdTokens != 100 {
+	if len(projected) != 1 || projected[0].Calls != 2 || projected[0].InputTokens != 9150 || projected[0].ContextThresholdTokens != 100 {
 		t.Fatalf("complete coverage stats = %#v", projected)
 	}
 
@@ -427,7 +427,7 @@ func TestAccountWindowProjectionMatchesRawAcrossCoverageTailAndIdentity(t *testi
 		t.Fatalf("insert raw tail event: %v", err)
 	}
 	projected = assertMatchesRaw("partial coverage")
-	if len(projected) != 1 || projected[0].Calls != 2 || projected[0].SuccessCalls != 1 || projected[0].FailureCalls != 1 || projected[0].LongInputTokens != 1_000_000 {
+	if len(projected) != 1 || projected[0].Calls != 3 || projected[0].SuccessCalls != 2 || projected[0].FailureCalls != 1 || projected[0].LongInputTokens != 1_000_000 {
 		t.Fatalf("partial coverage stats = %#v", projected)
 	}
 
@@ -533,12 +533,12 @@ func TestCodexAccountWindowKeepsHistoryAcrossSameAccountReauth(t *testing.T) {
 		}
 	}
 
-	assertStats("projection complete with daily rollup available", 2, 35)
+	assertStats("projection complete with daily rollup available", 3, 9035)
 	rawTail := makeEvent("current-new-credential-tail", currentFromMS+3_000, "codex-a-pro.json", "auth-2", "account-a", 40)
 	if _, err := db.InsertEvents(ctx, []usage.Event{rawTail}); err != nil {
 		t.Fatalf("insert raw reauth tail: %v", err)
 	}
-	assertStats("projection plus raw tail", 3, 75)
+	assertStats("projection plus raw tail", 4, 9075)
 }
 
 func TestCodexAccountWindowSeparatesMembersSharingWorkspace(t *testing.T) {
@@ -676,7 +676,7 @@ func TestCodexAccountWindowDoesNotUseDailyCredentialFallbackWithoutMember(t *tes
 	}
 }
 
-func TestCodexAccountWindowRejectsConflictingLegacyFileIndex(t *testing.T) {
+func TestCodexAccountWindowMergesLegacyFileIndexByEmail(t *testing.T) {
 	_, db := newMonitoringRepositoryStore(t)
 	ctx := context.Background()
 	fromMS := int64(1_800_057_600_000)
@@ -698,15 +698,17 @@ func TestCodexAccountWindowRejectsConflictingLegacyFileIndex(t *testing.T) {
 	catchUpMonitoringRepository(t, ctx, db)
 
 	windows := []store.AccountWindowUsageQuery{{
-		RequestIndex:          0,
-		FromMS:                fromMS,
-		ToMS:                  toMS,
-		AccountSnapshot:       "same@example.com",
-		AuthFileSnapshot:      "codex-a.json",
-		AuthProviderSnapshot:  "codex",
-		AuthAccountIDSnapshot: "account-a",
-		AuthIndex:             "auth-a",
-		Source:                "codex-a.json",
+		RequestIndex:            0,
+		FromMS:                  fromMS,
+		ToMS:                    toMS,
+		AccountSnapshot:         "same@example.com",
+		AuthFileSnapshot:        "codex-a.json",
+		AuthProviderSnapshot:    "codex",
+		AuthAccountIDSnapshot:   "account-a",
+		AuthIndex:               "auth-a",
+		Source:                  "codex-a.json",
+		LegacyAccountKey:        "usage-account-history:3:file-index:6F4C442D656C65676163792E6A736F6E:617574682D6F6C64",
+		LegacyAccountKeyChecked: true,
 	}}
 	raw, err := db.AccountWindowModelStats(ctx, windows)
 	if err != nil {
@@ -719,8 +721,8 @@ func TestCodexAccountWindowRejectsConflictingLegacyFileIndex(t *testing.T) {
 	if !reflect.DeepEqual(projected, raw) {
 		t.Fatalf("conflicting account-window projection/raw mismatch\nprojection=%#v\nraw=%#v", projected, raw)
 	}
-	if len(projected) != 1 || projected[0].Calls != 1 || projected[0].InputTokens != 10 {
-		t.Fatalf("conflicting legacy account-window bucket was merged = %#v, want only stable account event", projected)
+	if len(projected) != 1 || projected[0].Calls != 3 || projected[0].InputTokens != 120 {
+		t.Fatalf("legacy account-window events were not merged by email = %#v, want three calls/120 input", projected)
 	}
 }
 
@@ -781,7 +783,7 @@ func TestCodexAccountWindowUsesRawProjectionForConflictingWorkspaceEvidence(t *t
 	}
 }
 
-func TestCodexAccountWindowDoesNotMergeConflictingWorkspaceEvidenceFromDailyRollup(t *testing.T) {
+func TestCodexAccountWindowMergesConflictingWorkspaceEvidenceByEmail(t *testing.T) {
 	_, db := newMonitoringRepositoryStore(t)
 	ctx := context.Background()
 	fromMS := int64(1_800_057_600_000)
@@ -838,8 +840,8 @@ func TestCodexAccountWindowDoesNotMergeConflictingWorkspaceEvidenceFromDailyRoll
 	if !reflect.DeepEqual(projected, raw) {
 		t.Fatalf("daily workspace-evidence projection/raw mismatch\nprojection=%#v\nraw=%#v", projected, raw)
 	}
-	if len(projected) != 1 || projected[0].Calls != 1 || projected[0].InputTokens != 100 {
-		t.Fatalf("daily conflicting workspace evidence was merged = %#v, want only valid event", projected)
+	if len(projected) != 1 || projected[0].Calls != 2 || projected[0].InputTokens != 300 {
+		t.Fatalf("daily workspace evidence was not merged by email = %#v, want two calls/300 input", projected)
 	}
 }
 

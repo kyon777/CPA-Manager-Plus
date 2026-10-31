@@ -587,6 +587,7 @@ func TestManagerPersistsQuotaEvidenceAfterUsageInsert(t *testing.T) {
 		Accounts: []quotasnapshotsvc.QueryAccount{{
 			RowKey: "row-1", Provider: "codex", Account: quotasnapshotsvc.AccountTarget{
 				AuthFileSnapshot: "codex.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-1",
+				AccountSnapshot: "user@example.com",
 			},
 		}},
 	})
@@ -664,6 +665,7 @@ func TestManagerKeepsFirstUsageInCurrentWindowWhenHeaderBoundaryDrifts(t *testin
 
 	account := quotasnapshotsvc.AccountTarget{
 		AuthFileSnapshot: "codex-free.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-first-use",
+		AccountSnapshot: "first-use@example.com",
 	}
 	query, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
 		NowMS: secondObservedAtMS + 1_000,
@@ -1012,6 +1014,7 @@ func TestManagerAssignsFirstEarlyResetRequestToNewWindow(t *testing.T) {
 
 	account := quotasnapshotsvc.AccountTarget{
 		AuthFileSnapshot: "codex-early-reset.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-early-reset",
+		AccountSnapshot: "early-reset@example.com",
 	}
 	query, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
 		NowMS: firstRequestAtMS + 1_000,

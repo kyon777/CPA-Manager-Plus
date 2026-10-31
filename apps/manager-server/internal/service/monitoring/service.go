@@ -1905,22 +1905,29 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 		if valid {
 			keys = append(keys, key)
 			stableKeys = append(stableKeys, key)
-			legacyKey, allowed, err := s.store.UsageEvents.ResolveCodexLegacyAccountKey(ctx, accountHistoryIdentityFields(account))
-			if err != nil {
-				return AccountHistoryResponse{}, err
-			}
-			if allowed && legacyKey != "" && legacyKey != key {
-				keys = append(keys, legacyKey)
-				if _, conflicted := legacyConflicts[legacyKey]; conflicted {
-					continue
+			// A valid Codex member email is now the canonical identity. The old
+			// workspace/file alias is intentionally not queried for these targets;
+			// otherwise a pre-reauth physical bucket can be appended to the merged
+			// email bucket and counted twice while derived generations rotate.
+			fields := accountHistoryIdentityFields(account)
+			if !usageidentity.HasCanonicalCodexMember(fields) {
+				legacyKey, allowed, err := s.store.UsageEvents.ResolveCodexLegacyAccountKey(ctx, fields)
+				if err != nil {
+					return AccountHistoryResponse{}, err
 				}
-				if owner, exists := legacyAliases[legacyKey]; exists && owner != key {
-					// A blank-ID legacy bucket cannot be assigned to two stable
-					// accounts in one request. Keep both targets fail-closed.
-					delete(legacyAliases, legacyKey)
-					legacyConflicts[legacyKey] = struct{}{}
-				} else {
-					legacyAliases[legacyKey] = key
+				if allowed && legacyKey != "" && legacyKey != key {
+					keys = append(keys, legacyKey)
+					if _, conflicted := legacyConflicts[legacyKey]; conflicted {
+						continue
+					}
+					if owner, exists := legacyAliases[legacyKey]; exists && owner != key {
+						// A blank-ID legacy bucket cannot be assigned to two stable
+						// accounts in one request. Keep both targets fail-closed.
+						delete(legacyAliases, legacyKey)
+						legacyConflicts[legacyKey] = struct{}{}
+					} else {
+						legacyAliases[legacyKey] = key
+					}
 				}
 			}
 		}

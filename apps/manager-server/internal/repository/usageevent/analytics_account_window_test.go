@@ -6,20 +6,22 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
-func TestAccountWindowQueryKeysRequireExplicitCodexAccountIDForLegacyFallback(t *testing.T) {
+func TestAccountWindowQueryKeysUseCodexEmailAcrossWorkspaceAndLegacyMetadata(t *testing.T) {
 	window := AccountWindowUsageQuery{
-		AuthFileSnapshot:      "codex-a.json",
-		AuthIndex:             "auth-a",
-		AuthProviderSnapshot:  "codex",
-		AuthProjectIDSnapshot: "workspace-project",
-		AccountSnapshot:       "shared@example.com",
-		AuthLabelSnapshot:     "Shared account",
-		Source:                "codex-a.json",
+		AuthFileSnapshot:        "codex-a.json",
+		AuthIndex:               "auth-a",
+		AuthProviderSnapshot:    "codex",
+		AuthProjectIDSnapshot:   "workspace-project",
+		AccountSnapshot:         "shared@example.com",
+		AuthLabelSnapshot:       "Shared account",
+		Source:                  "codex-a.json",
+		LegacyAccountKey:        "usage-account-history:3:file-index:6F4C442D656C65676163792E6A736F6E:617574682D6F6C64",
+		LegacyAccountKeyChecked: true,
 	}
 
 	accountKey, legacyAccountKey := accountWindowQueryKeys(window)
 	if accountKey == "" || accountKey != legacyAccountKey {
-		t.Fatalf("unmarked Codex project generated a compatibility key: account=%q legacy=%q", accountKey, legacyAccountKey)
+		t.Fatalf("Codex email target did not use one canonical key: account=%q legacy=%q", accountKey, legacyAccountKey)
 	}
 
 	window.AuthAccountIDSnapshot = "account-a"
@@ -28,43 +30,24 @@ func TestAccountWindowQueryKeysRequireExplicitCodexAccountIDForLegacyFallback(t 
 	if !valid {
 		t.Fatal("explicit Codex account identity was rejected")
 	}
-	wantLegacyAccountKey, valid := usageidentity.LegacyAccountKey(accountWindowFields(window))
-	if !valid {
-		t.Fatal("explicit Codex legacy identity was rejected")
-	}
 	if accountKey != wantAccountKey || legacyAccountKey != accountKey {
-		t.Fatalf("unresolved explicit Codex keys = account:%q legacy:%q, want account:%q and no legacy fallback", accountKey, legacyAccountKey, wantAccountKey)
-	}
-	window.LegacyAccountKeyChecked = true
-	window.LegacyAccountKey = wantLegacyAccountKey
-	accountKey, legacyAccountKey = accountWindowQueryKeys(window)
-	if accountKey != wantAccountKey || legacyAccountKey != wantLegacyAccountKey || accountKey == legacyAccountKey {
-		t.Fatalf("explicit Codex keys = account:%q legacy:%q, want account:%q legacy:%q", accountKey, legacyAccountKey, wantAccountKey, wantLegacyAccountKey)
+		t.Fatalf("workspace metadata split canonical email key = account:%q legacy:%q, want %q", accountKey, legacyAccountKey, wantAccountKey)
 	}
 
-	otherAccount := window
-	otherAccount.AuthAccountIDSnapshot = "account-b"
-	otherAccountKey, _ := accountWindowQueryKeys(otherAccount)
-	if accountKey == otherAccountKey {
-		t.Fatalf("distinct Codex accounts sharing display metadata were merged: %q", accountKey)
+	window.AuthAccountIDSnapshot = "account-b"
+	window.AuthFileSnapshot = "codex-b.json"
+	window.AuthIndex = "auth-b"
+	window.Source = "codex-b.json"
+	changedWorkspaceKey, changedLegacyKey := accountWindowQueryKeys(window)
+	if changedWorkspaceKey != wantAccountKey || changedLegacyKey != wantAccountKey {
+		t.Fatalf("changed workspace/file split canonical email key = account:%q legacy:%q, want %q", changedWorkspaceKey, changedLegacyKey, wantAccountKey)
 	}
 
-	otherCredential := window
-	otherCredential.AuthAccountIDSnapshot = "account-b"
-	otherCredential.AuthFileSnapshot = "codex-b.json"
-	otherCredential.AuthIndex = "auth-b"
-	otherCredential.Source = "codex-b.json"
-	otherCredential.LegacyAccountKey = ""
-	otherCredential.LegacyAccountKeyChecked = false
-	otherCredentialKey, otherLegacyKey := accountWindowQueryKeys(otherCredential)
-	if accountKey == otherCredentialKey || legacyAccountKey == otherLegacyKey {
-		t.Fatalf("distinct credentials sharing display metadata were merged: account %q/%q legacy %q/%q", accountKey, otherCredentialKey, legacyAccountKey, otherLegacyKey)
-	}
-	otherCredential.LegacyAccountKeyChecked = true
-	otherCredential.LegacyAccountKey, _ = usageidentity.LegacyAccountKey(accountWindowFields(otherCredential))
-	otherCredentialKey, otherLegacyKey = accountWindowQueryKeys(otherCredential)
-	if accountKey == otherCredentialKey || legacyAccountKey == otherLegacyKey {
-		t.Fatalf("distinct credentials sharing display metadata were merged: account %q/%q legacy %q/%q", accountKey, otherCredentialKey, legacyAccountKey, otherLegacyKey)
+	otherMember := window
+	otherMember.AccountSnapshot = "other@example.com"
+	otherMemberKey, _ := accountWindowQueryKeys(otherMember)
+	if otherMemberKey == wantAccountKey {
+		t.Fatalf("distinct Codex emails were merged: %q", otherMemberKey)
 	}
 }
 

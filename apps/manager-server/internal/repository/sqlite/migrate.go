@@ -19,13 +19,19 @@ const (
 	accountHistoryIdentityFormatVersionKey  = "usage_account_history_identity_format_version"
 	legacyAccountHistoryStructureRevisionV2 = "identity-2:model-1"
 	legacyAccountHistoryStructureRevisionV3 = "identity-3:model-1"
-	legacyMonitoringProjectionRevisionV3    = legacyAccountHistoryStructureRevisionV3 + ":project-v1"
-	dashboardHourlyRollupFormatVersionKey   = "usage_dashboard_hourly_format_version"
-	dashboardHourlyRollupFormatVersion      = "3"
-	usageMonitoringModelFormatVersionKey    = "usage_monitoring_model_format_version"
-	usageHourlyAggregateSchemaVersion       = 3
-	usageHourlyAggregateStructureRevision   = "schema-3:model-1"
-	proxyExitIPOnlyCleanupMigrationName     = "proxy_exit_ip_only_v1"
+	// The immediately preceding custom build used Codex identity revision 2
+	// (workspace + member). Keep that revision explicitly supported so an
+	// upgrade can park and rebuild it instead of rejecting the database at
+	// startup.
+	legacyAccountHistoryStructureRevisionCodexV2 = "identity-3:codex-2:model-1"
+	legacyMonitoringProjectionRevisionV3         = legacyAccountHistoryStructureRevisionV3 + ":project-v1"
+	legacyMonitoringProjectionRevisionCodexV2    = legacyAccountHistoryStructureRevisionCodexV2 + ":project-v1"
+	dashboardHourlyRollupFormatVersionKey        = "usage_dashboard_hourly_format_version"
+	dashboardHourlyRollupFormatVersion           = "3"
+	usageMonitoringModelFormatVersionKey         = "usage_monitoring_model_format_version"
+	usageHourlyAggregateSchemaVersion            = 3
+	usageHourlyAggregateStructureRevision        = "schema-3:model-1"
+	proxyExitIPOnlyCleanupMigrationName          = "proxy_exit_ip_only_v1"
 
 	usageMonitoringAccountDailyTable  = "usage_monitoring_account_daily_rollups_v1"
 	usageMonitoringAPIKeyDailyTable   = "usage_monitoring_api_key_daily_rollups_v1"
@@ -50,7 +56,7 @@ const (
 	// the previous identity revision. New Codex identity rebuilds use a
 	// revision-specific name so pending old cleanup cannot block startup.
 	usageAccountModelIdentityLegacy           = "usage_account_model_rollups_legacy_identity_v3"
-	usageAccountModelCodexIdentityLegacy      = "usage_account_model_rollups_legacy_identity_v3_codex_v2"
+	usageAccountModelCodexIdentityLegacy      = "usage_account_model_rollups_legacy_identity_v3_codex_v3"
 	usagePricingAccountLegacy                 = "usage_pricing_account_rollups_v1_legacy_v1120_rc2"
 	usageDashboardHourlyLegacy                = "usage_dashboard_hourly_rollups_legacy_v1120_rc2"
 	usageHourlyAggregateLegacy                = "usage_hourly_aggregate_v1_legacy_v1120_rc2"
@@ -61,8 +67,8 @@ const (
 	usageMonitoringAPIKeyLegacy               = "usage_monitoring_api_key_daily_rollups_v1_legacy_recovery"
 	usageMonitoringAccountIdentityLegacy      = "usage_monitoring_account_daily_rollups_v1_legacy_identity_v3"
 	usageMonitoringAPIKeyIdentityLegacy       = "usage_monitoring_api_key_daily_rollups_v1_legacy_identity_v3"
-	usageMonitoringAccountCodexIdentityLegacy = "usage_monitoring_account_daily_rollups_v1_legacy_identity_v3_codex_v2"
-	usageMonitoringAPIKeyCodexIdentityLegacy  = "usage_monitoring_api_key_daily_rollups_v1_legacy_identity_v3_codex_v2"
+	usageMonitoringAccountCodexIdentityLegacy = "usage_monitoring_account_daily_rollups_v1_legacy_identity_v3_codex_v3"
+	usageMonitoringAPIKeyCodexIdentityLegacy  = "usage_monitoring_api_key_daily_rollups_v1_legacy_identity_v3_codex_v3"
 	usageMonitoringSelectorLegacy             = "usage_monitoring_selector_daily_rollups_v1_legacy_recovery"
 	usageMonitoringHeaderLegacy               = "usage_monitoring_header_latest_v1_legacy_recovery"
 	usageMonitoringProjectionLegacy           = "usage_monitoring_event_projection_v1_legacy_recovery"
@@ -2174,7 +2180,13 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 
 	statsNeedsIdentityUpgrade := !statsHasAuthAccountID || !statsPKHasAuthAccountID
 	apiKeyStatsNeedsIdentityUpgrade := !apiKeyStatsHasAuthAccountID || !apiKeyStatsPKHasAuthAccountID
-	codexIdentityRevisionUpgrade := projectionRevisionMismatch && projectionRevision == legacyMonitoringProjectionRevisionV3
+	// Both the upstream v3 identity and the previous custom codex-2 identity
+	// can be present on an upgraded installation. In either case the current
+	// projection must be parked under a fresh codex-v3 name before the rebuild;
+	// otherwise the old workspace-split rows could be mistaken for current data.
+	codexIdentityRevisionUpgrade := projectionRevisionMismatch &&
+		(projectionRevision == legacyMonitoringProjectionRevisionV3 ||
+			projectionRevision == legacyMonitoringProjectionRevisionCodexV2)
 	needsRebuild := versionErr != nil || projectionRevisionMismatch || !hasAccountKey || !hasRequestedModel || !hasAnalyticsModel || !hasAuthAccountID || !headerHasAuthAccountID || !selectorHasRevision || statsNeedsIdentityUpgrade || apiKeyStatsNeedsIdentityUpgrade
 	if needsRebuild {
 		if err := ensureCompleteRawSourceForDerivedRebuild(tx, "usage monitoring projection"); err != nil {
@@ -2551,6 +2563,20 @@ func ensureAccountHistoryIdentityFormatVersion(db *sql.DB) error {
 			return fmt.Errorf("create current account history rollup: %w", err)
 		}
 	}
+	// The per-account exact-price cache is disposable derived state. Its key
+	// contains the old workspace/file discriminator, so retaining it across an
+	// identity revision would leave orphaned second buckets and could briefly
+	// surface stale prices while the new rollup is rebuilding. Clear it in the
+	// same transaction; the price worker will repopulate the current email keys.
+	var priceCacheExists int
+	if err := tx.QueryRow(`select count(*) from sqlite_master where type = 'table' and name = ?`, usagePricingAccountPriceCacheTable).Scan(&priceCacheExists); err != nil {
+		return err
+	}
+	if priceCacheExists != 0 {
+		if _, err := tx.Exec(`delete from ` + usagePricingAccountPriceCacheTable); err != nil {
+			return fmt.Errorf("clear stale account price cache during identity migration: %w", err)
+		}
+	}
 	if _, err := tx.Exec(`delete from usage_rollup_checkpoints where name = 'account_history'`); err != nil {
 		return err
 	}
@@ -2601,6 +2627,7 @@ func supportedAccountHistoryIdentityRevision(value string) bool {
 	case "1", "2", usageidentity.FormatVersion,
 		legacyAccountHistoryStructureRevisionV2,
 		legacyAccountHistoryStructureRevisionV3,
+		legacyAccountHistoryStructureRevisionCodexV2,
 		usageidentity.AccountHistoryStructureRevision():
 		return true
 	default:

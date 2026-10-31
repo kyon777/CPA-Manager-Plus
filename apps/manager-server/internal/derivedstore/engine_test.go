@@ -12,6 +12,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type scriptedSource struct {
@@ -38,6 +39,29 @@ type boundedReadSink struct {
 	Sink
 	fullRowsCalls   int
 	rowsByKeysCalls int
+}
+
+func TestAccountKeyForEventUsesRawCodexProviderWhenSnapshotIsAbsent(t *testing.T) {
+	event := EventRecord{
+		Provider:              "codex",
+		AuthFileSnapshot:      "initial-import.json",
+		AuthIndex:             "auth-before",
+		AccountSnapshot:       "merge@example.com",
+		AuthProviderSnapshot:  "",
+		AuthAccountIDSnapshot: "",
+	}
+	want, valid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthProviderSnapshot: "codex",
+		AuthFileSnapshot:     event.AuthFileSnapshot,
+		AuthIndex:            event.AuthIndex,
+		AccountSnapshot:      event.AccountSnapshot,
+	})
+	if !valid {
+		t.Fatal("expected canonical Codex email key")
+	}
+	if got := AccountKeyForEvent(event); got != want {
+		t.Fatalf("raw provider-only Codex event key = %q, want canonical email key %q", got, want)
+	}
 }
 
 func (s *boundedReadSink) Rows(ctx context.Context, stream Stream, generation string) ([]MaterializedRow, error) {

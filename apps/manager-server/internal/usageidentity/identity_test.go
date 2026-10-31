@@ -8,7 +8,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestAccountKeySeparatesSharedAccountSnapshotsByCredential(t *testing.T) {
+func TestAccountKeyUnifiesCodexSameEmailAcrossCredentialFiles(t *testing.T) {
 	first, ok := AccountKey(Fields{AuthFileSnapshot: "shared.json", AuthIndex: "auth-a", AuthProviderSnapshot: "codex", AccountSnapshot: "same@example.com"})
 	if !ok {
 		t.Fatal("first key is invalid")
@@ -17,8 +17,43 @@ func TestAccountKeySeparatesSharedAccountSnapshotsByCredential(t *testing.T) {
 	if !ok {
 		t.Fatal("second key is invalid")
 	}
-	if first == second {
-		t.Fatalf("shared account snapshot merged distinct credentials: %q", first)
+	if first != second {
+		t.Fatalf("same Codex email split across credential files: first=%q second=%q", first, second)
+	}
+}
+
+func TestAccountKeyCodexEmailUnifiesWorkspacePresenceAndChanges(t *testing.T) {
+	withoutWorkspace, ok := AccountKey(Fields{
+		AuthFileSnapshot:     "first-import.json",
+		AuthIndex:            "auth-old",
+		AuthProviderSnapshot: "codex",
+		AccountSnapshot:      " Alice@Example.com ",
+	})
+	if !ok {
+		t.Fatal("without-workspace key is invalid")
+	}
+	withWorkspace, ok := AccountKey(Fields{
+		AuthFileSnapshot:      "reauthenticated.json",
+		AuthIndex:             "auth-new",
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: "workspace-42",
+		AccountSnapshot:       "alice@example.com",
+	})
+	if !ok {
+		t.Fatal("with-workspace key is invalid")
+	}
+	changedWorkspace, ok := AccountKey(Fields{
+		AuthFileSnapshot:      "moved.json",
+		AuthIndex:             "auth-third",
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: "workspace-99",
+		AccountSnapshot:       "alice@example.com",
+	})
+	if !ok {
+		t.Fatal("changed-workspace key is invalid")
+	}
+	if withoutWorkspace != withWorkspace || withWorkspace != changedWorkspace {
+		t.Fatalf("Codex email identity split across workspace metadata: no-workspace=%q workspace=%q changed=%q", withoutWorkspace, withWorkspace, changedWorkspace)
 	}
 }
 
@@ -72,7 +107,7 @@ func TestAccountKeyKeepsNonCodexProviderMappings(t *testing.T) {
 	}
 }
 
-func TestAccountKeyUsesCodexWorkspaceAndMemberAcrossMutableCredentialIdentity(t *testing.T) {
+func TestAccountKeyUsesCodexEmailAcrossMutableCredentialIdentity(t *testing.T) {
 	oldKey, ok := AccountKey(Fields{AuthFileSnapshot: "codex-a-free.json", AuthIndex: "auth-1", AuthProviderSnapshot: "codex", AuthAccountIDSnapshot: "workspace-1", AccountSnapshot: " Alice@Example.com "})
 	if !ok {
 		t.Fatal("old key is invalid")
@@ -93,8 +128,8 @@ func TestAccountKeyUsesCodexWorkspaceAndMemberAcrossMutableCredentialIdentity(t 
 		t.Fatalf("different Codex member merged: alice=%q bob=%q", oldKey, differentMemberKey)
 	}
 	differentWorkspaceKey, ok := AccountKey(Fields{AuthFileSnapshot: "codex-c.json", AuthIndex: "auth-4", AuthProviderSnapshot: "codex", AuthAccountIDSnapshot: "workspace-2", AccountSnapshot: "alice@example.com"})
-	if !ok || differentWorkspaceKey == oldKey {
-		t.Fatalf("same email in different Codex workspace merged: workspace-1=%q workspace-2=%q", oldKey, differentWorkspaceKey)
+	if !ok || differentWorkspaceKey != oldKey {
+		t.Fatalf("same email split by Codex workspace: workspace-1=%q workspace-2=%q", oldKey, differentWorkspaceKey)
 	}
 }
 
@@ -155,7 +190,6 @@ func TestLegacyAccountKeyRejectsCodexDisplayFallbackWithoutCredentialIdentity(t 
 		{AuthProviderSnapshot: "codex", AuthAccountIDSnapshot: "workspace-1", AuthProjectIDSnapshot: "project-1"},
 		{AuthProviderSnapshot: "codex", AuthAccountIDSnapshot: "workspace-1", AccountSnapshot: "Alice"},
 		{AuthProviderSnapshot: "codex", AuthAccountIDSnapshot: "workspace-1", AuthLabelSnapshot: "Alice"},
-		{AuthProviderSnapshot: "codex", AccountSnapshot: "alice@example.com"},
 	} {
 		if key, ok := LegacyAccountKey(fields); ok || key != "" {
 			t.Fatalf("LegacyAccountKey(%#v) = %q, %v; want empty, false", fields, key, ok)
@@ -163,6 +197,9 @@ func TestLegacyAccountKeyRejectsCodexDisplayFallbackWithoutCredentialIdentity(t 
 		if key, ok := AccountKey(fields); ok || key != "" {
 			t.Fatalf("AccountKey(%#v) = %q, %v; want empty, false", fields, key, ok)
 		}
+	}
+	if key, ok := AccountKey(Fields{AuthProviderSnapshot: "codex", AccountSnapshot: "alice@example.com"}); !ok || key == "" {
+		t.Fatalf("Codex email-only identity was rejected: %q, %v", key, ok)
 	}
 }
 
@@ -246,13 +283,13 @@ func TestCodexMemberRevisionDoesNotChangeGlobalFormatVersion(t *testing.T) {
 	if FormatVersion != "3" {
 		t.Fatalf("FormatVersion = %q, want 3", FormatVersion)
 	}
-	if CodexIdentityRevision != "2" {
-		t.Fatalf("CodexIdentityRevision = %q, want 2", CodexIdentityRevision)
+	if CodexIdentityRevision != "3" {
+		t.Fatalf("CodexIdentityRevision = %q, want 3", CodexIdentityRevision)
 	}
-	if got := AccountHistoryStructureRevision(); got != "identity-3:codex-2:model-1" {
+	if got := AccountHistoryStructureRevision(); got != "identity-3:codex-3:model-1" {
 		t.Fatalf("account history revision = %q", got)
 	}
-	if got := MonitoringProjectionStructureRevision(); got != "identity-3:codex-2:model-1:project-v1" {
+	if got := MonitoringProjectionStructureRevision(); got != "identity-3:codex-3:model-1:project-v1" {
 		t.Fatalf("monitoring projection revision = %q", got)
 	}
 }
@@ -356,7 +393,7 @@ func TestSQLAccountKeyExpressionMatchesGo(t *testing.T) {
 }
 
 func TestPricingStructureRevisionIncludesIdentityFormat(t *testing.T) {
-	if got := PricingStructureRevision("price-revision"); got != "model-1:identity-3:codex-2:price-revision" {
+	if got := PricingStructureRevision("price-revision"); got != "model-1:identity-3:codex-3:price-revision" {
 		t.Fatalf("revision = %q", got)
 	}
 }
