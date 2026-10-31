@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/derivedstore"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 )
 
 func TestSeparateDerivedRuntimeServesAccountSnapshotFromDerivedDB(t *testing.T) {
@@ -433,6 +435,16 @@ func TestSeparateDerivedRuntimeMergesVisibleAccountTailBeforeDerivedCatchUp(t *t
 	// the visible credential and must be merged before the worker catches up.
 	insertEvent("evt-other", "idx-other", "other.json", 200)
 	insertEvent("evt-2", "idx-1", "credential.json", 300)
+	runtime := st.separateRuntime()
+	if runtime == nil {
+		t.Fatal("separate runtime unavailable")
+	}
+	// A lagging global pricing stream can still have complete data for this
+	// page after the visible tail is merged. The page reader must not fall back
+	// to the primary pricing repository merely because an unrelated account is
+	// pending: that fallback can scan a large primary pricing tail.
+	rejectingPricing := &rejectingCurrentPagePricingRepository{Repository: runtime.sourcePricing}
+	runtime.sourcePricing = rejectingPricing
 
 	key := AccountHistoryKey("", "", "credential.json", "idx-1")
 	snapshot, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{key})
@@ -447,6 +459,12 @@ func TestSeparateDerivedRuntimeMergesVisibleAccountTailBeforeDerivedCatchUp(t *t
 	}
 	if len(snapshot.Rows) != 1 || snapshot.Rows[0].Calls != 2 || snapshot.Rows[0].TotalTokens != 24 {
 		t.Fatalf("pricing rows did not include visible account tail: %#v", snapshot.Rows)
+	}
+	if rejectingPricing.loadAccountRowsTxCalled {
+		t.Fatal("complete page unexpectedly fell back to primary pricing while only global pricing lagged")
+	}
+	if _, incomplete := snapshot.PricingIncompleteAccountKeys[key]; incomplete {
+		t.Fatalf("complete page %q was marked pricing-incomplete", key)
 	}
 }
 
@@ -909,6 +927,16 @@ type runtimeTailCountingSource struct {
 	tail              []derivedstore.EventRecord
 	subjectTailCalls  int
 	subjectTailLimits []int
+}
+
+type rejectingCurrentPagePricingRepository struct {
+	usagepricing.Repository
+	loadAccountRowsTxCalled bool
+}
+
+func (r *rejectingCurrentPagePricingRepository) LoadAccountRowsTx(context.Context, *sql.Tx, []string) ([]usagepricing.AccountRow, usagepricing.State, bool, error) {
+	r.loadAccountRowsTxCalled = true
+	return nil, usagepricing.State{}, false, errors.New("unexpected source pricing fallback")
 }
 
 func (s *runtimeTailCountingSource) Identity(context.Context) (derivedstore.SourceIdentity, error) {

@@ -564,7 +564,13 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 	historyReady := derivedStateReady(coreState, derivedstore.GenerationFor(derivedstore.StreamAccountHistory, snapshot), snapshot, derivedstore.StreamAccountHistory, snapshot.TargetEventID)
 	pricingReady := derivedStateReady(pricingState, derivedstore.GenerationFor(derivedstore.StreamPricing, snapshot), snapshot, derivedstore.StreamPricing, snapshot.TargetEventID)
 	incomplete := accountPricingCoverageIncompleteKeys(core, pricing)
-	if !pricingReady || len(incomplete) > 0 {
+	// Global pricing lag is a readiness signal, not evidence that this bounded
+	// page is incomplete. mergeTail has already incorporated every visible
+	// account event in the short live tail above. Only fall back to the primary
+	// pricing reader when the page-level coverage check proves a missing row;
+	// otherwise an unrelated event can turn a fast page request into a large
+	// primary pricing-tail scan.
+	if len(incomplete) > 0 {
 		exactRows, exactIncomplete, exactErr := r.loadExactCurrentPagePricing(ctx, keys, core)
 		if exactErr == nil {
 			pricing = exactRows

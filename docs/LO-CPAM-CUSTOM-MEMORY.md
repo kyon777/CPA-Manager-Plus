@@ -971,16 +971,18 @@ Credits、额度、模型价格写入、归档事实、CPA Core、`cli-proxy-api
 - `Store.SeparateDerivedStatus` 每次读取状态都必须通过 runtime 的 `mode=ro + query_only=ON`
   source snapshot 刷新公开 target；HTTP `/status?scope=database-maintenance` 在
   `coverage < target` 时必须显示 `catching_up` 和真实 `lagEventId`。
-- **B 方案在 separate runtime 也必须成立：**当 pricing 派生未追平或当前页 pricing 行无法和
-  account-history 核验时，`LoadUsagePricingAccountSnapshot` 只针对本 HTTP 请求携带的账号键
-  （当前页上限 50）通过 `sourceDB` 的只读事务复用 `UsagePricing.LoadAccountRowsTx`，再仅对
-  仍不完整的这些键调用 `LoadAccountRowsFromRetainedEventsTx`。结果必须经过
-  `accountPricingCoverageIncompleteKeys` 核验；可证明完整时立即返回精确 `total_cost`，即使
-  `sync_status=pending`；无法证明的单个账号才返回金额 `null`。严禁退化为全量账号、全库 raw
-  history 扫描、HTTP 内写主库或重启/唤醒多个 writer。
+- **B 方案在 separate runtime 也必须成立：**`LoadUsagePricingAccountSnapshot` 先合并当前页账号的
+  有界可见 tail；仅“全局 pricing stream 尚未追平”只能让 `Available=false`/UI 显示同步中，**不能**
+  触发主库 pricing 回退。只有 `accountPricingCoverageIncompleteKeys` 证明当前页某个账号行无法和
+  account-history 核验时，才可只针对本 HTTP 请求携带的账号键（当前页上限 50）通过 `sourceDB` 的
+  只读事务复用 `UsagePricing.LoadAccountRowsTx`，再仅对仍不完整的这些键调用
+  `LoadAccountRowsFromRetainedEventsTx`。这避免一个无关账号的单个 lag 事件把当前页变成主库长尾扫描。
+  可证明完整时立即返回精确 `total_cost`，即使 `sync_status=pending`；无法证明的单个账号才返回金额
+  `null`。严禁退化为全量账号、全库 raw history 扫描、HTTP 内写主库或重启/唤醒多个 writer。
 - 页面 request/token 仍可由已验证 account-history 返回；价格 source 回退临时失败时，仅把受影响
   core 账号标记 unpriced，不能让整个 `account-history` HTTP 请求卡死，更不能显示零金额或旧 revision
   冒充精确金额。
 - 未来合并至少保留以下回归：pricing burst 的 history-first 有界顺序、source target/coverage
-  分离、live target `catching_up` 状态、derived pricing 行缺失时当前页 source 精确金额恢复，以及
-  full package 的 store/monitoring/http status 验证。
+  分离、live target `catching_up` 状态、全局 lag 但当前页 coverage 完整时禁止 source pricing 回退、
+  derived pricing 行缺失时当前页 source 精确金额恢复，以及 full package 的
+  store/monitoring/http status 验证。
