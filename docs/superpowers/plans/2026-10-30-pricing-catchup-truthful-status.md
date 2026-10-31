@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 加快独立 pricing 派生追赶，同时让当前页在价格未完成时显示 account-history 请求数/Token，并让状态接口报告主库真实 target 与 lag。
+**Goal:** 加快独立 pricing 派生追赶；在派生未完成时仍让当前页通过有界、只读的精准回退显示金额；并让状态接口报告主库真实 target 与 lag。
 
-**Architecture:** `derivedstore.Engine` 在 pricing backlog 大于阈值时使用有界 burst，而主库仍是 query-only source、派生库仍是唯一 writer。snapshot 将完整 source target 传入 sink；Store 用 live source snapshot 规范状态和 pricing-incomplete account 集合；monitoring 沿用已有无价格 history totals 回退。
+**Architecture:** `derivedstore.Engine` 在 pricing backlog 大于阈值时使用有界 burst，而主库仍是 query-only source、派生库仍是唯一 writer。snapshot 将完整 source target 传入 sink；Store 在 pricing 不完整时仅针对当前请求账号键走现有 source pricing 的 query-only 精准路径，并以 core/history 覆盖校验决定是否接受金额；无法证明的个别账号才走已有无价格 history totals 回退。
 
 **Tech Stack:** Go 1.24、SQLite、CPAM Manager Server、React/TypeScript（仅现有响应渲染验证）。
 
@@ -138,7 +138,7 @@ git add apps/manager-server/internal/derivedstore apps/manager-server/internal/s
 git commit -m "perf: prioritize bounded pricing catch-up"
 ```
 
-### Task 4: 价格不完整时回退到 history request/token
+### Task 4: 价格不完整时保留当前页精准金额回退
 
 **Files:**
 - Modify: `apps/manager-server/internal/store/derived_runtime.go`
@@ -148,29 +148,35 @@ git commit -m "perf: prioritize bounded pricing catch-up"
 - [ ] **Step 1: 写失败 Store/monitoring 测试**
 
 ```go
-func TestSeparateDerivedSnapshotMarksHistoryAccountsIncompleteWhenPricingLags(t *testing.T) {
+func TestSeparateDerivedSnapshotRecoversExactCurrentPagePricingWhenDerivedPricingLags(t *testing.T) {
     snapshot, err := st.LoadUsagePricingAccountSnapshot(ctx, []string{accountKey})
     if err != nil { t.Fatal(err) }
-    if _, ok := snapshot.PricingIncompleteAccountKeys[accountKey]; !ok { t.Fatal("history account was not marked pricing-incomplete") }
+    if len(snapshot.Rows) != 1 || snapshot.Rows[0].TotalTokens != 30 { t.Fatalf("rows=%#v", snapshot.Rows) }
+    if _, incomplete := snapshot.PricingIncompleteAccountKeys[accountKey]; incomplete { t.Fatal("complete current-page price was marked incomplete") }
 }
 
-func TestAccountHistoryUsesCoreTotalsWhileSeparatePricingIsPending(t *testing.T) {
+func TestAccountHistoryKeepsExactCostWhileSeparatePricingIsPending(t *testing.T) {
     response, err := service.AccountHistory(ctx, request)
     if err != nil { t.Fatal(err) }
     item := response.Items[0]
-    if !item.Matched || item.TotalRequests != 2 || item.TotalTokens != 30 || item.TotalCost != nil { t.Fatalf("item=%#v", item) }
+    if !item.Matched || item.TotalRequests != 2 || item.TotalTokens != 30 || item.TotalCost == nil { t.Fatalf("item=%#v", item) }
 }
 ```
 
 - [ ] **Step 2: 运行失败测试**
 
-Run: `go test ./internal/store ./internal/service/monitoring -run 'TestSeparateDerivedSnapshotMarksHistoryAccountsIncompleteWhenPricingLags|TestAccountHistoryUsesCoreTotalsWhileSeparatePricingIsPending' -count=1`
+Run: `go test ./internal/store ./internal/service/monitoring -run 'TestSeparateDerivedSnapshotRecoversExactCurrentPagePricingWhenDerivedPricingLags|TestAccountHistoryKeepsExactCostWhileSeparatePricingIsPending' -count=1`
 
-Expected: FAIL，因为 incomplete set 当前总为空，monitoring 只读取空 pricing totals。
+Expected: FAIL，因为只要 derived core 行已经存在，当前实现不会触发 source query-only pricing 回退，导致 price rows 缺失。
 
-- [ ] **Step 3: 最小实现 account-key completeness**
+- [ ] **Step 3: 最小实现按页精准 source pricing 回退**
 
-在 `loadAccountSnapshot` 解析 core/pricing rows 后：pricing stream 未按 live snapshot ready 时标记所有 core account key；pricing ready 时仅标记有 core row 但缺 pricing row 的账号。复用 monitoring 已有 `buildUnpricedAccountHistoryTotals`，不新增 raw-event HTTP fallback。
+在 `separateDerivedRuntime` 提取一个只读事务 helper：先调用
+`sourcePricing.LoadAccountRowsTx`，再用 `accountPricingCoverageIncompleteKeys` 对照本次 `CoreRows`；
+只对仍不完整的传入账号键调用 `LoadAccountRowsFromRetainedEventsTx`，只保留通过覆盖验证的行。pricing
+stream 未 ready 或派生行不完整时调用它，用完整 source rows 覆盖 current page 的 partial rows；其余
+未验证账号才进入 `PricingIncompleteAccountKeys`。该 helper 只能使用 `runtime.sourceDB` 的
+`ReadOnly + query_only=ON` 事务，禁止在 HTTP 路径扫描全账号或写主库。
 
 - [ ] **Step 4: 验证 Store/monitoring**
 
@@ -182,7 +188,7 @@ Expected: PASS。
 
 ```bash
 git add apps/manager-server/internal/store/derived_runtime.go apps/manager-server/internal/store/derived_runtime_test.go apps/manager-server/internal/service/monitoring/service_test.go
-git commit -m "fix: expose history totals while pricing catches up"
+git commit -m "fix: recover current-page pricing while catchup runs"
 ```
 
 ### Task 5: 状态接口显示 live primary target 与真实 lag
@@ -237,7 +243,7 @@ git commit -m "fix: report live derived lag"
 
 - [ ] **Step 1: 更新二改记忆**
 
-记录 pricing burst 环境变量、history-only fallback、live target status 和不变量，明确未来更新不得恢复伪 lag=0 或让 HTTP 回退为全量 raw pricing scan。
+记录 pricing burst 环境变量、current-page query-only exact price fallback、live target status 和不变量，明确未来更新不得恢复伪 lag=0、不得让 HTTP 回退为全量 raw pricing scan、不得把可验证 current-page 金额降级成 `-`。
 
 - [ ] **Step 2: 跑验证门槛**
 
@@ -259,7 +265,7 @@ Expected: PASS。
 
 - [ ] **Step 4: 部署后有界验收**
 
-查询 `/status?scope=database-maintenance` 验证 pricing `targetEventId` 等于 live primary snapshot、lag 非零时不再为 0；对 50 个当前页账号执行一次 `account-history`，验证 history request/token 非空、未完成价格为 null；核对 `/health`、candidate SHA、服务器 `cpa.service` PID、本地 CPA Core 容器身份均未变化。
+查询 `/status?scope=database-maintenance` 验证 pricing `targetEventId` 等于 live primary snapshot、lag 非零时不再为 0；对 50 个当前页账号执行一次 `account-history`，验证 pricing 未完成时可核验账号仍有精确金额，只有不可核验账号为 null；核对 `/health`、candidate SHA、服务器 `cpa.service` PID、本地 CPA Core 容器身份均未变化。
 
 - [ ] **Step 5: 最终提交**
 
