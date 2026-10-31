@@ -62,6 +62,30 @@ func TestSinkAdvancesCoverageOnlyAfterCommit(t *testing.T) {
 	}
 }
 
+func TestSinkRetainsFullSourceTargetBeyondCommittedBatch(t *testing.T) {
+	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	state, err := NewSink(db).Apply(context.Background(), ApplyBatch{
+		Stream:              StreamPricing,
+		SourceEpoch:         "epoch-a",
+		Generation:          "pricing-v1:a",
+		ToEventID:           500,
+		SourceTargetEventID: 5000,
+		Events:              []EventRecord{{ID: 500, EventHash: "pricing-500"}},
+		Rows:                []MaterializedRow{{Key: "account-a", PayloadJSON: `{"calls":1}`}},
+	})
+	if err != nil {
+		t.Fatalf("apply derived batch: %v", err)
+	}
+	if state.CoverageEventID != 500 || state.TargetEventID != 5000 {
+		t.Fatalf("state = %#v, want coverage=500 target=5000", state)
+	}
+}
+
 func TestSinkDoesNotAcceptEmptyPayloadRows(t *testing.T) {
 	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
 	if err != nil {

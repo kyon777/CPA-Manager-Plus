@@ -322,16 +322,17 @@ func (e *Engine) processStream(ctx context.Context, stream Stream, snapshot Sour
 		}
 		rows := materializedRows(stream, generation, touchedRows)
 		if _, err := e.sink.Apply(ctx, ApplyBatch{
-			Stream:            stream,
-			SourceEpoch:       snapshot.Identity.Epoch,
-			Generation:        generation,
-			PricingRevision:   snapshot.PricingRevision,
-			ArchiveGeneration: snapshot.ArchiveGeneration,
-			FromEventID:       fromID,
-			ToEventID:         toID,
-			Events:            events,
-			Rows:              rows,
-			AppliedAtMS:       e.now().UnixMilli(),
+			Stream:              stream,
+			SourceEpoch:         snapshot.Identity.Epoch,
+			Generation:          generation,
+			PricingRevision:     snapshot.PricingRevision,
+			ArchiveGeneration:   snapshot.ArchiveGeneration,
+			FromEventID:         fromID,
+			ToEventID:           toID,
+			SourceTargetEventID: snapshot.TargetEventID,
+			Events:              events,
+			Rows:                rows,
+			AppliedAtMS:         e.now().UnixMilli(),
 		}); err != nil {
 			return batches, processed, err
 		}

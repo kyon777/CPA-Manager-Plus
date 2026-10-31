@@ -278,7 +278,7 @@ func (r *separateDerivedRuntime) applyLegacyAggregates(ctx context.Context, stre
 	if _, err := r.sink.Apply(ctx, derivedstore.ApplyBatch{
 		Stream: stream, SourceEpoch: snapshot.Identity.Epoch, Generation: generation,
 		PricingRevision: snapshot.PricingRevision, ArchiveGeneration: snapshot.ArchiveGeneration,
-		ToEventID: coverage, Rows: materialized, AppliedAtMS: nowMS,
+		ToEventID: coverage, SourceTargetEventID: snapshot.TargetEventID, Rows: materialized, AppliedAtMS: nowMS,
 	}); err != nil {
 		return fmt.Errorf("bootstrap %s derived rows: %w", stream, err)
 	}

@@ -154,6 +154,10 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 	if strings.TrimSpace(batch.Generation) == "" {
 		return StreamState{}, errors.New("derived generation is required")
 	}
+	targetEventID := batch.SourceTargetEventID
+	if targetEventID < batch.ToEventID {
+		targetEventID = batch.ToEventID
+	}
 	now := batch.AppliedAtMS
 	if now <= 0 {
 		now = time.Now().UnixMilli()
@@ -182,7 +186,7 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 			target_event_id=?, pricing_revision=?, archive_generation=?, processed_events=0,
 			last_success_at_ms=null, last_run_started_at_ms=null, last_batch_duration_ms=0,
 			backoff_count=0, last_error_code='', updated_at_ms=? where stream_name=?`,
-			batch.SourceEpoch, batch.Generation, batch.ToEventID, batch.PricingRevision,
+			batch.SourceEpoch, batch.Generation, targetEventID, batch.PricingRevision,
 			batch.ArchiveGeneration, now, string(batch.Stream)); err != nil {
 			return StreamState{}, err
 		}
@@ -199,7 +203,7 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 		 pricing_revision=excluded.pricing_revision,
 		 archive_generation=excluded.archive_generation,
 		 updated_at_ms=excluded.updated_at_ms`,
-		string(batch.Stream), batch.SourceEpoch, batch.Generation, batch.ToEventID,
+		string(batch.Stream), batch.SourceEpoch, batch.Generation, targetEventID,
 		batch.PricingRevision, batch.ArchiveGeneration, now); err != nil {
 		return StreamState{}, err
 	}
@@ -245,7 +249,7 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 			target_event_id=max(target_event_id, ?),
 			processed_events=processed_events+?, status='ready',
 			last_success_at_ms=?, last_error_code='', updated_at_ms=?
-			where stream_name=? and generation=?`, batch.ToEventID, batch.ToEventID,
+			where stream_name=? and generation=?`, batch.ToEventID, targetEventID,
 			len(batch.Events), now, now, string(batch.Stream), batch.Generation); err != nil {
 			return StreamState{}, err
 		}

@@ -157,9 +157,14 @@ type ApplyBatch struct {
 	ArchiveGeneration string
 	FromEventID       int64
 	ToEventID         int64
-	Events            []EventRecord
-	Rows              []MaterializedRow
-	AppliedAtMS       int64
+	// SourceTargetEventID is the full immutable source snapshot watermark for
+	// this batch. ToEventID only proves what this committed batch covered.
+	// Keeping both lets readers report real catch-up lag while a stream applies
+	// multiple bounded batches.
+	SourceTargetEventID int64
+	Events              []EventRecord
+	Rows                []MaterializedRow
+	AppliedAtMS         int64
 }
 
 type Status struct {
