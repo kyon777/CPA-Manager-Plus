@@ -144,9 +144,13 @@ func derivedStatus(ctx context.Context, appCtx *app.Context) (derivedStorageStat
 		if lag < 0 {
 			lag = 0
 		}
+		streamStatus := stream.Status
+		if lag > 0 && streamStatus == "ready" {
+			streamStatus = "catching_up"
+		}
 		status.Streams = append(status.Streams, derivedStorageStreamStatus{
 			Name:            string(stream.Stream),
-			Status:          stream.Status,
+			Status:          streamStatus,
 			CoverageEventID: stream.CoverageEventID,
 			TargetEventID:   stream.TargetEventID,
 			LagEventID:      lag,

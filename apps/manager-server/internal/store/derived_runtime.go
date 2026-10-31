@@ -230,7 +230,21 @@ func (s *Store) SeparateDerivedStatus(ctx context.Context) (derivedstore.Status,
 			}},
 		}, nil
 	}
-	return runtime.sink.Status(ctx)
+	status, err := runtime.sink.Status(ctx)
+	if err != nil {
+		return derivedstore.Status{}, err
+	}
+	// The sink's target is the most recent worker snapshot. Refresh it from
+	// the query-only source on every status read so a paused worker cannot make
+	// a multi-million-event backlog look like lag=0.
+	snapshot, err := runtime.source.Snapshot(ctx)
+	if err != nil {
+		return derivedstore.Status{}, err
+	}
+	for index := range status.Streams {
+		status.Streams[index].TargetEventID = snapshot.TargetEventID
+	}
+	return status, nil
 }
 
 // SeparateDerivedArchiveDeleteReady is the explicit fail-closed handoff used

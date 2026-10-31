@@ -57,6 +57,57 @@ func TestSeparateDerivedRuntimeServesAccountSnapshotFromDerivedDB(t *testing.T) 
 	}
 }
 
+func TestSeparateDerivedStatusUsesLivePrimaryTarget(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+	insertEvent := func(hash string, timestamp int64) {
+		t.Helper()
+		if _, err := db.Exec(`insert into usage_events(
+			event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+			resolved_model, auth_index, source, auth_file_snapshot,
+			auth_provider_snapshot, input_tokens, output_tokens, total_tokens,
+			failed, created_at_ms
+		) values (?, ?, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+			'gpt-test', 'gpt-test', 'idx-1', 'credential.json', 'credential.json',
+			'codex', 1, 0, 1, 0, ?)`, hash, timestamp, timestamp); err != nil {
+			t.Fatalf("seed usage event %s: %v", hash, err)
+		}
+	}
+	insertEvent("status-1", 1)
+	insertEvent("status-2", 2)
+	if err := st.ConfigureDerivedStorage(context.Background(), config.Config{
+		DBPath: primaryPath, DerivedDBPath: filepath.Join(t.TempDir(), "usage-derived.sqlite"),
+		DerivedStorageMode: config.DerivedStorageSeparate, DerivedSourceBatchSize: 1, DerivedCycleMaxBatches: 1,
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	if _, err := st.RunSeparateDerivedCycle(context.Background()); err != nil {
+		t.Fatalf("run separate derived cycle: %v", err)
+	}
+	for eventID := 3; eventID <= 10; eventID++ {
+		insertEvent(fmt.Sprintf("status-%d", eventID), int64(eventID))
+	}
+	status, err := st.SeparateDerivedStatus(context.Background())
+	if err != nil {
+		t.Fatalf("read separate derived status: %v", err)
+	}
+	for _, stream := range status.Streams {
+		if stream.Stream != derivedstore.StreamAccountHistory {
+			continue
+		}
+		if stream.CoverageEventID != 1 || stream.TargetEventID != 10 {
+			t.Fatalf("history stream = %#v, want coverage=1 target=10", stream)
+		}
+		return
+	}
+	t.Fatalf("account-history state missing: %#v", status)
+}
+
 func TestSeparateDerivedRuntimeDegradesWithoutReenablingPrimaryWriter(t *testing.T) {
 	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
 	db, err := sqliterepo.Open(primaryPath)

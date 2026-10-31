@@ -656,6 +656,56 @@ func TestServerCompatStatusExposesSanitizedSeparateDerivedStatus(t *testing.T) {
 	}
 }
 
+func TestServerCompatStatusReportsSeparateDerivedCatchupAgainstLiveTarget(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	cfg.DerivedStorageMode = config.DerivedStorageSeparate
+	cfg.DerivedDBPath = filepath.Join(t.TempDir(), "usage-derived.sqlite")
+	cfg.DerivedSourceBatchSize = 1
+	cfg.DerivedCycleMaxBatches = 1
+	if cfg.DBPath == "" {
+		cfg.DBPath = filepath.Join(t.TempDir(), "usage.sqlite")
+	}
+	db := testutil.NewStore(t, cfg)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.InsertEvents(context.Background(), []usage.Event{compatEvent("derived-catchup-1", 1), compatEvent("derived-catchup-2", 2)}); err != nil {
+		t.Fatalf("seed derived events: %v", err)
+	}
+	if err := db.ConfigureDerivedStorage(context.Background(), cfg); err != nil {
+		t.Fatalf("configure separate derived store: %v", err)
+	}
+	if _, err := db.RunSeparateDerivedCycle(context.Background()); err != nil {
+		t.Fatalf("run derived cycle: %v", err)
+	}
+	if _, err := db.InsertEvents(context.Background(), []usage.Event{compatEvent("derived-catchup-3", 3)}); err != nil {
+		t.Fatalf("append live target event: %v", err)
+	}
+	server := New(cfg, db, collector.NewManager(cfg, db))
+	rr := testutil.Request(t, server.Handler(), http.MethodGet, "/status?scope=database-maintenance", "", testutil.AdminKey)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	var payload struct {
+		DerivedStorage struct {
+			Streams []struct {
+				Name            string `json:"name"`
+				Status          string `json:"status"`
+				CoverageEventID int64  `json:"coverageEventId"`
+				TargetEventID   int64  `json:"targetEventId"`
+				LagEventID      int64  `json:"lagEventId"`
+			} `json:"streams"`
+		} `json:"derivedStorage"`
+	}
+	testutil.DecodeJSON(t, rr, &payload)
+	for _, stream := range payload.DerivedStorage.Streams {
+		if stream.Name != "account-history" {
+			continue
+		}
+		if stream.CoverageEventID != 1 || stream.TargetEventID != 3 || stream.LagEventID != 2 || stream.Status != "catching_up" {
+			t.Fatalf("account-history status = %#v", stream)
+		}
+		return
+	}
+	t.Fatalf("account-history status missing: %#v", payload.DerivedStorage.Streams)
+}
+
 func TestServerCompatStatusIncludesDatabaseMaintenanceSnapshot(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	db := testutil.NewStore(t, cfg)
