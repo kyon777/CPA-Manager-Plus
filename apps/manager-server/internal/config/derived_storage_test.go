@@ -71,3 +71,23 @@ func TestLoadSeparateDerivedFollowsExplicitPrimaryDirectory(t *testing.T) {
 		t.Fatalf("DerivedDBPath = %q, want %q", cfg.DerivedDBPath, want)
 	}
 }
+
+func TestLoadSeparateDerivedPricingCatchupControls(t *testing.T) {
+	clearConfigEnv(t)
+	dir := t.TempDir()
+	t.Setenv(configEnvKey, filepath.Join(dir, "missing-config.json"))
+	t.Setenv("USAGE_DERIVED_STORAGE_MODE", "separate")
+	t.Setenv("USAGE_DERIVED_PRICING_CATCHUP_BATCH_SIZE", "2000")
+	t.Setenv("USAGE_DERIVED_PRICING_CATCHUP_MAX_BATCHES", "8")
+	t.Setenv("USAGE_DERIVED_PRICING_CATCHUP_LAG_EVENTS", "10000")
+
+	cfg, err := LoadWithoutCreatingDefault()
+	if err != nil {
+		t.Fatalf("LoadWithoutCreatingDefault() error = %v", err)
+	}
+	if cfg.DerivedPricingCatchupBatchSize != 2000 ||
+		cfg.DerivedPricingCatchupMaxBatches != 8 ||
+		cfg.DerivedPricingCatchupLagEvents != 10000 {
+		t.Fatalf("pricing catch-up controls = %#v", cfg)
+	}
+}

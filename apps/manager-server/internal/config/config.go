@@ -35,6 +35,9 @@ const (
 	DefaultDerivedSourceBatchSize                      = 500
 	DefaultDerivedCycleMaxBatches                      = 2
 	DefaultDerivedYield                                = 100 * time.Millisecond
+	DefaultDerivedPricingCatchupBatchSize              = 1000
+	DefaultDerivedPricingCatchupMaxBatches             = 4
+	DefaultDerivedPricingCatchupLagEvents              = 10000
 	maxUsageArchiveRetentionDays                 int64 = math.MaxInt64 / int64(24*time.Hour)
 	minServerErrorPriorityDemotionWorkers              = 1
 	maxServerErrorPriorityDemotionWorkers              = 32
@@ -46,6 +49,12 @@ const (
 	maxDerivedCycleMaxBatches                          = 8
 	minDerivedYieldMS                                  = 25
 	maxDerivedYieldMS                                  = 2000
+	minDerivedPricingCatchupBatchSize                  = 50
+	maxDerivedPricingCatchupBatchSize                  = 5000
+	minDerivedPricingCatchupMaxBatches                 = 1
+	maxDerivedPricingCatchupMaxBatches                 = 8
+	minDerivedPricingCatchupLagEvents                  = 1
+	maxDerivedPricingCatchupLagEvents                  = 10000000
 )
 
 // DerivedStorageMode determines where CPAM stores usage data that can be
@@ -67,6 +76,9 @@ type Config struct {
 	DerivedSourceBatchSize                int
 	DerivedCycleMaxBatches                int
 	DerivedYield                          time.Duration
+	DerivedPricingCatchupBatchSize        int
+	DerivedPricingCatchupMaxBatches       int
+	DerivedPricingCatchupLagEvents        int
 	CPAUpstreamURL                        string
 	ManagementKey                         string
 	AdminKey                              string
@@ -121,6 +133,9 @@ type fileConfig struct {
 	DerivedSourceBatchSize             int      `json:"derivedSourceBatchSize,omitempty"`
 	DerivedCycleMaxBatches             int      `json:"derivedCycleMaxBatches,omitempty"`
 	DerivedYieldMS                     int      `json:"derivedYieldMs,omitempty"`
+	DerivedPricingCatchupBatchSize     int      `json:"derivedPricingCatchupBatchSize,omitempty"`
+	DerivedPricingCatchupMaxBatches    int      `json:"derivedPricingCatchupMaxBatches,omitempty"`
+	DerivedPricingCatchupLagEvents     int      `json:"derivedPricingCatchupLagEvents,omitempty"`
 	CPAUpstreamURL                     string   `json:"cpaUpstreamUrl,omitempty"`
 	ManagementKeyFile                  string   `json:"managementKeyFile,omitempty"`
 	AdminKeyFile                       string   `json:"adminKeyFile,omitempty"`
@@ -254,6 +269,21 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 			minDerivedYieldMS,
 			maxDerivedYieldMS,
 		)) * time.Millisecond,
+		DerivedPricingCatchupBatchSize: clampInt(
+			envInt("USAGE_DERIVED_PRICING_CATCHUP_BATCH_SIZE", intFallback(cfgFile.DerivedPricingCatchupBatchSize, DefaultDerivedPricingCatchupBatchSize)),
+			minDerivedPricingCatchupBatchSize,
+			maxDerivedPricingCatchupBatchSize,
+		),
+		DerivedPricingCatchupMaxBatches: clampInt(
+			envInt("USAGE_DERIVED_PRICING_CATCHUP_MAX_BATCHES", intFallback(cfgFile.DerivedPricingCatchupMaxBatches, DefaultDerivedPricingCatchupMaxBatches)),
+			minDerivedPricingCatchupMaxBatches,
+			maxDerivedPricingCatchupMaxBatches,
+		),
+		DerivedPricingCatchupLagEvents: clampInt(
+			envInt("USAGE_DERIVED_PRICING_CATCHUP_LAG_EVENTS", intFallback(cfgFile.DerivedPricingCatchupLagEvents, DefaultDerivedPricingCatchupLagEvents)),
+			minDerivedPricingCatchupLagEvents,
+			maxDerivedPricingCatchupLagEvents,
+		),
 		CPAUpstreamURL:                     env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
 		ManagementKey:                      readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
 		AdminKey:                           readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
