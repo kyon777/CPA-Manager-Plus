@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	usageservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
@@ -2261,6 +2262,80 @@ func TestAccountHistoryReturnsRollupTotalsAndCost(t *testing.T) {
 	}
 	if resp.Items[2].RowKey != "row-legacy-key" || !resp.Items[2].Matched || resp.Items[2].AccountKey != historyKey || resp.Items[2].TotalRequests != 2 {
 		t.Fatalf("account_key item = %#v", resp.Items[2])
+	}
+}
+
+func TestAccountHistoryKeepsExactCostWhileSeparatePricingIsPending(t *testing.T) {
+	ctx := context.Background()
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := store.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"gpt-test": {Prompt: 1, Completion: 2},
+	}); err != nil {
+		t.Fatalf("save model price: %v", err)
+	}
+	event := monitoringEvent("separate-pricing-page", 1_700_000_000_000, "gpt-test", "auth-1", "source-a", false, 10, 2, 0, 0, 12, nil)
+	event.AuthFileSnapshot = "exact-page.json"
+	event.AuthProviderSnapshot = "codex"
+	event.AccountSnapshot = "exact@example.com"
+	event.Source = "exact@example.com"
+	if _, err := db.InsertEvents(ctx, []usage.Event{event}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	for {
+		result, err := db.CatchUpAccountHistoryRollups(ctx, 100, time.Now().UnixMilli())
+		if err != nil {
+			t.Fatalf("catch up account history: %v", err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
+	for {
+		result, err := db.CatchUpUsagePricing(ctx, 100, time.Now().UnixMilli())
+		if err != nil {
+			t.Fatalf("catch up pricing: %v", err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
+	derivedPath := filepath.Join(t.TempDir(), "usage-derived.sqlite")
+	if err := db.ConfigureDerivedStorage(ctx, config.Config{
+		DBPath: primaryPath, DerivedDBPath: derivedPath, DerivedStorageMode: config.DerivedStorageSeparate,
+		DerivedSourceBatchSize: 10, DerivedCycleMaxBatches: 1,
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	derived, err := sqliterepo.OpenDerived(derivedPath)
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	if _, err := derived.Exec(`delete from derived_materialized_rows where stream_name = 'pricing'`); err != nil {
+		_ = derived.Close()
+		t.Fatalf("remove derived pricing rows: %v", err)
+	}
+	if err := derived.Close(); err != nil {
+		t.Fatalf("close derived: %v", err)
+	}
+
+	response, err := New(db).AccountHistory(ctx, AccountHistoryRequest{Accounts: []AccountHistoryTarget{{
+		RowKey: "exact-page", AuthFileSnapshot: "exact-page.json", AuthIndex: "auth-1",
+		AuthProviderSnapshot: "codex", AccountSnapshot: "exact@example.com",
+	}}})
+	if err != nil {
+		t.Fatalf("account history: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items = %#v", response.Items)
+	}
+	item := response.Items[0]
+	if !item.Matched || item.TotalRequests != 1 || item.TotalTokens != 12 || item.TotalCost == nil || *item.TotalCost <= 0 {
+		t.Fatalf("current-page item = %#v", item)
 	}
 }
 

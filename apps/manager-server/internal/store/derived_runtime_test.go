@@ -283,6 +283,64 @@ func TestSeparateDerivedRuntimeReturnsLastVerifiedRowsWhileTailIsPending(t *test
 	}
 }
 
+func TestSeparateDerivedSnapshotRecoversExactCurrentPagePricingWhenDerivedPricingLags(t *testing.T) {
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.SaveModelPrices(context.Background(), map[string]ModelPrice{
+		"gpt-test": {Prompt: 1, Completion: 1},
+	}); err != nil {
+		t.Fatalf("save model prices: %v", err)
+	}
+	if _, err := db.Exec(`insert into usage_events(
+		event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+		resolved_model, auth_index, source, auth_file_snapshot,
+		auth_provider_snapshot, input_tokens, output_tokens, total_tokens,
+		failed, created_at_ms
+	) values ('exact-page-pricing', 100, '1970-01-01T00:00:00Z', 'codex', 'gpt-test',
+		'gpt-test', 'gpt-test', 'idx-1', 'credential.json', 'credential.json',
+		'codex', 10, 2, 12, 0, 100)`); err != nil {
+		t.Fatalf("seed usage event: %v", err)
+	}
+	if _, err := st.CatchUpAccountHistoryRollups(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("build primary history: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(context.Background(), 10, 1000); err != nil {
+		t.Fatalf("build primary pricing: %v", err)
+	}
+	if err := st.ConfigureDerivedStorage(context.Background(), config.Config{
+		DBPath: primaryPath, DerivedDBPath: filepath.Join(t.TempDir(), "usage-derived.sqlite"),
+		DerivedStorageMode: config.DerivedStorageSeparate, DerivedSourceBatchSize: 10, DerivedCycleMaxBatches: 1,
+	}); err != nil {
+		t.Fatalf("configure separate derived storage: %v", err)
+	}
+	runtime := st.separateRuntime()
+	if runtime == nil {
+		t.Fatal("separate runtime unavailable")
+	}
+	// Keep the stream checkpoint at its verified primary target but remove its
+	// local materialized row. This reproduces a pricing generation that has not
+	// yet materialized the visible account while account-history is available.
+	if _, err := runtime.derivedDB.Exec(`delete from derived_materialized_rows where stream_name = ?`, string(derivedstore.StreamPricing)); err != nil {
+		t.Fatalf("remove derived pricing row: %v", err)
+	}
+	key := AccountHistoryKey("", "", "credential.json", "idx-1")
+	snapshot, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{key})
+	if err != nil {
+		t.Fatalf("load current-page snapshot: %v", err)
+	}
+	if len(snapshot.Rows) != 1 || snapshot.Rows[0].AccountKey != key || snapshot.Rows[0].TotalTokens != 12 {
+		t.Fatalf("current-page pricing rows = %#v", snapshot.Rows)
+	}
+	if _, incomplete := snapshot.PricingIncompleteAccountKeys[key]; incomplete {
+		t.Fatalf("complete source pricing for %q was marked incomplete", key)
+	}
+}
+
 func TestSeparateDerivedRuntimeMergesVisibleAccountTailBeforeDerivedCatchUp(t *testing.T) {
 	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
 	db, err := sqliterepo.Open(primaryPath)

@@ -902,48 +902,11 @@ func (s *Store) loadUsagePricingAccountSnapshotPrimary(ctx context.Context, acco
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
-	rows, state, available, err := s.UsagePricing.LoadAccountRowsTx(ctx, tx, accountKeys)
+	rows, state, incomplete, err := loadVerifiedAccountPricingRowsTx(ctx, tx, s.UsagePricing, coreRows, accountKeys)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
-	if !available {
-		rows = nil
-	}
-
-	incomplete := accountPricingCoverageIncompleteKeys(coreRows, rows)
-	if len(incomplete) > 0 {
-		recoveryKeys := make([]string, 0, len(incomplete))
-		for key := range incomplete {
-			recoveryKeys = append(recoveryKeys, key)
-		}
-		recoveredRows, recoveryErr := s.UsagePricing.LoadAccountRowsFromRetainedEventsTx(ctx, tx, recoveryKeys)
-		if recoveryErr != nil {
-			return UsagePricingAccountSnapshot{}, recoveryErr
-		}
-
-		recoveryCoreRows := make([]AccountHistoryRollupRow, 0, len(coreRows))
-		for _, row := range coreRows {
-			if _, needsRecovery := incomplete[row.AccountKey]; needsRecovery {
-				recoveryCoreRows = append(recoveryCoreRows, row)
-			}
-		}
-		stillIncomplete := accountPricingCoverageIncompleteKeys(recoveryCoreRows, recoveredRows)
-
-		completeRows := make([]UsagePricingAccountRow, 0, len(rows)+len(recoveredRows))
-		for _, row := range rows {
-			if _, needsRecovery := incomplete[row.AccountKey]; !needsRecovery {
-				completeRows = append(completeRows, row)
-			}
-		}
-		for _, row := range recoveredRows {
-			if _, unresolved := stillIncomplete[row.AccountKey]; !unresolved {
-				completeRows = append(completeRows, row)
-			}
-		}
-		rows = completeRows
-		incomplete = stillIncomplete
-	}
-	available = len(incomplete) == 0
+	available := len(incomplete) == 0
 
 	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
 	if err != nil {
@@ -960,6 +923,61 @@ func (s *Store) loadUsagePricingAccountSnapshotPrimary(ctx context.Context, acco
 		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
 	}, nil
+}
+
+// loadVerifiedAccountPricingRowsTx returns pricing rows that have been proven
+// to cover the supplied account-history rows. It first uses the repository's
+// indexed current-page reader, then retries only incomplete account keys from
+// retained events. Callers must provide a read-only transaction and a bounded
+// current-page key set; this helper never expands it into a global scan.
+func loadVerifiedAccountPricingRowsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	repository usagepricing.Repository,
+	coreRows []AccountHistoryRollupRow,
+	accountKeys []string,
+) ([]UsagePricingAccountRow, UsagePricingState, map[string]struct{}, error) {
+	rows, state, available, err := repository.LoadAccountRowsTx(ctx, tx, accountKeys)
+	if err != nil {
+		return nil, UsagePricingState{}, nil, err
+	}
+	if !available {
+		rows = nil
+	}
+
+	incomplete := accountPricingCoverageIncompleteKeys(coreRows, rows)
+	if len(incomplete) == 0 {
+		return rows, state, incomplete, nil
+	}
+	recoveryKeys := make([]string, 0, len(incomplete))
+	for key := range incomplete {
+		recoveryKeys = append(recoveryKeys, key)
+	}
+	recoveredRows, err := repository.LoadAccountRowsFromRetainedEventsTx(ctx, tx, recoveryKeys)
+	if err != nil {
+		return nil, UsagePricingState{}, nil, err
+	}
+
+	recoveryCoreRows := make([]AccountHistoryRollupRow, 0, len(coreRows))
+	for _, row := range coreRows {
+		if _, needsRecovery := incomplete[row.AccountKey]; needsRecovery {
+			recoveryCoreRows = append(recoveryCoreRows, row)
+		}
+	}
+	stillIncomplete := accountPricingCoverageIncompleteKeys(recoveryCoreRows, recoveredRows)
+
+	completeRows := make([]UsagePricingAccountRow, 0, len(rows)+len(recoveredRows))
+	for _, row := range rows {
+		if _, needsRecovery := incomplete[row.AccountKey]; !needsRecovery {
+			completeRows = append(completeRows, row)
+		}
+	}
+	for _, row := range recoveredRows {
+		if _, unresolved := stillIncomplete[row.AccountKey]; !unresolved {
+			completeRows = append(completeRows, row)
+		}
+	}
+	return completeRows, state, stillIncomplete, nil
 }
 
 func (s *Store) CatchUpAccountHistoryRollups(ctx context.Context, limit int, nowMS int64) (UsageRollupCatchUpResult, error) {

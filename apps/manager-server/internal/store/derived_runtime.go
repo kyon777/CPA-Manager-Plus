@@ -414,7 +414,7 @@ func (r *separateDerivedRuntime) loadLegacySnapshot(ctx context.Context, account
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
-	rows, state, _, err := r.sourcePricing.LoadAccountRowsTx(ctx, tx, accountKeys)
+	rows, state, incomplete, err := loadVerifiedAccountPricingRowsTx(ctx, tx, r.sourcePricing, coreRows, accountKeys)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
@@ -426,9 +426,37 @@ func (r *separateDerivedRuntime) loadLegacySnapshot(ctx context.Context, account
 		Rows:                         rows,
 		State:                        state,
 		Available:                    false,
-		PricingIncompleteAccountKeys: map[string]struct{}{},
+		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
 	}, nil
+}
+
+// loadExactCurrentPagePricing reads only the requested page's account keys
+// through the runtime query-only source handle. It deliberately shares the
+// same coverage verifier as the primary reader: a derived lag may delay
+// materialization, but it must not turn a verifiable current-page amount into
+// a blank value or trigger a global event scan.
+func (r *separateDerivedRuntime) loadExactCurrentPagePricing(
+	ctx context.Context,
+	accountKeys []string,
+	coreRows []AccountHistoryRollupRow,
+) ([]UsagePricingAccountRow, map[string]struct{}, error) {
+	if r == nil || r.sourceDB == nil || r.sourcePricing == nil {
+		return nil, nil, errors.New("separate derived source pricing fallback is unavailable")
+	}
+	tx, err := r.sourceDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, _, incomplete, err := loadVerifiedAccountPricingRowsTx(ctx, tx, r.sourcePricing, coreRows, accountKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return rows, incomplete, nil
 }
 
 func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys []string, prices map[string]ModelPrice) (UsagePricingAccountSnapshot, bool, error) {
@@ -519,14 +547,32 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 		}
 		pricing = append(pricing, toPricingAccountRow(aggregate))
 	}
-	ready := derivedStateReady(coreState, derivedstore.GenerationFor(derivedstore.StreamAccountHistory, snapshot), snapshot, derivedstore.StreamAccountHistory, snapshot.TargetEventID) &&
-		derivedStateReady(pricingState, derivedstore.GenerationFor(derivedstore.StreamPricing, snapshot), snapshot, derivedstore.StreamPricing, snapshot.TargetEventID)
+	historyReady := derivedStateReady(coreState, derivedstore.GenerationFor(derivedstore.StreamAccountHistory, snapshot), snapshot, derivedstore.StreamAccountHistory, snapshot.TargetEventID)
+	pricingReady := derivedStateReady(pricingState, derivedstore.GenerationFor(derivedstore.StreamPricing, snapshot), snapshot, derivedstore.StreamPricing, snapshot.TargetEventID)
+	incomplete := accountPricingCoverageIncompleteKeys(core, pricing)
+	if !pricingReady || len(incomplete) > 0 {
+		exactRows, exactIncomplete, exactErr := r.loadExactCurrentPagePricing(ctx, keys, core)
+		if exactErr == nil {
+			pricing = exactRows
+			incomplete = exactIncomplete
+		} else {
+			// The page remains usable if the optional exact source read is
+			// temporarily unavailable. Mark all core accounts unpriced so
+			// monitoring safely retains request/token totals without presenting a
+			// stale amount as current.
+			incomplete = make(map[string]struct{}, len(core))
+			for _, row := range core {
+				incomplete[row.AccountKey] = struct{}{}
+			}
+		}
+	}
+	ready := historyReady && pricingReady
 	return UsagePricingAccountSnapshot{
 		CoreRows:                     core,
 		Rows:                         pricing,
 		State:                        toUsagePricingState(pricingState, snapshot.PricingRevision),
 		Available:                    ready,
-		PricingIncompleteAccountKeys: map[string]struct{}{},
+		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
 	}, ready, nil
 }
