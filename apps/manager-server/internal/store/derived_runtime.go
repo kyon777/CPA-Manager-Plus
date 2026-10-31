@@ -99,6 +99,21 @@ func (s *Store) ConfigureDerivedStorage(ctx context.Context, cfg config.Config) 
 	}
 	runtime.source = derivedstore.NewSourceWithArchiveDir(sourceDB, cfg.UsageArchiveDir)
 	runtime.sink = derivedstore.NewSink(derivedDB)
+	// A pre-email Codex generation can still be fully covered even when the
+	// corresponding primary raw events were compacted away. Fold that retained
+	// derived state before bootstrap/engine generation checks, otherwise the
+	// worker would discard it and force an impossible replay from event zero.
+	snapshot, err := runtime.source.Snapshot(ctx)
+	if err != nil {
+		_ = runtime.close()
+		s.markSeparateDerivedDegraded(fmt.Errorf("snapshot separate derived source: %w", err))
+		return nil
+	}
+	if _, err := derivedstore.MigrateCodexEmailIdentity(ctx, runtime.sink, snapshot); err != nil {
+		_ = runtime.close()
+		s.markSeparateDerivedDegraded(fmt.Errorf("migrate separate derived codex identity: %w", err))
+		return nil
+	}
 	runtime.engine = derivedstore.NewEngine(derivedstore.EngineConfig{
 		Source:                   runtime.source,
 		Sink:                     runtime.sink,

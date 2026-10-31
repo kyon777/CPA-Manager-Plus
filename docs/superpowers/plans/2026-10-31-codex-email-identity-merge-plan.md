@@ -4,7 +4,7 @@
 
 **Goal:** Make Codex account-level usage aggregation email-based, rebuild primary and separate derived projections, and prevent old/new workspace metadata from creating two buckets.
 
-**Architecture:** Keep raw events immutable. Change the shared Codex aggregation key to normalized member email, bump the identity revision, let primary rollups rebuild from retained source, and include the revision in separate-derived generations so stale materializations are discarded before replay.
+**Architecture:** Keep raw events immutable. Change the shared Codex aggregation key to normalized member email, bump the identity revision, fold retained primary materializations in place when archive compaction makes raw replay impossible, and migrate separate-derived generations before engine bootstrap without forcing a replay from event zero.
 
 **Tech Stack:** Go, SQLite, `database/sql`, existing CPAM rollup/derived-store workers.
 
@@ -28,9 +28,9 @@
 - Inspect/modify: `apps/manager-server/internal/repository/sqlite/migrate.go`
 - Test: `apps/manager-server/internal/repository/sqlite/migrate_test.go`
 
-- [x] Recognize the deployed custom `codex-2` revision and schedule a non-destructive account-history/pricing rebuild from immutable source.
-- [x] Park the old account-history projection under a new revision-specific name and clear only the disposable per-account price cache.
-- [x] Run migration, account-history, and pricing regressions; assert one current email-key row with summed calls/tokens.
+- [x] Recognize the deployed custom `codex-2` revision and choose an archive-aware fold when raw events have been deleted.
+- [x] Fold primary account-history/pricing rows, monitoring projection/daily buckets, and state revisions transactionally; clear only the disposable per-account price cache while preserving raw facts and watermarks.
+- [x] Run archived-state migration, account-history, and pricing regressions; assert one current email-key row with summed calls/tokens and preserved coverage.
 
 ### Task 3: Version and clear stale separate-derived generations
 
@@ -42,7 +42,7 @@
 
 - [x] Add a regression that plants both the state-tracked and an orphan stale generation.
 - [x] Include `usageidentity.CodexIdentityRevision` in account-history and pricing generation strings.
-- [x] Delete all stale generations' materialized rows and applied-event ledger transactionally when the new generation is first applied.
+- [x] Fold legacy account-history/pricing rows into the current generation before bootstrap, then delete stale generations' materialized rows and applied-event ledger transactionally while preserving coverage/target.
 - [x] Run derived-store tests and verify only the current generation remains visible.
 
 ### Task 4: End-to-end account aggregation regression
@@ -60,6 +60,6 @@
 ### Task 5: Verification and candidate packaging
 
 - [x] Run focused Go tests.
-- [ ] Run the Linux full-suite/build gate before a deployment request.
+- [ ] Run the Linux full-suite/build gate before deployment.
 - [x] Inspect diff and ensure no CPA Core files/configs changed.
 - [x] Record migration/rebuild behavior and deployment preconditions.

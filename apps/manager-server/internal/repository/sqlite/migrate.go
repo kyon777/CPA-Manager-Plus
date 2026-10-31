@@ -1201,6 +1201,13 @@ func Migrate(db *sql.DB) error {
 	if err := ensureUsageArchiveDeletedCoverageDaily(db); err != nil {
 		return err
 	}
+	// The immediately previous custom Codex identity used mutable workspace
+	// metadata. Fold its retained projections before any normal migration path
+	// considers a raw-history rebuild: archived installations no longer have a
+	// complete usage_events source, but do retain their materialized facts.
+	if err := ensureArchivedCodexV2StateFold(db); err != nil {
+		return err
+	}
 	if err := ensureUsageAccountModelRollupPrimaryKeys(db); err != nil {
 		return err
 	}

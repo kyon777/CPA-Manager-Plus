@@ -143,6 +143,92 @@ func TestSeparateDerivedRuntimeUnifiesCodexEmailAcrossWorkspaceIntroduction(t *t
 	}
 }
 
+func TestConfigureDerivedStorageMigratesLegacyCodexGenerationBeforeBootstrap(t *testing.T) {
+	ctx := context.Background()
+	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sqliterepo.Open(primaryPath)
+	if err != nil {
+		t.Fatalf("open primary: %v", err)
+	}
+	st := New(db)
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := db.Exec(`insert into usage_events(
+		event_hash, timestamp_ms, timestamp, provider, model, requested_model,
+		resolved_model, auth_index, source, auth_file_snapshot,
+		auth_provider_snapshot, account_snapshot, input_tokens, total_tokens,
+		failed, created_at_ms
+	) values ('legacy-derived-codex-event', 1, '1970-01-01T00:00:00Z', 'codex',
+		'gpt-test', 'gpt-test', 'gpt-test', 'legacy-index', 'legacy.json',
+		'legacy.json', 'codex', 'same@example.com', 10, 10, 0, 1)`); err != nil {
+		t.Fatalf("seed primary event: %v", err)
+	}
+
+	source := derivedstore.NewSourceWithArchiveDir(db, "")
+	snapshot, err := source.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("snapshot primary source: %v", err)
+	}
+	derivedPath := filepath.Join(t.TempDir(), "usage-derived.sqlite")
+	derivedDB, err := sqliterepo.OpenDerived(derivedPath)
+	if err != nil {
+		t.Fatalf("open legacy derived database: %v", err)
+	}
+	legacyGeneration := func(stream derivedstore.Stream) string {
+		if stream == derivedstore.StreamPricing {
+			return "pricing-v1:" + snapshot.Identity.Epoch + ":" + snapshot.PricingRevision
+		}
+		return "account-history-v1:" + snapshot.Identity.Epoch
+	}
+	for _, stream := range []derivedstore.Stream{derivedstore.StreamAccountHistory, derivedstore.StreamPricing} {
+		aggregate := derivedstore.AccountAggregate{
+			AccountKey: "legacy-workspace-key", AccountSnapshot: "same@example.com",
+			AuthProviderSnapshot: "codex", AuthIndex: "legacy-index", Source: "legacy.json",
+			Model: "gpt-test", BillingModel: "gpt-test", PricingModel: "gpt-test",
+			Calls: 1, SuccessCalls: 1, InputTokens: 10, TotalTokens: 10,
+			FirstSeenMS: 1, LastSeenMS: 1, UpdatedAtMS: 1,
+		}
+		row, err := derivedstore.MaterializedRowForAggregate(stream, legacyGeneration(stream), aggregate, 1, 1, 1)
+		if err != nil {
+			_ = derivedDB.Close()
+			t.Fatalf("materialize legacy %s row: %v", stream, err)
+		}
+		if _, err := derivedstore.NewSink(derivedDB).Apply(ctx, derivedstore.ApplyBatch{
+			Stream: stream, SourceEpoch: snapshot.Identity.Epoch, Generation: legacyGeneration(stream),
+			PricingRevision: snapshot.PricingRevision, ArchiveGeneration: snapshot.ArchiveGeneration,
+			ToEventID: 1, SourceTargetEventID: snapshot.TargetEventID,
+			Rows: []derivedstore.MaterializedRow{row}, AppliedAtMS: 1,
+		}); err != nil {
+			_ = derivedDB.Close()
+			t.Fatalf("seed legacy %s state: %v", stream, err)
+		}
+	}
+	if err := derivedDB.Close(); err != nil {
+		t.Fatalf("close legacy derived database: %v", err)
+	}
+
+	if err := st.ConfigureDerivedStorage(ctx, config.Config{
+		DBPath: primaryPath, DerivedDBPath: derivedPath,
+		DerivedStorageMode:     config.DerivedStorageSeparate,
+		DerivedSourceBatchSize: 10, DerivedCycleMaxBatches: 1,
+	}); err != nil {
+		t.Fatalf("configure legacy separate derived storage: %v", err)
+	}
+	status, err := st.SeparateDerivedStatus(ctx)
+	if err != nil {
+		t.Fatalf("read migrated derived status: %v", err)
+	}
+	states := make(map[derivedstore.Stream]derivedstore.StreamState, len(status.Streams))
+	for _, state := range status.Streams {
+		states[state.Stream] = state
+	}
+	for _, stream := range []derivedstore.Stream{derivedstore.StreamAccountHistory, derivedstore.StreamPricing} {
+		state, ok := states[stream]
+		if !ok || state.Generation != derivedstore.GenerationFor(stream, snapshot) || state.CoverageEventID != 1 {
+			t.Fatalf("configured %s state = %#v, all=%#v", stream, state, status.Streams)
+		}
+	}
+}
+
 func TestSeparateDerivedStatusUsesLivePrimaryTarget(t *testing.T) {
 	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
 	db, err := sqliterepo.Open(primaryPath)

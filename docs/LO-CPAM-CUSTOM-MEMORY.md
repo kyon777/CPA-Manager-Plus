@@ -1033,3 +1033,26 @@ fact-writing behavior.
   Workspace/file same email; different emails remain separate; primary
   account-history/pricing aggregation; separate-derived materialization; and
   stale/orphan generation purge.
+
+### Archive-aware deployment amendment (supersedes the raw-rebuild sentence above)
+
+- A deployed `identity-3:codex-2:model-1` database may have raw usage events
+  physically removed after verified archive compaction. On that state, startup
+  MUST NOT reset rollups and request a replay from raw events. The migration
+  folds retained primary account-history and pricing materializations in one
+  SQLite transaction, rekeys only valid Codex email rows in the monitoring
+  projection, folds `codex-2`/`codex-3` monitoring daily buckets, rewrites the
+  pricing/monitoring state revisions, clears only the disposable account-price
+  cache, and then advances the identity setting. `usage_events`, archive
+  manifests, Credits, quota, billing facts, and coverage/target watermarks are
+  left intact. Invalid or missing email snapshots retain their physical
+  fallback key and are never merged by workspace metadata.
+- The separate-derived runtime must call its Codex identity fold after the
+  source snapshot and before engine bootstrap. It folds legacy account-history
+  and pricing generations into the current `codex-3` generation, preserves
+  status/coverage/target, and removes only stale materializations, disposable
+  price cache rows, and the derived applied-event ledger. It MUST NOT replay
+  from event zero merely because the identity revision changed.
+- Any future upstream merge touching identity revision, archive coverage, or
+  derived generation must preserve this archive-aware path and its regression
+  tests before deployment.

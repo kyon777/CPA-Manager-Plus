@@ -26,10 +26,10 @@ key = usage-account-history:3:codex-member:<hex(codex)>:<hex(email)>
 ## 派生迁移
 
 1. 提升 `CodexIdentityRevision`，使主库 account-history/pricing revision 失配。
-2. 主库按已有迁移机制清空旧账号 rollup，重新从完整 raw/archive source 聚合；同邮箱事件会在 SQL `GROUP BY account_key` 中合并。
-3. 独立派生库 generation 纳入身份 revision。generation 变化时删除旧 generation 的 materialized rows/applied events，再从 source 重放；避免旧 `file-index` 与新 `codex-member` 行长期并存。
+2. 若 raw/archive source 完整，主库可按既有机制重建；若 archive 已删除 raw 事件，迁移不得清空并重放。它必须在一个事务中折叠保留的 account-history/pricing 行、仅重键有效 Codex 邮箱的 monitoring projection、合并 daily buckets、改写状态 revision，并保留 coverage/target 水位。
+3. 独立派生库 generation 纳入身份 revision。首次遇到旧 generation 时，在 engine bootstrap 前把旧 materialized rows 按规范化邮箱折叠到 `codex-3`，保留 status/coverage/target，仅删除旧派生行、ledger 与可重建价格缓存；不得因身份版本变化从 event zero 重放。
 4. 读取层只接受当前 generation/current key，不把旧桶与新桶分别返回。
-5. 迁移期间继续显示已验证旧数据；状态标记 rebuilding/pending，不伪报 ready。
+5. 迁移期间继续显示已验证旧数据；状态标记 rebuilding/pending，不伪报 ready。无效/缺失邮箱继续使用 file/index fallback，不能按 Workspace ID 强行合并。
 
 ## 验证
 

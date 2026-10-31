@@ -225,6 +225,37 @@ func SQLAccountKeyExpressionWithoutProject(alias string) string {
 	return sqlAccountKeyExpression(alias, true)
 }
 
+// SQLHasCanonicalCodexMemberExpression reports whether a row carries the
+// conservative email-shaped Codex identity that AccountKey is allowed to
+// merge. It is intentionally shared by read expressions and state migrations:
+// an incomplete workspace/display snapshot must retain its physical bucket.
+func SQLHasCanonicalCodexMemberExpression(alias string) string {
+	column := func(name string) string {
+		if alias == "" {
+			return name
+		}
+		return alias + "." + name
+	}
+	trimmed := func(name string) string {
+		return "trim(coalesce(" + column(name) + ", ''))"
+	}
+	account := trimmed("account_snapshot")
+	providerSource := "coalesce(nullif(" + trimmed("auth_provider_snapshot") + ", ''), " + trimmed("provider") + ", '')"
+	providerNormalized := "case lower(replace(" + providerSource + ", '_', '-')) " +
+		"when 'x-ai' then 'xai' when 'grok' then 'xai' " +
+		"else lower(replace(" + providerSource + ", '_', '-')) end"
+	codexMember := "lower(" + account + ")"
+	printableASCII := func(value string) string {
+		return value + " <> '' and length(" + value + ") = length(cast(" + value + " as blob)) and " +
+			value + " not glob '*[^!-~]*'"
+	}
+	return providerNormalized + " = 'codex' and " +
+		printableASCII(account) + " and " +
+		"instr(" + codexMember + ", '@') > 1 and " +
+		"instr(" + codexMember + ", '@') < length(" + codexMember + ") and " +
+		"length(" + codexMember + ") - length(replace(" + codexMember + ", '@', '')) = 1"
+}
+
 func sqlAccountKeyExpression(alias string, withoutProject bool) string {
 	column := func(name string) string {
 		if alias == "" {
@@ -256,17 +287,9 @@ func sqlAccountKeyExpression(alias string, withoutProject bool) string {
 	legacyMarkerAccountID := "case when substr(" + projectID + ", 1, length(" + marker + ")) = " + marker +
 		" then trim(substr(" + projectID + ", length(" + marker + ") + 1)) else '' end"
 	codexMember := "lower(" + account + ")"
-	printableASCII := func(value string) string {
-		return value + " <> '' and length(" + value + ") = length(cast(" + value + " as blob)) and " +
-			value + " not glob '*[^!-~]*'"
-	}
 	// Workspace/account-id and historical project markers are mutable metadata;
 	// they intentionally do not participate in the Codex bucket discriminator.
-	codexMemberValid := providerNormalized + " = 'codex' and " +
-		printableASCII(account) + " and " +
-		"instr(" + codexMember + ", '@') > 1 and " +
-		"instr(" + codexMember + ", '@') < length(" + codexMember + ") and " +
-		"length(" + codexMember + ") - length(replace(" + codexMember + ", '@', '')) = 1"
+	codexMemberValid := SQLHasCanonicalCodexMemberExpression(alias)
 	legacyProjectID := "case when " + providerNormalized + " = 'codex' and " + legacyMarkerAccountID + " <> '' then '' else " + projectID + " end"
 
 	hexValue := func(value string) string { return "hex(" + value + ")" }
