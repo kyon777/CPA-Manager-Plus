@@ -90,11 +90,14 @@ func (s *Store) ConfigureDerivedStorage(ctx context.Context, cfg config.Config) 
 	runtime.source = derivedstore.NewSourceWithArchiveDir(sourceDB, cfg.UsageArchiveDir)
 	runtime.sink = derivedstore.NewSink(derivedDB)
 	runtime.engine = derivedstore.NewEngine(derivedstore.EngineConfig{
-		Source:     runtime.source,
-		Sink:       runtime.sink,
-		BatchSize:  cfg.DerivedSourceBatchSize,
-		MaxBatches: cfg.DerivedCycleMaxBatches,
-		Yield:      cfg.DerivedYield,
+		Source:                   runtime.source,
+		Sink:                     runtime.sink,
+		BatchSize:                cfg.DerivedSourceBatchSize,
+		MaxBatches:               cfg.DerivedCycleMaxBatches,
+		Yield:                    cfg.DerivedYield,
+		PricingCatchupBatchSize:  cfg.DerivedPricingCatchupBatchSize,
+		PricingCatchupMaxBatches: cfg.DerivedPricingCatchupMaxBatches,
+		PricingCatchupLagEvents:  int64(cfg.DerivedPricingCatchupLagEvents),
 	})
 	if err := runtime.bootstrapLegacyDerived(ctx); err != nil {
 		_ = runtime.close()

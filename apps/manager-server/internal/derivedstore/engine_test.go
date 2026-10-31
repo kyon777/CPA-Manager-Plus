@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -379,6 +381,47 @@ func TestEngineAlternatesStreamsWithinCycleBudget(t *testing.T) {
 	}
 	if sink.applied[0].Stream != StreamAccountHistory || sink.applied[1].Stream != StreamPricing {
 		t.Fatalf("stream order = %#v, want account-history then pricing", []Stream{sink.applied[0].Stream, sink.applied[1].Stream})
+	}
+}
+
+func TestEnginePrioritizesPricingBurstWhileHistoryStaysServiced(t *testing.T) {
+	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sink := &recordingSink{Sink: NewSink(db)}
+	events := make([]EventRecord, 0, 10)
+	for id := int64(1); id <= 10; id++ {
+		events = append(events, EventRecord{
+			ID: id, EventHash: fmt.Sprintf("catchup-%d", id), TimestampMS: id,
+			AuthIndex: "account-a", AuthProviderSnapshot: "codex",
+			Model: "gpt-test", RequestedModel: "gpt-test", InputTokens: 1, TotalTokens: 1,
+		})
+	}
+	source := scriptedSource{
+		epoch: "epoch-a", events: events,
+		prices: map[string]model.ModelPrice{"gpt-test": {Prompt: 1, Completion: 1}},
+	}
+	engine := NewEngine(EngineConfig{
+		Source: source, Sink: sink, BatchSize: 1, MaxBatches: 2,
+		PricingCatchupBatchSize: 2, PricingCatchupMaxBatches: 3, PricingCatchupLagEvents: 2,
+	})
+	if _, err := engine.RunCycle(context.Background()); err != nil {
+		t.Fatalf("run engine: %v", err)
+	}
+	got := make([]Stream, 0, len(sink.applied))
+	for _, batch := range sink.applied {
+		got = append(got, batch.Stream)
+	}
+	want := []Stream{StreamAccountHistory, StreamPricing, StreamPricing, StreamPricing}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stream order = %#v, want %#v", got, want)
+	}
+	for _, batch := range sink.applied[1:] {
+		if batch.Stream == StreamPricing && len(batch.Events) > 2 {
+			t.Fatalf("pricing catch-up batch has %d events, want <= 2", len(batch.Events))
+		}
 	}
 }
 

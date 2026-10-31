@@ -28,12 +28,15 @@ const (
 var ErrSourceCoverageGap = errors.New("derived source coverage gap")
 
 type EngineConfig struct {
-	Source     Source
-	Sink       Sink
-	BatchSize  int
-	MaxBatches int
-	Yield      time.Duration
-	Now        func() time.Time
+	Source                   Source
+	Sink                     Sink
+	BatchSize                int
+	MaxBatches               int
+	Yield                    time.Duration
+	PricingCatchupBatchSize  int
+	PricingCatchupMaxBatches int
+	PricingCatchupLagEvents  int64
+	Now                      func() time.Time
 }
 
 type CycleResult struct {
@@ -47,12 +50,15 @@ type CycleResult struct {
 // on the primary database. It is intentionally single-flight: HTTP reads can
 // wake it repeatedly without creating a second derived writer.
 type Engine struct {
-	source     Source
-	sink       Sink
-	batchSize  int
-	maxBatches int
-	yield      time.Duration
-	now        func() time.Time
+	source                   Source
+	sink                     Sink
+	batchSize                int
+	maxBatches               int
+	yield                    time.Duration
+	pricingCatchupBatchSize  int
+	pricingCatchupMaxBatches int
+	pricingCatchupLagEvents  int64
+	now                      func() time.Time
 
 	runGate    chan struct{}
 	wake       chan struct{}
@@ -76,6 +82,14 @@ func NewEngine(cfg EngineConfig) *Engine {
 	if maxBatches <= 0 {
 		maxBatches = 2
 	}
+	pricingCatchupBatchSize := cfg.PricingCatchupBatchSize
+	pricingCatchupMaxBatches := cfg.PricingCatchupMaxBatches
+	pricingCatchupLagEvents := cfg.PricingCatchupLagEvents
+	if pricingCatchupBatchSize <= 0 || pricingCatchupMaxBatches <= 0 || pricingCatchupLagEvents <= 0 {
+		pricingCatchupBatchSize = 0
+		pricingCatchupMaxBatches = 0
+		pricingCatchupLagEvents = 0
+	}
 	yield := cfg.Yield
 	if yield < 0 {
 		yield = 0
@@ -85,17 +99,20 @@ func NewEngine(cfg EngineConfig) *Engine {
 		now = time.Now
 	}
 	return &Engine{
-		source:     cfg.Source,
-		sink:       cfg.Sink,
-		batchSize:  batchSize,
-		maxBatches: maxBatches,
-		yield:      yield,
-		now:        now,
-		runGate:    make(chan struct{}, 1),
-		wake:       make(chan struct{}, 1),
-		startedCh:  make(chan struct{}),
-		done:       make(chan struct{}),
-		stop:       make(chan struct{}),
+		source:                   cfg.Source,
+		sink:                     cfg.Sink,
+		batchSize:                batchSize,
+		maxBatches:               maxBatches,
+		yield:                    yield,
+		pricingCatchupBatchSize:  pricingCatchupBatchSize,
+		pricingCatchupMaxBatches: pricingCatchupMaxBatches,
+		pricingCatchupLagEvents:  pricingCatchupLagEvents,
+		now:                      now,
+		runGate:                  make(chan struct{}, 1),
+		wake:                     make(chan struct{}, 1),
+		startedCh:                make(chan struct{}),
+		done:                     make(chan struct{}),
+		stop:                     make(chan struct{}),
 	}
 }
 
@@ -209,21 +226,81 @@ func (e *Engine) RunCycle(ctx context.Context) (CycleResult, error) {
 	result := CycleResult{TargetEventID: snapshot.TargetEventID}
 	streams := []Stream{StreamAccountHistory, StreamPricing}
 	streamsRun := make(map[Stream]struct{}, len(streams))
-	for attempt := 0; attempt < e.maxBatches; attempt++ {
-		stream := streams[e.nextStream%len(streams)]
-		e.nextStream = (e.nextStream + 1) % len(streams)
-		batches, events, err := e.processStream(ctx, stream, snapshot, prices, 1)
-		if err != nil {
-			return result, err
-		}
+	record := func(stream Stream, batches, events int) {
 		if batches > 0 {
 			streamsRun[stream] = struct{}{}
 		}
 		result.Batches += batches
 		result.Events += events
 	}
+	if e.pricingCatchupEnabled() {
+		prioritizePricing, historyNeedsService, err := e.pricingCatchupPlan(ctx, snapshot)
+		if err != nil {
+			return result, err
+		}
+		if prioritizePricing {
+			if historyNeedsService {
+				batches, events, err := e.processStream(ctx, StreamAccountHistory, snapshot, prices, 1, e.batchSize)
+				if err != nil {
+					return result, err
+				}
+				record(StreamAccountHistory, batches, events)
+			}
+			batches, events, err := e.processStream(ctx, StreamPricing, snapshot, prices, e.pricingCatchupMaxBatches, e.pricingCatchupBatchSize)
+			if err != nil {
+				return result, err
+			}
+			record(StreamPricing, batches, events)
+			result.Streams = len(streamsRun)
+			return result, nil
+		}
+	}
+	for attempt := 0; attempt < e.maxBatches; attempt++ {
+		stream := streams[e.nextStream%len(streams)]
+		e.nextStream = (e.nextStream + 1) % len(streams)
+		batches, events, err := e.processStream(ctx, stream, snapshot, prices, 1, e.batchSize)
+		if err != nil {
+			return result, err
+		}
+		record(stream, batches, events)
+	}
 	result.Streams = len(streamsRun)
 	return result, nil
+}
+
+func (e *Engine) pricingCatchupEnabled() bool {
+	return e != nil && e.pricingCatchupBatchSize > 0 && e.pricingCatchupMaxBatches > 0 && e.pricingCatchupLagEvents > 0
+}
+
+// pricingCatchupPlan decides whether a cycle spends its bounded burst budget
+// on pricing. The history stream still gets at most one normal-sized batch so
+// visible request/token counters do not stall while pricing catches up.
+func (e *Engine) pricingCatchupPlan(ctx context.Context, snapshot SourceSnapshot) (bool, bool, error) {
+	if snapshot.TargetEventID <= 0 {
+		return false, false, nil
+	}
+	pricingState, err := e.sink.State(ctx, StreamPricing)
+	if err != nil {
+		return false, false, err
+	}
+	historyState, err := e.sink.State(ctx, StreamAccountHistory)
+	if err != nil {
+		return false, false, err
+	}
+	pricingGenerationMismatch := pricingState.SourceEpoch != snapshot.Identity.Epoch ||
+		pricingState.Generation != generationFor(StreamPricing, snapshot) ||
+		pricingState.PricingRevision != snapshot.PricingRevision ||
+		pricingState.ArchiveGeneration != snapshot.ArchiveGeneration
+	pricingLag := snapshot.TargetEventID - pricingState.CoverageEventID
+	prioritize := pricingGenerationMismatch || pricingState.Status != "ready" || pricingLag >= e.pricingCatchupLagEvents
+	if !prioritize {
+		return false, false, nil
+	}
+	historyNeedsService := historyState.SourceEpoch != snapshot.Identity.Epoch ||
+		historyState.Generation != generationFor(StreamAccountHistory, snapshot) ||
+		historyState.ArchiveGeneration != snapshot.ArchiveGeneration ||
+		historyState.Status != "ready" || historyState.CoverageEventID < snapshot.TargetEventID
+	return true, historyNeedsService, nil
 }
 
 // snapshotAndPrices reads the source watermark and the model-rate map as one
@@ -259,9 +336,12 @@ func (e *Engine) snapshotAndPrices(ctx context.Context) (SourceSnapshot, map[str
 	)
 }
 
-func (e *Engine) processStream(ctx context.Context, stream Stream, snapshot SourceSnapshot, prices map[string]model.ModelPrice, budget int) (int, int, error) {
+func (e *Engine) processStream(ctx context.Context, stream Stream, snapshot SourceSnapshot, prices map[string]model.ModelPrice, budget int, batchSize int) (int, int, error) {
 	if budget <= 0 {
 		return 0, 0, nil
+	}
+	if batchSize <= 0 {
+		batchSize = e.batchSize
 	}
 	state, err := e.sink.State(ctx, stream)
 	if err != nil {
@@ -278,7 +358,7 @@ func (e *Engine) processStream(ctx context.Context, stream Stream, snapshot Sour
 		if err := ctx.Err(); err != nil {
 			return batches, processed, err
 		}
-		events, err := e.eventsAfter(ctx, fromID, snapshot.TargetEventID, e.batchSize)
+		events, err := e.eventsAfter(ctx, fromID, snapshot.TargetEventID, batchSize)
 		if err != nil {
 			return batches, processed, err
 		}
