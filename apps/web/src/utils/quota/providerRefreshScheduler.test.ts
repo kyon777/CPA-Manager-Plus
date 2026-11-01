@@ -97,6 +97,46 @@ describe('providerRefreshScheduler', () => {
     expect(peak).toBe(2);
   });
 
+  it('uses provider-specific concurrency without widening other provider queues', async () => {
+    const tasks = buildProviderCredentialTaskPlan(
+      [
+        { provider: 'codex', credential: 'codex-1' },
+        { provider: 'codex', credential: 'codex-2' },
+        { provider: 'codex', credential: 'codex-3' },
+        { provider: 'claude', credential: 'claude-1' },
+        { provider: 'claude', credential: 'claude-2' },
+      ],
+      {
+        getProviderKey: (item) => item.provider,
+        getCredentialKey: (item) => item.credential,
+      }
+    );
+    const activeByProvider = new Map<string, number>();
+    const peakByProvider = new Map<string, number>();
+
+    await runProviderCredentialTaskPlan(
+      tasks,
+      {
+        perProviderConcurrency: (providerKey) => (providerKey === 'codex' ? 3 : 1),
+      },
+      async (task) => {
+        const active = (activeByProvider.get(task.providerKey) ?? 0) + 1;
+        activeByProvider.set(task.providerKey, active);
+        peakByProvider.set(task.providerKey, Math.max(peakByProvider.get(task.providerKey) ?? 0, active));
+        await Promise.resolve();
+        activeByProvider.set(task.providerKey, active - 1);
+        return task.credentialKey;
+      }
+    );
+
+    expect(peakByProvider).toEqual(
+      new Map([
+        ['codex', 3],
+        ['claude', 1],
+      ])
+    );
+  });
+
   it('serializes separate batches and coalesces repeated keys', async () => {
     const queue = createKeyedSerialTaskQueue();
     const starts: string[] = [];

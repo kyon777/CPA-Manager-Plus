@@ -11,7 +11,7 @@ export interface ProviderCredentialTaskSelectors<T> {
 }
 
 export interface ProviderCredentialSchedulerOptions {
-  perProviderConcurrency: number;
+  perProviderConcurrency: number | ((providerKey: string) => number);
   maxConcurrentProviders?: number;
 }
 
@@ -21,6 +21,11 @@ export interface KeyedSerialTaskQueue {
 }
 
 const normalizeTaskKey = (value: string): string => value.trim().toLowerCase();
+
+const resolveProviderConcurrency = (
+  concurrency: ProviderCredentialSchedulerOptions['perProviderConcurrency'],
+  providerKey: string
+): number => (typeof concurrency === 'function' ? concurrency(providerKey) : concurrency);
 
 export function buildProviderCredentialTaskPlan<T>(
   items: readonly T[],
@@ -89,7 +94,10 @@ export async function runProviderCredentialTaskPlan<T, TResult>(
     async (providerTasks) => {
       const providerResults = await mapWithConcurrency(
         providerTasks,
-        options.perProviderConcurrency,
+        resolveProviderConcurrency(
+          options.perProviderConcurrency,
+          providerTasks[0]?.providerKey ?? 'unknown'
+        ),
         worker
       );
       providerTasks.forEach((task, index) => {
