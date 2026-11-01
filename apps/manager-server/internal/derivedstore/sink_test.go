@@ -86,6 +86,51 @@ func TestSinkRetainsFullSourceTargetBeyondCommittedBatch(t *testing.T) {
 	}
 }
 
+func TestSinkRetainsPricingCoverageWhenOnlyValueRevisionChanges(t *testing.T) {
+	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sink := NewSink(db)
+	initial, err := sink.Apply(context.Background(), ApplyBatch{
+		Stream:                   StreamPricing,
+		SourceEpoch:              "epoch-a",
+		Generation:               "pricing-v2:epoch-a:structure-a",
+		PricingStructureRevision: "structure-a",
+		PricingValueRevision:     "values-a",
+		ToEventID:                10,
+		SourceTargetEventID:      10,
+		Events:                   []EventRecord{{ID: 10, EventHash: "event-10"}},
+		Rows:                     []MaterializedRow{{Key: "account-a", SubjectKey: "account-a", PayloadJSON: `{"calls":1}`}},
+	})
+	if err != nil {
+		t.Fatalf("apply initial pricing batch: %v", err)
+	}
+	after, err := sink.Apply(context.Background(), ApplyBatch{
+		Stream:                   StreamPricing,
+		SourceEpoch:              "epoch-a",
+		Generation:               initial.Generation,
+		PricingStructureRevision: "structure-a",
+		PricingValueRevision:     "values-b",
+		SourceTargetEventID:      10,
+	})
+	if err != nil {
+		t.Fatalf("apply rate-only pricing revision: %v", err)
+	}
+	if after.CoverageEventID != initial.CoverageEventID || after.ProcessedEvents != initial.ProcessedEvents ||
+		after.PricingValueRevision != "values-b" || after.LastTransition != "rate_only_refresh" {
+		t.Fatalf("rate-only state = %#v, initial=%#v", after, initial)
+	}
+	rows, err := sink.Rows(context.Background(), StreamPricing, initial.Generation)
+	if err != nil {
+		t.Fatalf("read retained pricing rows: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Key != "account-a" {
+		t.Fatalf("rate-only pricing rows = %#v", rows)
+	}
+}
+
 func TestSinkDoesNotAcceptEmptyPayloadRows(t *testing.T) {
 	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
 	if err != nil {

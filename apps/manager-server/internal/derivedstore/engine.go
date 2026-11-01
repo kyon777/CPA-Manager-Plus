@@ -19,7 +19,7 @@ import (
 const (
 	accountHistoryGenerationPrefix = "account-history-v1:"
 	legacyPricingGenerationPrefix  = "pricing-v1:"
-	pricingGenerationPrefix        = "pricing-v1:"
+	pricingGenerationPrefix        = "pricing-v2:"
 	pricingSnapshotReadAttempts    = 3
 )
 
@@ -290,7 +290,7 @@ func (e *Engine) pricingCatchupPlan(ctx context.Context, snapshot SourceSnapshot
 	}
 	pricingGenerationMismatch := pricingState.SourceEpoch != snapshot.Identity.Epoch ||
 		pricingState.Generation != generationFor(StreamPricing, snapshot) ||
-		pricingState.PricingValueRevision != snapshot.PricingValueRevision ||
+		pricingState.PricingStructureRevision != snapshot.PricingStructureRevision ||
 		pricingState.ArchiveGeneration != snapshot.ArchiveGeneration
 	pricingLag := snapshot.TargetEventID - pricingState.CoverageEventID
 	prioritize := pricingGenerationMismatch || pricingState.Status != "ready" || pricingLag >= e.pricingCatchupLagEvents
@@ -354,6 +354,23 @@ func (e *Engine) processStream(ctx context.Context, stream Stream, snapshot Sour
 	generation := generationFor(stream, snapshot)
 	reset := state.Generation != generation || state.SourceEpoch != snapshot.Identity.Epoch
 	fromID := state.CoverageEventID
+	if stream == StreamPricing && !reset &&
+		state.PricingStructureRevision == snapshot.PricingStructureRevision &&
+		state.PricingValueRevision != snapshot.PricingValueRevision {
+		if _, err := e.sink.Apply(ctx, ApplyBatch{
+			Stream:                   stream,
+			SourceEpoch:              snapshot.Identity.Epoch,
+			Generation:               generation,
+			PricingStructureRevision: snapshot.PricingStructureRevision,
+			PricingValueRevision:     snapshot.PricingValueRevision,
+			ArchiveGeneration:        snapshot.ArchiveGeneration,
+			SourceTargetEventID:      snapshot.TargetEventID,
+			AppliedAtMS:              e.now().UnixMilli(),
+		}); err != nil {
+			return 0, 0, err
+		}
+		state.PricingValueRevision = snapshot.PricingValueRevision
+	}
 	if reset {
 		fromID = 0
 	}
@@ -493,13 +510,15 @@ func mergeSourceEvents(raw, archived []EventRecord, limit int) ([]EventRecord, e
 }
 
 // GenerationFor returns the immutable materialization generation expected for
-// a source snapshot. The initial contract migration preserves the legacy
-// value-revision pricing generation; the next revision makes this structural.
+// a source snapshot. A pricing generation includes only the canonical price
+// structure revision; an account-history generation does not, because its
+// counters are independent of model rates. Rate-only edits use the same token
+// buckets under a new value revision and must never force a source replay.
 func GenerationFor(stream Stream, snapshot SourceSnapshot) string {
 	identityRevision := usageidentity.CodexIdentityRevision
 	switch stream {
 	case StreamPricing:
-		return pricingGenerationPrefix + snapshot.Identity.Epoch + ":codex-" + identityRevision + ":" + snapshot.PricingValueRevision
+		return pricingGenerationPrefix + snapshot.Identity.Epoch + ":codex-" + identityRevision + ":" + snapshot.PricingStructureRevision
 	default:
 		return accountHistoryGenerationPrefix + snapshot.Identity.Epoch + ":codex-" + identityRevision
 	}

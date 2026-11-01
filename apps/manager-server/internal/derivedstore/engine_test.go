@@ -20,6 +20,12 @@ type scriptedSource struct {
 	events   []EventRecord
 	archived []EventRecord
 	prices   map[string]model.ModelPrice
+	reads    *scriptedSourceReads
+}
+
+type scriptedSourceReads struct {
+	eventsAfterCalls   int
+	archivedAfterCalls int
 }
 
 type recordingSink struct {
@@ -99,6 +105,9 @@ func (s scriptedSource) Snapshot(context.Context) (SourceSnapshot, error) {
 }
 
 func (s scriptedSource) EventsAfter(_ context.Context, afterID, targetID int64, limit int) ([]EventRecord, error) {
+	if s.reads != nil {
+		s.reads.eventsAfterCalls++
+	}
 	result := make([]EventRecord, 0, limit)
 	for _, event := range s.events {
 		if event.ID > afterID && event.ID <= targetID {
@@ -133,6 +142,9 @@ func (s scriptedSource) EventsForSubjectsAfter(_ context.Context, subjects []str
 }
 
 func (s scriptedSource) ArchivedEventsAfter(_ context.Context, afterID, targetID int64, limit int) ([]EventRecord, error) {
+	if s.reads != nil {
+		s.reads.archivedAfterCalls++
+	}
 	result := make([]EventRecord, 0, limit)
 	for _, event := range s.archived {
 		if event.ID > afterID && event.ID <= targetID {
@@ -249,6 +261,160 @@ func TestEngineRetriesWhenPricingSnapshotChangesDuringRead(t *testing.T) {
 		PricingValueRevision:     wantRevision,
 	}) {
 		t.Fatalf("pricing state used inconsistent revision: %#v, want %q", state, wantRevision)
+	}
+}
+
+func cloneModelPrice(source model.ModelPrice) model.ModelPrice {
+	clone := source
+	clone.ContextTiers = append([]model.ModelPriceContextTier(nil), source.ContextTiers...)
+	clone.ServiceTiers = append([]model.ModelPriceServiceTier(nil), source.ServiceTiers...)
+	return clone
+}
+func TestEngineRateOnlyPriceChangeKeepsPricingCoverageWithoutReplay(t *testing.T) {
+	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	reads := &scriptedSourceReads{}
+	source := scriptedSource{
+		epoch: "rate-only",
+		events: []EventRecord{{
+			ID: 1, EventHash: "live", TimestampMS: 1,
+			Provider: "codex", AuthProviderSnapshot: "codex", AuthIndex: "account-a",
+			Model: "gpt-test", RequestedModel: "gpt-test", InputTokens: 200,
+			CacheReadTokens: 20, CacheCreationTokens: 10, OutputTokens: 5, TotalTokens: 235,
+		}},
+		archived: []EventRecord{{
+			ID: 2, EventHash: "archive", TimestampMS: 2,
+			Provider: "codex", AuthProviderSnapshot: "codex", AuthIndex: "account-a",
+			Model: "gpt-test", RequestedModel: "gpt-test", InputTokens: 120, TotalTokens: 120,
+		}},
+		prices: map[string]model.ModelPrice{"gpt-test": {
+			Prompt: 1, Completion: 1, Cache: 1, CacheRead: 1, CacheCreation: 1,
+			ContextTiers: []model.ModelPriceContextTier{{
+				ThresholdTokens: 100, Prompt: 2, PromptConfigured: true,
+			}},
+			ServiceTiers: []model.ModelPriceServiceTier{{
+				Mode: "fast", ServiceTier: "priority", Prompt: 3, PromptConfigured: true,
+			}},
+		}},
+		reads: reads,
+	}
+	engine := NewEngine(EngineConfig{Source: source, Sink: NewSink(db), BatchSize: 10, MaxBatches: 2})
+	if _, err := engine.RunCycle(context.Background()); err != nil {
+		t.Fatalf("materialize initial streams: %v", err)
+	}
+	before, err := NewSink(db).State(context.Background(), StreamPricing)
+	if err != nil {
+		t.Fatalf("read initial pricing state: %v", err)
+	}
+	if before.CoverageEventID != 2 {
+		t.Fatalf("initial pricing coverage = %d, want 2", before.CoverageEventID)
+	}
+	// Run only pricing after each rate edit. The history stream is deliberately
+	// excluded so any source read is evidence of a pricing replay.
+	engine.nextStream = 1
+	engine.maxBatches = 1
+	initialReads := *reads
+	cases := []struct {
+		name   string
+		mutate func(*model.ModelPrice)
+	}{
+		{"prompt", func(price *model.ModelPrice) { price.Prompt += 1 }},
+		{"completion", func(price *model.ModelPrice) { price.Completion += 1 }},
+		{"cache", func(price *model.ModelPrice) { price.Cache += 1 }},
+		{"cache_read", func(price *model.ModelPrice) { price.CacheRead += 1 }},
+		{"cache_creation", func(price *model.ModelPrice) { price.CacheCreation += 1 }},
+		{"context_tier_rate", func(price *model.ModelPrice) { price.ContextTiers[0].Prompt += 1 }},
+		{"service_tier_rate", func(price *model.ModelPrice) { price.ServiceTiers[0].Prompt += 1 }},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			engine.nextStream = 1
+			price := cloneModelPrice(source.prices["gpt-test"])
+			test.mutate(&price)
+			source.prices["gpt-test"] = price
+			if _, err := engine.RunCycle(context.Background()); err != nil {
+				t.Fatalf("run rate-only cycle: %v", err)
+			}
+			after, err := NewSink(db).State(context.Background(), StreamPricing)
+			if err != nil {
+				t.Fatalf("read pricing state after rate change: %v", err)
+			}
+			if after.Generation != before.Generation || after.CoverageEventID != before.CoverageEventID || after.ProcessedEvents != before.ProcessedEvents {
+				t.Fatalf("rate-only change replayed pricing state: before=%#v after=%#v", before, after)
+			}
+			if after.PricingStructureRevision != before.PricingStructureRevision || after.PricingValueRevision == before.PricingValueRevision {
+				t.Fatalf("rate-only revision split = before:%#v after:%#v", before, after)
+			}
+			if after.LastTransition != "rate_only_refresh" {
+				t.Fatalf("rate-only transition = %q", after.LastTransition)
+			}
+			if *reads != initialReads {
+				t.Fatalf("rate-only change read source events: before=%#v after=%#v", initialReads, *reads)
+			}
+			before = after
+		})
+	}
+}
+
+func TestEngineContextThresholdChangeCreatesPricingReplayGeneration(t *testing.T) {
+	db, err := sqliterepo.OpenDerived(filepath.Join(t.TempDir(), "usage-derived.sqlite"))
+	if err != nil {
+		t.Fatalf("open derived: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	reads := &scriptedSourceReads{}
+	source := scriptedSource{
+		epoch: "threshold-change",
+		events: []EventRecord{{
+			ID: 1, EventHash: "live", TimestampMS: 1,
+			Provider: "codex", AuthProviderSnapshot: "codex", AuthIndex: "account-a",
+			Model: "gpt-test", RequestedModel: "gpt-test", InputTokens: 200, TotalTokens: 200,
+		}},
+		archived: []EventRecord{{
+			ID: 2, EventHash: "archive", TimestampMS: 2,
+			Provider: "codex", AuthProviderSnapshot: "codex", AuthIndex: "account-a",
+			Model: "gpt-test", RequestedModel: "gpt-test", InputTokens: 120, TotalTokens: 120,
+		}},
+		prices: map[string]model.ModelPrice{"gpt-test": {
+			Prompt: 1,
+			ContextTiers: []model.ModelPriceContextTier{{
+				ThresholdTokens: 100, Prompt: 2, PromptConfigured: true,
+			}},
+		}},
+		reads: reads,
+	}
+	engine := NewEngine(EngineConfig{Source: source, Sink: NewSink(db), BatchSize: 10, MaxBatches: 2})
+	if _, err := engine.RunCycle(context.Background()); err != nil {
+		t.Fatalf("materialize initial streams: %v", err)
+	}
+	before, err := NewSink(db).State(context.Background(), StreamPricing)
+	if err != nil {
+		t.Fatalf("read initial pricing state: %v", err)
+	}
+	engine.nextStream = 1
+	engine.maxBatches = 1
+	beforeReads := *reads
+	price := cloneModelPrice(source.prices["gpt-test"])
+	price.ContextTiers[0].ThresholdTokens = 200
+	source.prices["gpt-test"] = price
+	if _, err := engine.RunCycle(context.Background()); err != nil {
+		t.Fatalf("run structural cycle: %v", err)
+	}
+	after, err := NewSink(db).State(context.Background(), StreamPricing)
+	if err != nil {
+		t.Fatalf("read pricing state after threshold change: %v", err)
+	}
+	if after.Generation == before.Generation || after.PricingStructureRevision == before.PricingStructureRevision {
+		t.Fatalf("threshold change did not create a new pricing generation: before=%#v after=%#v", before, after)
+	}
+	if after.LastTransition != "structural_rebuild" {
+		t.Fatalf("threshold transition = %q", after.LastTransition)
+	}
+	if reads.eventsAfterCalls <= beforeReads.eventsAfterCalls || reads.archivedAfterCalls <= beforeReads.archivedAfterCalls {
+		t.Fatalf("threshold change did not replay source: before=%#v after=%#v", beforeReads, *reads)
 	}
 }
 
