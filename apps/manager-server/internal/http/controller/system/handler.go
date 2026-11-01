@@ -29,14 +29,17 @@ type dataMigrationStatus struct {
 }
 
 type derivedStorageStreamStatus struct {
-	Name            string `json:"name"`
-	Status          string `json:"status"`
-	CoverageEventID int64  `json:"coverageEventId"`
-	TargetEventID   int64  `json:"targetEventId"`
-	LagEventID      int64  `json:"lagEventId"`
-	ProcessedEvents int64  `json:"processedEvents"`
-	LastSuccessAtMS int64  `json:"lastSuccessAtMs,omitempty"`
-	LastErrorCode   string `json:"lastErrorCode,omitempty"`
+	Name                     string `json:"name"`
+	Status                   string `json:"status"`
+	CoverageEventID          int64  `json:"coverageEventId"`
+	TargetEventID            int64  `json:"targetEventId"`
+	LagEventID               int64  `json:"lagEventId"`
+	ProcessedEvents          int64  `json:"processedEvents"`
+	LastSuccessAtMS          int64  `json:"lastSuccessAtMs,omitempty"`
+	LastErrorCode            string `json:"lastErrorCode,omitempty"`
+	PricingStructureRevision string `json:"pricingStructureRevision,omitempty"`
+	PricingValueRevision     string `json:"pricingValueRevision,omitempty"`
+	LastTransition           string `json:"lastTransition,omitempty"`
 }
 
 type derivedStorageStatus struct {
@@ -149,14 +152,17 @@ func derivedStatus(ctx context.Context, appCtx *app.Context) (derivedStorageStat
 			streamStatus = "catching_up"
 		}
 		status.Streams = append(status.Streams, derivedStorageStreamStatus{
-			Name:            string(stream.Stream),
-			Status:          streamStatus,
-			CoverageEventID: stream.CoverageEventID,
-			TargetEventID:   stream.TargetEventID,
-			LagEventID:      lag,
-			ProcessedEvents: stream.ProcessedEvents,
-			LastSuccessAtMS: stream.LastSuccessAtMS,
-			LastErrorCode:   stream.LastErrorCode,
+			Name:                     string(stream.Stream),
+			Status:                   streamStatus,
+			CoverageEventID:          stream.CoverageEventID,
+			TargetEventID:            stream.TargetEventID,
+			LagEventID:               lag,
+			ProcessedEvents:          stream.ProcessedEvents,
+			LastSuccessAtMS:          stream.LastSuccessAtMS,
+			LastErrorCode:            stream.LastErrorCode,
+			PricingStructureRevision: stream.PricingStructureRevision,
+			PricingValueRevision:     stream.PricingValueRevision,
+			LastTransition:           stream.LastTransition,
 		})
 	}
 	return status, nil
