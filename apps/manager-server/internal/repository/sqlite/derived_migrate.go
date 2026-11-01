@@ -39,6 +39,7 @@ func MigrateDerived(db *sql.DB) error {
 			coverage_event_id integer not null default 0,
 			target_event_id integer not null default 0,
 			pricing_revision text not null default '',
+			pricing_structure_revision text not null default '',
 			archive_generation text not null default '',
 			processed_events integer not null default 0,
 			last_success_at_ms integer,
@@ -46,6 +47,7 @@ func MigrateDerived(db *sql.DB) error {
 			last_batch_duration_ms integer not null default 0,
 			backoff_count integer not null default 0,
 			last_error_code text not null default '',
+			last_transition text not null default '',
 			updated_at_ms integer not null default 0
 		)`,
 		`create table if not exists derived_applied_events (
@@ -176,9 +178,46 @@ func MigrateDerived(db *sql.DB) error {
 	if err := ensureDerivedMaterializedSubjectKey(db); err != nil {
 		return err
 	}
+	if err := ensureDerivedStreamStateColumns(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`create index if not exists idx_derived_materialized_rows_subject
 		on derived_materialized_rows(stream_name, generation, subject_key, row_key)`); err != nil {
 		return fmt.Errorf("create derived materialization subject index: %w", err)
+	}
+	return nil
+}
+
+func ensureDerivedStreamStateColumns(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(derived_stream_state)`)
+	if err != nil {
+		return fmt.Errorf("inspect derived stream state schema: %w", err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		seen[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	missing := map[string]string{
+		"pricing_structure_revision": "pricing_structure_revision text not null default ''",
+		"last_transition":            "last_transition text not null default ''",
+	}
+	for _, name := range []string{"pricing_structure_revision", "last_transition"} {
+		if seen[name] {
+			continue
+		}
+		if _, err := db.Exec("alter table derived_stream_state add column " + missing[name]); err != nil {
+			return fmt.Errorf("add derived stream state %s: %w", name, err)
+		}
 	}
 	return nil
 }

@@ -50,6 +50,60 @@ func TestMigrateDerivedIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateDerivedAddsPricingRevisionColumnsToExistingState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-derived.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy derived database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`create table derived_stream_state (
+		stream_name text primary key,
+		source_epoch text not null default '',
+		generation text not null default '',
+		status text not null default 'pending',
+		coverage_event_id integer not null default 0,
+		target_event_id integer not null default 0,
+		pricing_revision text not null default '',
+		archive_generation text not null default '',
+		processed_events integer not null default 0,
+		last_success_at_ms integer,
+		last_run_started_at_ms integer,
+		last_batch_duration_ms integer not null default 0,
+		backoff_count integer not null default 0,
+		last_error_code text not null default '',
+		updated_at_ms integer not null default 0
+	)`); err != nil {
+		t.Fatalf("seed legacy state schema: %v", err)
+	}
+	if err := MigrateDerived(db); err != nil {
+		t.Fatalf("migrate legacy derived database: %v", err)
+	}
+	columns := map[string]bool{}
+	rows, err := db.Query(`pragma table_info(derived_stream_state)`)
+	if err != nil {
+		t.Fatalf("inspect derived stream state columns: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan derived stream state column: %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate derived stream state columns: %v", err)
+	}
+	for _, name := range []string{"pricing_revision", "pricing_structure_revision", "last_transition"} {
+		if !columns[name] {
+			t.Fatalf("missing derived stream state column %q: %#v", name, columns)
+		}
+	}
+}
+
 func assertDerivedTableExists(t *testing.T, db *sql.DB, name string) {
 	t.Helper()
 	var count int

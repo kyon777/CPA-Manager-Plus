@@ -87,28 +87,21 @@ func (s *sqlSource) Snapshot(ctx context.Context) (SourceSnapshot, error) {
 	if archivedTarget > target {
 		target = archivedTarget
 	}
-	pricingRevision, err := s.PricingRevision(ctx)
+	prices, err := s.ModelPrices(ctx)
 	if err != nil {
-		return SourceSnapshot{}, err
+		return SourceSnapshot{}, fmt.Errorf("read model price revisions: %w", err)
 	}
 	archiveGeneration, err := latestArchiveGeneration(ctx, s.db)
 	if err != nil {
 		return SourceSnapshot{}, err
 	}
 	return SourceSnapshot{
-		Identity:          identity,
-		TargetEventID:     target,
-		ArchiveGeneration: archiveGeneration,
-		PricingRevision:   pricingRevision,
+		Identity:                 identity,
+		TargetEventID:            target,
+		ArchiveGeneration:        archiveGeneration,
+		PricingStructureRevision: model.ModelPriceStructureRevision(prices),
+		PricingValueRevision:     model.ModelPriceValueRevision(prices),
 	}, nil
-}
-
-func (s *sqlSource) PricingRevision(ctx context.Context) (string, error) {
-	prices, err := s.ModelPrices(ctx)
-	if err != nil {
-		return "", fmt.Errorf("read model price revision: %w", err)
-	}
-	return model.ModelPriceValueRevision(prices), nil
 }
 
 // ModelPrices takes one read-only transaction so a pricing revision and its

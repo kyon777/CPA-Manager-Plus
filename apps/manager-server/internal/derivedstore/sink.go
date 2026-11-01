@@ -170,8 +170,10 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 	if err := ensureSourceEpoch(ctx, tx, batch.SourceEpoch, now); err != nil {
 		return StreamState{}, err
 	}
-	var existingEpoch, existingGeneration string
-	err = tx.QueryRowContext(ctx, `select source_epoch, generation from derived_stream_state where stream_name = ?`, string(batch.Stream)).Scan(&existingEpoch, &existingGeneration)
+	var existingEpoch, existingGeneration, existingValueRevision string
+	err = tx.QueryRowContext(ctx, `select source_epoch, generation, pricing_revision
+		from derived_stream_state where stream_name = ?`, string(batch.Stream)).Scan(
+		&existingEpoch, &existingGeneration, &existingValueRevision)
 	existing := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return StreamState{}, err
@@ -180,6 +182,17 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 		return StreamState{}, fmt.Errorf("derived source epoch mismatch for %s: have %s, got %s", batch.Stream, existingEpoch, batch.SourceEpoch)
 	}
 	generationChanged := existing && existingGeneration != "" && existingGeneration != batch.Generation
+	transition := ""
+	if batch.Stream == StreamPricing {
+		switch {
+		case !existing:
+			transition = "initial_build"
+		case generationChanged:
+			transition = "structural_rebuild"
+		case existingValueRevision != batch.PricingValueRevision:
+			transition = "rate_only_refresh"
+		}
+	}
 	// A prior process may have left more than one stale generation behind
 	// (for example, after a crash between the state update and cleanup). The
 	// current generation is the only readable one, so purge every other
@@ -199,28 +212,30 @@ func (s *sqlSink) Apply(ctx context.Context, batch ApplyBatch) (StreamState, err
 		// the old workspace/file buckets.
 		if _, err := tx.ExecContext(ctx, `update derived_stream_state set
 			source_epoch=?, generation=?, status='rebuilding', coverage_event_id=0,
-			target_event_id=?, pricing_revision=?, archive_generation=?, processed_events=0,
+			target_event_id=?, pricing_structure_revision=?, pricing_revision=?, archive_generation=?, processed_events=0,
 			last_success_at_ms=null, last_run_started_at_ms=null, last_batch_duration_ms=0,
-			backoff_count=0, last_error_code='', updated_at_ms=? where stream_name=?`,
-			batch.SourceEpoch, batch.Generation, targetEventID, batch.PricingRevision,
-			batch.ArchiveGeneration, now, string(batch.Stream)); err != nil {
+			backoff_count=0, last_error_code='', last_transition=?, updated_at_ms=? where stream_name=?`,
+			batch.SourceEpoch, batch.Generation, targetEventID, batch.PricingStructureRevision,
+			batch.PricingValueRevision, batch.ArchiveGeneration, transition, now, string(batch.Stream)); err != nil {
 			return StreamState{}, err
 		}
 	} else if _, err := tx.ExecContext(ctx, `insert into derived_stream_state(
 		stream_name, source_epoch, generation, status, coverage_event_id,
-		target_event_id, pricing_revision, archive_generation, processed_events,
-		last_success_at_ms, updated_at_ms)
-		values (?, ?, ?, 'rebuilding', 0, ?, ?, ?, 0, null, ?)
+		target_event_id, pricing_structure_revision, pricing_revision, archive_generation, processed_events,
+		last_success_at_ms, last_transition, updated_at_ms)
+		values (?, ?, ?, 'rebuilding', 0, ?, ?, ?, ?, 0, null, ?, ?)
 		on conflict(stream_name) do update set
 		 source_epoch=excluded.source_epoch,
 		 generation=excluded.generation,
 		 status='rebuilding',
 		 target_event_id=max(derived_stream_state.target_event_id, excluded.target_event_id),
+		 pricing_structure_revision=excluded.pricing_structure_revision,
 		 pricing_revision=excluded.pricing_revision,
 		 archive_generation=excluded.archive_generation,
+		 last_transition=case when excluded.last_transition <> '' then excluded.last_transition else derived_stream_state.last_transition end,
 		 updated_at_ms=excluded.updated_at_ms`,
 		string(batch.Stream), batch.SourceEpoch, batch.Generation, targetEventID,
-		batch.PricingRevision, batch.ArchiveGeneration, now); err != nil {
+		batch.PricingStructureRevision, batch.PricingValueRevision, batch.ArchiveGeneration, transition, now); err != nil {
 		return StreamState{}, err
 	}
 	for _, row := range batch.Rows {
@@ -306,9 +321,9 @@ func (s *sqlSink) Status(ctx context.Context) (Status, error) {
 		return Status{}, errors.New("derived sink is unavailable")
 	}
 	rows, err := s.db.QueryContext(ctx, `select stream_name, source_epoch, generation,
-		status, coverage_event_id, target_event_id, pricing_revision,
-		archive_generation, processed_events, coalesce(last_success_at_ms, 0),
-		last_error_code from derived_stream_state order by stream_name`)
+		status, coverage_event_id, target_event_id, pricing_structure_revision,
+		pricing_revision, archive_generation, processed_events, coalesce(last_success_at_ms, 0),
+		last_error_code, last_transition from derived_stream_state order by stream_name`)
 	if err != nil {
 		return Status{}, err
 	}
@@ -319,8 +334,9 @@ func (s *sqlSink) Status(ctx context.Context) (Status, error) {
 		var streamName string
 		if err := rows.Scan(&streamName, &state.SourceEpoch, &state.Generation,
 			&state.Status, &state.CoverageEventID, &state.TargetEventID,
-			&state.PricingRevision, &state.ArchiveGeneration, &state.ProcessedEvents,
-			&state.LastSuccessAtMS, &state.LastErrorCode); err != nil {
+			&state.PricingStructureRevision, &state.PricingValueRevision,
+			&state.ArchiveGeneration, &state.ProcessedEvents,
+			&state.LastSuccessAtMS, &state.LastErrorCode, &state.LastTransition); err != nil {
 			return Status{}, err
 		}
 		state.Stream = Stream(streamName)
@@ -336,13 +352,13 @@ func readState(ctx context.Context, db *sql.DB, stream Stream) (StreamState, err
 	var state StreamState
 	var streamName string
 	err := db.QueryRowContext(ctx, `select stream_name, source_epoch, generation,
-		status, coverage_event_id, target_event_id, pricing_revision,
-		archive_generation, processed_events, coalesce(last_success_at_ms, 0),
-		last_error_code from derived_stream_state where stream_name = ?`, string(stream)).Scan(
+		status, coverage_event_id, target_event_id, pricing_structure_revision,
+		pricing_revision, archive_generation, processed_events, coalesce(last_success_at_ms, 0),
+		last_error_code, last_transition from derived_stream_state where stream_name = ?`, string(stream)).Scan(
 		&streamName, &state.SourceEpoch, &state.Generation, &state.Status,
-		&state.CoverageEventID, &state.TargetEventID, &state.PricingRevision,
-		&state.ArchiveGeneration, &state.ProcessedEvents, &state.LastSuccessAtMS,
-		&state.LastErrorCode)
+		&state.CoverageEventID, &state.TargetEventID, &state.PricingStructureRevision,
+		&state.PricingValueRevision, &state.ArchiveGeneration, &state.ProcessedEvents,
+		&state.LastSuccessAtMS, &state.LastErrorCode, &state.LastTransition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StreamState{Stream: stream, Status: "pending"}, nil
 	}

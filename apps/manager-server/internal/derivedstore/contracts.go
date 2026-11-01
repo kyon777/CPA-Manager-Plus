@@ -26,10 +26,11 @@ type SourceIdentity struct {
 }
 
 type SourceSnapshot struct {
-	Identity          SourceIdentity
-	TargetEventID     int64
-	ArchiveGeneration string
-	PricingRevision   string
+	Identity                 SourceIdentity
+	TargetEventID            int64
+	ArchiveGeneration        string
+	PricingStructureRevision string
+	PricingValueRevision     string
 }
 
 // EventRecord intentionally contains only fields needed by usage derivation.
@@ -82,22 +83,23 @@ type Source interface {
 	EventsAfter(context.Context, int64, int64, int) ([]EventRecord, error)
 	EventsForSubjectsAfter(context.Context, []string, int64, int64, int) ([]EventRecord, error)
 	ArchivedEventsAfter(context.Context, int64, int64, int) ([]EventRecord, error)
-	PricingRevision(context.Context) (string, error)
 	ModelPrices(context.Context) (map[string]model.ModelPrice, error)
 }
 
 type StreamState struct {
-	Stream            Stream
-	SourceEpoch       string
-	Generation        string
-	Status            string
-	CoverageEventID   int64
-	TargetEventID     int64
-	PricingRevision   string
-	ArchiveGeneration string
-	ProcessedEvents   int64
-	LastSuccessAtMS   int64
-	LastErrorCode     string
+	Stream                   Stream
+	SourceEpoch              string
+	Generation               string
+	Status                   string
+	CoverageEventID          int64
+	TargetEventID            int64
+	PricingStructureRevision string
+	PricingValueRevision     string
+	ArchiveGeneration        string
+	ProcessedEvents          int64
+	LastSuccessAtMS          int64
+	LastErrorCode            string
+	LastTransition           string
 }
 
 type MaterializedRow struct {
@@ -150,13 +152,14 @@ type AccountAggregate struct {
 }
 
 type ApplyBatch struct {
-	Stream            Stream
-	SourceEpoch       string
-	Generation        string
-	PricingRevision   string
-	ArchiveGeneration string
-	FromEventID       int64
-	ToEventID         int64
+	Stream                   Stream
+	SourceEpoch              string
+	Generation               string
+	PricingStructureRevision string
+	PricingValueRevision     string
+	ArchiveGeneration        string
+	FromEventID              int64
+	ToEventID                int64
 	// SourceTargetEventID is the full immutable source snapshot watermark for
 	// this batch. ToEventID only proves what this committed batch covered.
 	// Keeping both lets readers report real catch-up lag while a stream applies

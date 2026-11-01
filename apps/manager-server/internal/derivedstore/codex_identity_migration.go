@@ -81,13 +81,13 @@ func derivedStreamStateTx(ctx context.Context, tx *sql.Tx, stream Stream) (Strea
 	var state StreamState
 	var streamName string
 	err := tx.QueryRowContext(ctx, `select stream_name, source_epoch, generation,
-		status, coverage_event_id, target_event_id, pricing_revision,
-		archive_generation, processed_events, coalesce(last_success_at_ms, 0),
-		last_error_code from derived_stream_state where stream_name = ?`, string(stream)).Scan(
+		status, coverage_event_id, target_event_id, pricing_structure_revision,
+		pricing_revision, archive_generation, processed_events, coalesce(last_success_at_ms, 0),
+		last_error_code, last_transition from derived_stream_state where stream_name = ?`, string(stream)).Scan(
 		&streamName, &state.SourceEpoch, &state.Generation, &state.Status,
-		&state.CoverageEventID, &state.TargetEventID, &state.PricingRevision,
-		&state.ArchiveGeneration, &state.ProcessedEvents, &state.LastSuccessAtMS,
-		&state.LastErrorCode,
+		&state.CoverageEventID, &state.TargetEventID, &state.PricingStructureRevision,
+		&state.PricingValueRevision, &state.ArchiveGeneration, &state.ProcessedEvents,
+		&state.LastSuccessAtMS, &state.LastErrorCode, &state.LastTransition,
 	)
 	switch {
 	case err == nil:
@@ -107,8 +107,8 @@ func legacyCodexIdentityGeneration(stream Stream, snapshot SourceSnapshot, gener
 	}
 	switch stream {
 	case StreamPricing:
-		return generation == pricingGenerationPrefix+snapshot.Identity.Epoch+":"+snapshot.PricingRevision ||
-			generation == pricingGenerationPrefix+snapshot.Identity.Epoch+":codex-2:"+snapshot.PricingRevision
+		return generation == legacyPricingGenerationPrefix+snapshot.Identity.Epoch+":"+snapshot.PricingValueRevision ||
+			generation == legacyPricingGenerationPrefix+snapshot.Identity.Epoch+":codex-2:"+snapshot.PricingValueRevision
 	case StreamAccountHistory:
 		return generation == accountHistoryGenerationPrefix+snapshot.Identity.Epoch ||
 			generation == accountHistoryGenerationPrefix+snapshot.Identity.Epoch+":codex-2"
@@ -144,11 +144,11 @@ func migrateCodexDerivedStream(ctx context.Context, tx *sql.Tx, stream Stream, s
 		target = snapshot.TargetEventID
 	}
 	if _, err := tx.ExecContext(ctx, `update derived_stream_state set
-		source_epoch = ?, generation = ?, target_event_id = ?, pricing_revision = ?,
-		archive_generation = ?, updated_at_ms = ?
+		source_epoch = ?, generation = ?, target_event_id = ?, pricing_structure_revision = ?,
+		pricing_revision = ?, archive_generation = ?, last_transition = 'legacy_promotion', updated_at_ms = ?
 		where stream_name = ?`,
-		snapshot.Identity.Epoch, expectedGeneration, target, snapshot.PricingRevision,
-		snapshot.ArchiveGeneration, now, string(stream)); err != nil {
+		snapshot.Identity.Epoch, expectedGeneration, target, snapshot.PricingStructureRevision,
+		snapshot.PricingValueRevision, snapshot.ArchiveGeneration, now, string(stream)); err != nil {
 		return fmt.Errorf("advance %s codex identity generation: %w", stream, err)
 	}
 	return nil

@@ -43,7 +43,7 @@
 - Modify: `apps/manager-server/internal/derivedstore/engine_test.go`
 - Modify: `apps/manager-server/internal/store/derived_runtime_test.go`
 
-- [ ] **Step 1: Write the failing legacy-schema migration test.**
+- [x] **Step 1: Write the failing legacy-schema migration test.**
 
 Append this test to `internal/repository/sqlite/derived_migrate_test.go`:
 
@@ -79,7 +79,7 @@ func TestMigrateDerivedAddsPricingRevisionColumnsToExistingState(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify the test fails before implementation.**
+- [x] **Step 2: Verify the test fails before implementation.**
 
 Run from `apps/manager-server`:
 
@@ -89,7 +89,7 @@ go test ./internal/repository/sqlite -run '^TestMigrateDerivedAddsPricingRevisio
 
 Expected: FAIL because `pricing_structure_revision` and `last_transition` are absent.
 
-- [ ] **Step 3: Replace ambiguous contracts with explicit revisions.**
+- [x] **Step 3: Replace ambiguous contracts with explicit revisions.**
 
 In `contracts.go`, use these exact fields and remove `PricingRevision(context.Context) (string, error)` from `Source`:
 
@@ -143,7 +143,7 @@ return SourceSnapshot{
 
 Delete `sqlSource.PricingRevision`. Update all scripted-source snapshots/mocks to provide both hashes from the same price map.
 
-- [ ] **Step 4: Add additive derived-only SQLite migration.**
+- [x] **Step 4: Add additive derived-only SQLite migration.**
 
 Add these columns after `pricing_revision` in the fresh `derived_stream_state` DDL:
 
@@ -181,7 +181,7 @@ func ensureDerivedStreamStateColumns(db *sql.DB) error {
 }
 ```
 
-- [ ] **Step 5: Format and run focused contract/schema tests.**
+- [x] **Step 5: Format and run focused contract/schema tests.**
 
 ```powershell
 gofmt -w internal/derivedstore/contracts.go internal/derivedstore/source.go internal/repository/sqlite/derived_migrate.go internal/repository/sqlite/derived_migrate_test.go internal/derivedstore/engine_test.go internal/store/derived_runtime_test.go
@@ -190,7 +190,7 @@ go test ./internal/repository/sqlite ./internal/derivedstore ./internal/store -r
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the schema/contract slice.**
+- [x] **Step 6: Commit the schema/contract slice.**
 
 ```powershell
 git add apps/manager-server/internal/derivedstore/contracts.go apps/manager-server/internal/derivedstore/source.go apps/manager-server/internal/repository/sqlite/derived_migrate.go apps/manager-server/internal/repository/sqlite/derived_migrate_test.go apps/manager-server/internal/derivedstore/engine_test.go apps/manager-server/internal/store/derived_runtime_test.go
@@ -751,3 +751,4 @@ If rollback is required, restore only the preceding CPAM release and restart `cp
 - **Spec coverage:** Task 1 implements the explicit two-revision contract and additive migration. Task 2 proves all five monetary buckets plus context/service-tier rate changes do not replay and proves threshold changes do replay. Task 3 safely handles both current legacy and older Codex identity layouts. Task 4 keeps visible-page current pricing available from token counters. Task 5 makes status report real target/revision/transition. Task 6 preserves CPAM-only deployment and rollback boundaries.
 - **Placeholder scan:** No `TODO`, `TBD`, or unspecified test action remains. Each behavior-changing task has a named failing test, a command that demonstrates the pre-change failure, concrete code/SQL to implement, and a focused passing command.
 - **Type consistency:** `PricingStructureRevision`, `PricingValueRevision`, and `LastTransition` are the sole new Go names throughout. Database `pricing_revision` maps only to `PricingValueRevision`; `pricing_structure_revision` is the only new revision column. `GenerationFor(StreamPricing, snapshot)` is consistently v2/structure-based, while `currentLegacyPricingGeneration(snapshot)` is consistently v1/value-based.
+

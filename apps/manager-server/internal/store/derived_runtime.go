@@ -626,7 +626,7 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 	return UsagePricingAccountSnapshot{
 		CoreRows:                     core,
 		Rows:                         pricing,
-		State:                        toUsagePricingState(pricingState, snapshot.PricingRevision),
+		State:                        toUsagePricingState(pricingState, snapshot.PricingValueRevision),
 		Available:                    ready,
 		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
@@ -657,7 +657,7 @@ func derivedStateReady(state derivedstore.StreamState, expectedGeneration string
 	if state.ArchiveGeneration != snapshot.ArchiveGeneration {
 		return false
 	}
-	if stream == derivedstore.StreamPricing && state.PricingRevision != snapshot.PricingRevision {
+	if stream == derivedstore.StreamPricing && state.PricingValueRevision != snapshot.PricingValueRevision {
 		return false
 	}
 	return true

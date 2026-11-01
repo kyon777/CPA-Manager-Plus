@@ -58,7 +58,7 @@ func (r *separateDerivedRuntime) bootstrapLegacyDerived(ctx context.Context) err
 			return err
 		}
 		if ok {
-			rows, err := r.readLegacyPricingRows(ctx, snapshot.PricingRevision)
+			rows, err := r.readLegacyPricingRows(ctx)
 			if err != nil {
 				return err
 			}
@@ -174,7 +174,7 @@ func (r *separateDerivedRuntime) readLegacyHistoryRows(ctx context.Context) ([]d
 	return result, rows.Err()
 }
 
-func (r *separateDerivedRuntime) readLegacyPricingRows(ctx context.Context, pricingRevision string) ([]derivedstore.AccountAggregate, error) {
+func (r *separateDerivedRuntime) readLegacyPricingRows(ctx context.Context) ([]derivedstore.AccountAggregate, error) {
 	structureRevision, err := usagepricing.StructureRevision(ctx, r.sourceDB)
 	if err != nil {
 		return nil, err
@@ -277,8 +277,10 @@ func (r *separateDerivedRuntime) applyLegacyAggregates(ctx context.Context, stre
 	}
 	if _, err := r.sink.Apply(ctx, derivedstore.ApplyBatch{
 		Stream: stream, SourceEpoch: snapshot.Identity.Epoch, Generation: generation,
-		PricingRevision: snapshot.PricingRevision, ArchiveGeneration: snapshot.ArchiveGeneration,
-		ToEventID: coverage, SourceTargetEventID: snapshot.TargetEventID, Rows: materialized, AppliedAtMS: nowMS,
+		PricingStructureRevision: snapshot.PricingStructureRevision,
+		PricingValueRevision:     snapshot.PricingValueRevision,
+		ArchiveGeneration:        snapshot.ArchiveGeneration,
+		ToEventID:                coverage, SourceTargetEventID: snapshot.TargetEventID, Rows: materialized, AppliedAtMS: nowMS,
 	}); err != nil {
 		return fmt.Errorf("bootstrap %s derived rows: %w", stream, err)
 	}

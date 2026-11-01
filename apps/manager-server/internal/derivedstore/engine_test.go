@@ -91,9 +91,10 @@ func (s scriptedSource) Snapshot(context.Context) (SourceSnapshot, error) {
 		}
 	}
 	return SourceSnapshot{
-		Identity:        SourceIdentity{Epoch: s.epoch},
-		TargetEventID:   target,
-		PricingRevision: model.ModelPriceValueRevision(s.prices),
+		Identity:                 SourceIdentity{Epoch: s.epoch},
+		TargetEventID:            target,
+		PricingStructureRevision: model.ModelPriceStructureRevision(s.prices),
+		PricingValueRevision:     model.ModelPriceValueRevision(s.prices),
 	}, nil
 }
 
@@ -176,9 +177,10 @@ func (s *pricingRaceSource) Snapshot(context.Context) (SourceSnapshot, error) {
 		}
 	}
 	return SourceSnapshot{
-		Identity:        SourceIdentity{Epoch: "epoch-race"},
-		TargetEventID:   target,
-		PricingRevision: model.ModelPriceValueRevision(prices),
+		Identity:                 SourceIdentity{Epoch: "epoch-race"},
+		TargetEventID:            target,
+		PricingStructureRevision: model.ModelPriceStructureRevision(prices),
+		PricingValueRevision:     model.ModelPriceValueRevision(prices),
 	}, nil
 }
 
@@ -241,8 +243,10 @@ func TestEngineRetriesWhenPricingSnapshotChangesDuringRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pricing state: %v", err)
 	}
-	if state.PricingRevision != wantRevision || state.Generation != GenerationFor(StreamPricing, SourceSnapshot{
-		Identity: SourceIdentity{Epoch: "epoch-race"}, PricingRevision: wantRevision,
+	if state.PricingValueRevision != wantRevision || state.Generation != GenerationFor(StreamPricing, SourceSnapshot{
+		Identity:                 SourceIdentity{Epoch: "epoch-race"},
+		PricingStructureRevision: model.ModelPriceStructureRevision(newPrices),
+		PricingValueRevision:     wantRevision,
 	}) {
 		t.Fatalf("pricing state used inconsistent revision: %#v, want %q", state, wantRevision)
 	}
@@ -643,9 +647,10 @@ func (s emptyGapSource) Identity(context.Context) (SourceIdentity, error) {
 
 func (s emptyGapSource) Snapshot(context.Context) (SourceSnapshot, error) {
 	return SourceSnapshot{
-		Identity:        SourceIdentity{Epoch: "epoch-a"},
-		TargetEventID:   s.target,
-		PricingRevision: model.ModelPriceValueRevision(map[string]model.ModelPrice{}),
+		Identity:                 SourceIdentity{Epoch: "epoch-a"},
+		TargetEventID:            s.target,
+		PricingStructureRevision: model.ModelPriceStructureRevision(map[string]model.ModelPrice{}),
+		PricingValueRevision:     model.ModelPriceValueRevision(map[string]model.ModelPrice{}),
 	}, nil
 }
 

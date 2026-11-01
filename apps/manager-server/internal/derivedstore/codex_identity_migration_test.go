@@ -19,10 +19,11 @@ func TestMigrateCodexEmailIdentityFoldsLegacyMaterializationsWithoutReplay(t *te
 	t.Cleanup(func() { _ = db.Close() })
 
 	snapshot := SourceSnapshot{
-		Identity:          SourceIdentity{Epoch: "source-epoch-a"},
-		TargetEventID:     8,
-		ArchiveGeneration: "archive-g1",
-		PricingRevision:   "values-v1:fixture-prices",
+		Identity:                 SourceIdentity{Epoch: "source-epoch-a"},
+		TargetEventID:            8,
+		ArchiveGeneration:        "archive-g1",
+		PricingStructureRevision: "structure-v1:fixture-prices",
+		PricingValueRevision:     "values-v1:fixture-prices",
 	}
 	legacyGeneration := func(stream Stream) string {
 		if stream == StreamPricing {
@@ -82,13 +83,14 @@ func TestMigrateCodexEmailIdentityFoldsLegacyMaterializationsWithoutReplay(t *te
 			t.Fatalf("materialize second legacy aggregate: %v", err)
 		}
 		if _, err := NewSink(db).Apply(ctx, ApplyBatch{
-			Stream:              stream,
-			SourceEpoch:         snapshot.Identity.Epoch,
-			Generation:          generation,
-			PricingRevision:     snapshot.PricingRevision,
-			ArchiveGeneration:   snapshot.ArchiveGeneration,
-			ToEventID:           snapshot.TargetEventID,
-			SourceTargetEventID: snapshot.TargetEventID,
+			Stream:                   stream,
+			SourceEpoch:              snapshot.Identity.Epoch,
+			Generation:               generation,
+			PricingStructureRevision: snapshot.PricingStructureRevision,
+			PricingValueRevision:     snapshot.PricingValueRevision,
+			ArchiveGeneration:        snapshot.ArchiveGeneration,
+			ToEventID:                snapshot.TargetEventID,
+			SourceTargetEventID:      snapshot.TargetEventID,
 			Events: []EventRecord{
 				{ID: 1, EventHash: string(stream) + "-1"},
 				{ID: 8, EventHash: string(stream) + "-8"},
@@ -108,7 +110,7 @@ func TestMigrateCodexEmailIdentityFoldsLegacyMaterializationsWithoutReplay(t *te
 	}
 	if _, err := db.Exec(`insert into usage_pricing_account_price_cache_v1 (
 		account_key, pricing_revision, covered_event_id, total_cost, updated_at_ms, status, last_error
-	) values ('legacy-import-key', ?, 8, 1.5, 8, 'fresh', '')`, snapshot.PricingRevision); err != nil {
+	) values ('legacy-import-key', ?, 8, 1.5, 8, 'fresh', '')`, snapshot.PricingValueRevision); err != nil {
 		t.Fatalf("seed derived price cache: %v", err)
 	}
 
@@ -128,7 +130,10 @@ func TestMigrateCodexEmailIdentityFoldsLegacyMaterializationsWithoutReplay(t *te
 		}
 		if state.Generation != generation || state.Status != "ready" ||
 			state.CoverageEventID != 8 || state.TargetEventID != 8 ||
-			state.ArchiveGeneration != snapshot.ArchiveGeneration || state.PricingRevision != snapshot.PricingRevision {
+			state.ArchiveGeneration != snapshot.ArchiveGeneration ||
+			state.PricingStructureRevision != snapshot.PricingStructureRevision ||
+			state.PricingValueRevision != snapshot.PricingValueRevision ||
+			state.LastTransition != "legacy_promotion" {
 			t.Fatalf("migrated %s state = %#v", stream, state)
 		}
 		rows, err := NewSink(db).Rows(ctx, stream, generation)

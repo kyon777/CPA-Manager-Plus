@@ -175,7 +175,7 @@ func TestConfigureDerivedStorageMigratesLegacyCodexGenerationBeforeBootstrap(t *
 	}
 	legacyGeneration := func(stream derivedstore.Stream) string {
 		if stream == derivedstore.StreamPricing {
-			return "pricing-v1:" + snapshot.Identity.Epoch + ":" + snapshot.PricingRevision
+			return "pricing-v1:" + snapshot.Identity.Epoch + ":" + snapshot.PricingValueRevision
 		}
 		return "account-history-v1:" + snapshot.Identity.Epoch
 	}
@@ -194,8 +194,10 @@ func TestConfigureDerivedStorageMigratesLegacyCodexGenerationBeforeBootstrap(t *
 		}
 		if _, err := derivedstore.NewSink(derivedDB).Apply(ctx, derivedstore.ApplyBatch{
 			Stream: stream, SourceEpoch: snapshot.Identity.Epoch, Generation: legacyGeneration(stream),
-			PricingRevision: snapshot.PricingRevision, ArchiveGeneration: snapshot.ArchiveGeneration,
-			ToEventID: 1, SourceTargetEventID: snapshot.TargetEventID,
+			PricingStructureRevision: snapshot.PricingStructureRevision,
+			PricingValueRevision:     snapshot.PricingValueRevision,
+			ArchiveGeneration:        snapshot.ArchiveGeneration,
+			ToEventID:                1, SourceTargetEventID: snapshot.TargetEventID,
 			Rows: []derivedstore.MaterializedRow{row}, AppliedAtMS: 1,
 		}); err != nil {
 			_ = derivedDB.Close()
@@ -726,9 +728,10 @@ func TestSeparateDerivedRuntimeBoundsVisibleTailDuringLargeBacklog(t *testing.T)
 		tail[index] = event
 	}
 	snapshot := derivedstore.SourceSnapshot{
-		Identity:        derivedstore.SourceIdentity{Epoch: "source-epoch"},
-		TargetEventID:   tail[len(tail)-1].ID,
-		PricingRevision: "price-revision",
+		Identity:                 derivedstore.SourceIdentity{Epoch: "source-epoch"},
+		TargetEventID:            tail[len(tail)-1].ID,
+		PricingStructureRevision: "structure-revision",
+		PricingValueRevision:     "value-revision",
 	}
 	base := derivedstore.AccountAggregate{
 		AccountKey: accountKey, Model: "gpt-test", BillingModel: "gpt-test",
@@ -748,7 +751,8 @@ func TestSeparateDerivedRuntimeBoundsVisibleTailDuringLargeBacklog(t *testing.T)
 			Stream: derivedstore.StreamPricing, SourceEpoch: snapshot.Identity.Epoch,
 			Generation: derivedstore.GenerationFor(derivedstore.StreamPricing, snapshot),
 			Status:     "ready", CoverageEventID: 100, TargetEventID: 100,
-			PricingRevision: snapshot.PricingRevision,
+			PricingStructureRevision: snapshot.PricingStructureRevision,
+			PricingValueRevision:     snapshot.PricingValueRevision,
 		},
 	}
 	source := &runtimeTailCountingSource{
@@ -1229,7 +1233,7 @@ func (s *runtimeTailCountingSource) ArchivedEventsAfter(context.Context, int64, 
 }
 
 func (s *runtimeTailCountingSource) PricingRevision(context.Context) (string, error) {
-	return s.snapshot.PricingRevision, nil
+	return s.snapshot.PricingValueRevision, nil
 }
 
 func (s *runtimeTailCountingSource) ModelPrices(context.Context) (map[string]model.ModelPrice, error) {
