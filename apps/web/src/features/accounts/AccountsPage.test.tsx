@@ -20353,6 +20353,92 @@ describe('AccountsPage replacement flows', () => {
       expect(detailSpy).not.toHaveBeenCalled();
     });
 
+    it('dispatches up to forty distinct Codex summary refreshes in parallel', async () => {
+      const files = Array.from({ length: 41 }, (_, index) =>
+        makeCodexFile(
+          `codex-parallel-${index}.json`,
+          `auth-parallel-${index}`,
+          `parallel-${index}@example.com`
+        )
+      );
+      mocks.files = files;
+      mocks.selectedFiles = new Set(files.map(getAuthFileSelectionKey));
+      mocks.selectionCount = files.length;
+      installCodexQuotaStoreMutationMock();
+      const pendingByAuthIndex = new Map<string, ReturnType<typeof createDeferred<CodexQuotaData>>>();
+      const summarySpy = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockImplementation((file) => {
+        const authIndex = String(file.authIndex ?? '');
+        const pending = createDeferred<CodexQuotaData>();
+        pendingByAuthIndex.set(authIndex, pending);
+        return pending.promise;
+      });
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+      const batchRefreshButton = findButtonByText(renderer, 'accounts.refresh_quota');
+      await act(async () => {
+        batchRefreshButton.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(summarySpy).toHaveBeenCalledTimes(40);
+      expect(new Set(summarySpy.mock.calls.map(([file]) => String(file.authIndex ?? ''))).size).toBe(40);
+
+      pendingByAuthIndex.get('auth-parallel-0')?.resolve(makeCodexQuotaData());
+      await flushPromises();
+
+      expect(summarySpy).toHaveBeenCalledTimes(41);
+      for (const pending of pendingByAuthIndex.values()) {
+        pending.resolve(makeCodexQuotaData());
+      }
+      await flushPromises();
+    });
+
+    it('does not dispatch queued Codex credentials after a batch HTTP 429', async () => {
+      const files = Array.from({ length: 41 }, (_, index) =>
+        makeCodexFile(
+          `codex-rate-limit-${index}.json`,
+          `auth-rate-limit-${index}`,
+          `rate-limit-${index}@example.com`
+        )
+      );
+      mocks.files = files;
+      mocks.selectedFiles = new Set(files.map(getAuthFileSelectionKey));
+      mocks.selectionCount = files.length;
+      installCodexQuotaStoreMutationMock();
+      const pendingByAuthIndex = new Map<string, ReturnType<typeof createDeferred<CodexQuotaData>>>();
+      const summarySpy = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota').mockImplementation((file) => {
+        const authIndex = String(file.authIndex ?? '');
+        const pending = createDeferred<CodexQuotaData>();
+        pendingByAuthIndex.set(authIndex, pending);
+        return pending.promise;
+      });
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+      const batchRefreshButton = findButtonByText(renderer, 'accounts.refresh_quota');
+      await act(async () => {
+        batchRefreshButton.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(summarySpy).toHaveBeenCalledTimes(40);
+      pendingByAuthIndex
+        .get('auth-rate-limit-0')
+        ?.reject(Object.assign(new Error('HTTP 429 rate limit reached'), { status: 429 }));
+      await flushPromises();
+
+      expect(summarySpy).toHaveBeenCalledTimes(40);
+      for (const pending of pendingByAuthIndex.values()) {
+        pending.resolve(makeCodexQuotaData());
+      }
+      await flushPromises();
+
+      expect(summarySpy).toHaveBeenCalledTimes(40);
+    });
+
     it('schedules Meta credentials during batch quota refresh', async () => {
       const fileCodex = makeCodexFile('codex-batch-1.json', 'auth-b-1', 'b1@example.com');
       const fileMeta: AuthFileItem = {

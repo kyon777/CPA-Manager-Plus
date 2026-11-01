@@ -467,6 +467,7 @@ const renderAccountDetailTrigger = ({
   );
 
 const MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER = 1;
+const MAX_CONCURRENT_CODEX_QUOTA_REFRESHES_PER_PROVIDER = 40;
 const MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS = 3;
 const MAX_CONCURRENT_ACCOUNT_HISTORY_REQUESTS = 2;
 const VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS = 10_000;
@@ -478,6 +479,11 @@ const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u
 const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
 const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
 const ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES = new Set(['pro', 'ultra', 'ultra-lite']);
+
+const getQuotaRefreshConcurrencyForProvider = (providerKey: string): number =>
+  providerKey === CODEX_CONFIG.type
+    ? MAX_CONCURRENT_CODEX_QUOTA_REFRESHES_PER_PROVIDER
+    : MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER;
 
 const hasEquivalentRecentIndexItem = (
   left: MonitoringAccountRecentIndexItem | undefined,
@@ -7816,7 +7822,7 @@ export function AccountsPage() {
           const results = await runProviderCredentialTaskPlan<AccountRow, AccountQuotaRefreshOutcome>(
             taskPlan,
             {
-              perProviderConcurrency: MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER,
+              perProviderConcurrency: getQuotaRefreshConcurrencyForProvider,
               maxConcurrentProviders: MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS,
             },
             async ({ item, providerKey }): Promise<AccountQuotaRefreshOutcome> => {
