@@ -474,6 +474,7 @@ const VISIBLE_ACCOUNT_RECENT_REQUEST_REFRESH_MS = 10_000;
 const GLOBAL_ACCOUNT_RECENT_INDEX_REFRESH_MS = 30_000;
 const PAGE_ACCOUNT_HISTORY_REFRESH_MS = 60_000;
 const PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS = 60_000;
+const LIST_WINDOW_USAGE_FIRST_PAINT_IDLE_TIMEOUT_MS = 1_500;
 const MAX_AUTH_JSON_EXPORT_TARGETS = 300;
 const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u0000';
 const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
@@ -484,6 +485,47 @@ const getQuotaRefreshConcurrencyForProvider = (providerKey: string): number =>
   providerKey === CODEX_CONFIG.type
     ? MAX_CONCURRENT_CODEX_QUOTA_REFRESHES_PER_PROVIDER
     : MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER;
+
+type IdleCallbackHost = {
+  requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+  cancelIdleCallback?: (handle: number) => void;
+};
+
+/**
+ * The current-page window aggregation is intentionally exact and can be the
+ * heaviest read on a busy usage database. Give React a browser paint before
+ * first starting it; non-browser test/SSR environments retain microtask timing.
+ */
+const scheduleListWindowUsageAfterFirstPaint = (callback: () => void): (() => void) => {
+  let cancelled = false;
+  const runIfCurrent = () => {
+    if (!cancelled) callback();
+  };
+
+  if (typeof window === 'undefined') {
+    void Promise.resolve().then(runIfCurrent);
+    return () => {
+      cancelled = true;
+    };
+  }
+
+  const idleHost = window as unknown as IdleCallbackHost;
+  if (typeof idleHost.requestIdleCallback === 'function') {
+    const handle = idleHost.requestIdleCallback(runIfCurrent, {
+      timeout: LIST_WINDOW_USAGE_FIRST_PAINT_IDLE_TIMEOUT_MS,
+    });
+    return () => {
+      cancelled = true;
+      idleHost.cancelIdleCallback?.(handle);
+    };
+  }
+
+  const timeout = globalThis.setTimeout(runIfCurrent, 0);
+  return () => {
+    cancelled = true;
+    globalThis.clearTimeout(timeout);
+  };
+};
 
 const hasEquivalentRecentIndexItem = (
   left: MonitoringAccountRecentIndexItem | undefined,
@@ -1923,6 +1965,11 @@ export function AccountsPage() {
   const listWindowUsageAutoLoadKeyRef = useRef<string | null>(null);
   const listWindowUsageRequestContextKeyRef = useRef<string | null>(null);
   const listWindowUsagePendingRefreshRef = useRef(false);
+  const listWindowUsageFirstPaintCompletedRef = useRef(false);
+  const listWindowUsageFirstPaintIdleTaskRef = useRef<{
+    key: string;
+    cancel: () => void;
+  } | null>(null);
   const listWindowUsageQueryContextRef = useRef(listWindowUsageQueryContext);
   listWindowUsageQueryContextRef.current = listWindowUsageQueryContext;
   const quotaRefreshBatchRef = useRef<{
@@ -2537,6 +2584,9 @@ export function AccountsPage() {
     listWindowUsageAutoLoadKeyRef.current = null;
     listWindowUsageRequestContextKeyRef.current = null;
     listWindowUsagePendingRefreshRef.current = false;
+    listWindowUsageFirstPaintIdleTaskRef.current?.cancel();
+    listWindowUsageFirstPaintIdleTaskRef.current = null;
+    listWindowUsageFirstPaintCompletedRef.current = false;
     accountActionCandidatesRef.current = [];
     accountWindowUsageAutoLoadKeyRef.current = null;
     usageValuesRequestIdRef.current += 1;
@@ -8228,12 +8278,59 @@ export function AccountsPage() {
       listWindowUsageAbortRef.current = null;
       listWindowUsageRequestContextKeyRef.current = null;
       listWindowUsagePendingRefreshRef.current = false;
+      listWindowUsageFirstPaintIdleTaskRef.current?.cancel();
+      listWindowUsageFirstPaintIdleTaskRef.current = null;
+      listWindowUsageFirstPaintCompletedRef.current = false;
       return;
     }
+    // A manual quota batch owns the visible credentials. Let an already-running
+    // aggregation finish, but do not add another expensive current-page query
+    // until the batch and its one final revision have settled.
+    if (quotaRefreshing || quotaRefreshBatchRef.current !== null) return;
     if (listWindowUsageAutoLoadKeyRef.current === listWindowUsageAutoLoadKey) return;
+
+    const shouldDeferFirstPaint =
+      !listWindowUsageFirstPaintCompletedRef.current &&
+      !featureAvailability.checking &&
+      managerStorageAvailable &&
+      featureAvailability.requestMonitoringAvailable &&
+      pageRows.length > 0;
+    if (shouldDeferFirstPaint) {
+      const scheduled = listWindowUsageFirstPaintIdleTaskRef.current;
+      if (scheduled?.key === listWindowUsageAutoLoadKey) return;
+      scheduled?.cancel();
+
+      const scheduledKey = listWindowUsageAutoLoadKey;
+      const cancel = scheduleListWindowUsageAfterFirstPaint(() => {
+        if (listWindowUsageFirstPaintIdleTaskRef.current?.key !== scheduledKey) return;
+        listWindowUsageFirstPaintIdleTaskRef.current = null;
+        listWindowUsageFirstPaintCompletedRef.current = true;
+        if (quotaRefreshBatchRef.current !== null) return;
+        if (listWindowUsageAutoLoadKeyRef.current === scheduledKey) return;
+        listWindowUsageAutoLoadKeyRef.current = scheduledKey;
+        void loadListWindowUsage();
+      });
+      listWindowUsageFirstPaintIdleTaskRef.current = { key: scheduledKey, cancel };
+
+      return () => {
+        if (listWindowUsageFirstPaintIdleTaskRef.current?.key !== scheduledKey) return;
+        listWindowUsageFirstPaintIdleTaskRef.current.cancel();
+        listWindowUsageFirstPaintIdleTaskRef.current = null;
+      };
+    }
+
     listWindowUsageAutoLoadKeyRef.current = listWindowUsageAutoLoadKey;
     void loadListWindowUsage();
-  }, [activeView, listWindowUsageAutoLoadKey, loadListWindowUsage]);
+  }, [
+    activeView,
+    featureAvailability.checking,
+    featureAvailability.requestMonitoringAvailable,
+    listWindowUsageAutoLoadKey,
+    loadListWindowUsage,
+    managerStorageAvailable,
+    pageRows.length,
+    quotaRefreshing,
+  ]);
 
   // Keep current-page data live in three independent streams. The compact
   // request stream is the only 10s work; heavy history and window accounting

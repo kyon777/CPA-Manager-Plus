@@ -1106,3 +1106,32 @@ credential data, quota enforcement, or downstream API billing.
   untouched; current-page token counters remain available after a rate edit;
   current rates change calculated money; and maintenance status projects both
   revisions plus transition.
+
+## 2026-11-01: Bounded Codex quota refresh and first-paint protection (must retain)
+
+This is a frontend-only CPAM credential-list scheduling rule. It must not alter
+CPA Core, `cli-proxy-api`, billing, pricing, raw usage data, timeout values,
+credential bytes, or the per-account drawer paths.
+
+- The explicit credential-list **Refresh quota** action runs up to **40**
+  distinct Codex summary requests per provider at once. Every non-Codex
+  provider keeps the previous one-at-a-time provider limit.
+- Batch work is keyed by normalized `(provider, credential store key)`. The
+  same credential must run once even if it appears twice in a target list or
+  the toolbar is clicked again while its batch is active.
+- A `429` / rate-limited outcome blocks only not-yet-started work for that
+  provider. Requests already in flight remain untouched; do not cancel or
+  retry them automatically.
+- During a manual quota batch, list-level current-page
+  `account-window-usage` must not start another aggregation and must not abort
+  a request that is already running. The normal list revision is consumed once
+  the batch has settled when the batch or live refresh produces one. Do not
+  apply this gate to the account drawer or its detail history/window reads.
+- On the first credential-list paint, cached rows and quota state must render
+  before the first expensive list-level `account-window-usage` query. Use
+  browser idle time with a bounded 1500 ms fallback; SSR/test environments may
+  retain microtask scheduling. This is scheduling only: it does not trigger
+  an upstream quota refresh on page entry.
+- Required regressions cover provider-specific parallelism, 40 unique Codex
+  starts, queued-work suppression after 429, no duplicate list aggregation
+  during a batch, and idle-first initial list aggregation.

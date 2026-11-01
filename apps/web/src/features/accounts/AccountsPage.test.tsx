@@ -19940,6 +19940,151 @@ describe('AccountsPage replacement flows', () => {
       expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(3);
     });
 
+    it('waits for browser idle before starting the initial current-page window usage read', async () => {
+      const storage = new Map<string, string>();
+      let idleCallback: (() => void) | null = null;
+      vi.stubGlobal('window', {
+        location: { hash: '' },
+        history: { state: null },
+        localStorage: {
+          getItem: (key: string) => storage.get(key) ?? null,
+          setItem: (key: string, value: string) => storage.set(key, value),
+          removeItem: (key: string) => storage.delete(key),
+          clear: () => storage.clear(),
+        },
+        sessionStorage: {
+          getItem: () => null,
+          setItem: () => {},
+          removeItem: () => {},
+          clear: () => {},
+        },
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        requestIdleCallback: vi.fn((callback: () => void) => {
+          idleCallback = callback;
+          return 1;
+        }),
+        cancelIdleCallback: vi.fn(),
+      });
+      const file = makeCodexFile('codex-idle-window.json', 'auth-idle-window', 'idle@example.com');
+      const now = Date.now();
+      mocks.files = [file];
+      mocks.panelFeatureAvailability = {
+        checking: false,
+        managerServiceBase: 'http://manager.local:18317',
+        requestMonitoringAvailable: true,
+        serverCodexInspectionAvailable: false,
+      };
+      mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+        status: 'success',
+        windows: [
+          {
+            id: 'five-hour',
+            label: 'Five hours',
+            usedPercent: 40,
+            resetLabel: new Date(now + 3 * 3600 * 1000).toISOString(),
+            resetAtMs: now + 3 * 3600 * 1000,
+            resetAccuracy: 'exact',
+            limitWindowSeconds: 5 * 3600,
+            modelScope: CODEX_MAIN_SCOPE,
+          },
+        ],
+      });
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+
+      expect(findAccountCardByKey(renderer, getAuthFileSelectionKey(file))).toBeTruthy();
+      expect(idleCallback).not.toBeNull();
+      expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
+
+      await act(async () => {
+        idleCallback?.();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not start another current-page usage query while a manual quota batch is active', async () => {
+      vi.useFakeTimers();
+      const first = makeCodexFile('codex-batch-window-1.json', 'auth-batch-window-1', 'bw1@example.com');
+      const second = makeCodexFile('codex-batch-window-2.json', 'auth-batch-window-2', 'bw2@example.com');
+      const now = Date.now();
+      mocks.files = [first, second];
+      mocks.panelFeatureAvailability = {
+        checking: false,
+        managerServiceBase: 'http://manager.local:18317',
+        requestMonitoringAvailable: true,
+        serverCodexInspectionAvailable: false,
+      };
+      mocks.quotaState.codexQuota = {
+        ...buildCredentialScopedQuotaRecord(first, {
+          status: 'success',
+          windows: [
+            {
+              id: 'five-hour',
+              label: 'Five hours',
+              usedPercent: 40,
+              resetLabel: new Date(now + 3 * 3600 * 1000).toISOString(),
+              resetAtMs: now + 3 * 3600 * 1000,
+              resetAccuracy: 'exact',
+              limitWindowSeconds: 5 * 3600,
+              modelScope: CODEX_MAIN_SCOPE,
+            },
+          ],
+        }),
+        ...buildCredentialScopedQuotaRecord(second, {
+          status: 'success',
+          windows: [
+            {
+              id: 'five-hour',
+              label: 'Five hours',
+              usedPercent: 20,
+              resetLabel: new Date(now + 3 * 3600 * 1000).toISOString(),
+              resetAtMs: now + 3 * 3600 * 1000,
+              resetAccuracy: 'exact',
+              limitWindowSeconds: 5 * 3600,
+              modelScope: CODEX_MAIN_SCOPE,
+            },
+          ],
+        }),
+      };
+      const firstQuota = createDeferred<CodexQuotaData>();
+      const secondQuota = createDeferred<CodexQuotaData>();
+      vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota')
+        .mockReturnValueOnce(firstQuota.promise)
+        .mockReturnValueOnce(secondQuota.promise);
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+
+      const batchRefreshButton = findButtonByText(renderer, 'accounts.refresh_quota');
+      let batchRefresh!: Promise<void>;
+      await act(async () => {
+        batchRefresh = batchRefreshButton.props.onClick();
+        await Promise.resolve();
+      });
+      await flushPromises();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await flushPromises();
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        firstQuota.reject(Object.assign(new Error('HTTP 503 upstream unavailable'), { status: 503 }));
+        secondQuota.reject(Object.assign(new Error('HTTP 503 upstream unavailable'), { status: 503 }));
+        await batchRefresh;
+      });
+      await flushPromises();
+
+      expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(2);
+    });
+
     it('refreshes list window usage after single account quota refresh succeeds without opening drawer', async () => {
       const file = makeCodexFile('codex-manual-row.json', 'auth-manual-row', 'manual-row@example.com');
       mocks.files = [file];
