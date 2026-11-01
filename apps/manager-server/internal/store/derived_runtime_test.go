@@ -806,7 +806,7 @@ func TestSeparateDerivedRuntimeBoundsVisibleTailDuringLargeBacklog(t *testing.T)
 	}
 }
 
-func TestSeparateDerivedRuntimeMarksPricingSnapshotStaleAfterPriceRevisionChanges(t *testing.T) {
+func TestSeparateDerivedRuntimeKeepsPricingSnapshotAvailableAfterRateOnlyChange(t *testing.T) {
 	primaryPath := filepath.Join(t.TempDir(), "usage.sqlite")
 	db, err := sqliterepo.Open(primaryPath)
 	if err != nil {
@@ -856,15 +856,19 @@ func TestSeparateDerivedRuntimeMarksPricingSnapshotStaleAfterPriceRevisionChange
 	}); err != nil {
 		t.Fatalf("change model price: %v", err)
 	}
-	stale, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{key})
+	after, err := st.LoadUsagePricingAccountSnapshot(context.Background(), []string{key})
 	if err != nil {
-		t.Fatalf("load stale pricing snapshot: %v", err)
+		t.Fatalf("load after rate change: %v", err)
 	}
-	if stale.Available {
-		t.Fatal("pricing snapshot remained available after the source price revision changed")
+	if !after.Available {
+		t.Fatalf("rate-only change made derived counters unavailable: %#v", after)
 	}
-	if len(stale.Rows) != 1 || stale.Rows[0].Calls != initial.Rows[0].Calls {
-		t.Fatalf("price revision discarded last verified rows: %#v", stale.Rows)
+	if len(after.Rows) != 1 || after.Rows[0].Calls != initial.Rows[0].Calls ||
+		after.Rows[0].InputTokens != initial.Rows[0].InputTokens {
+		t.Fatalf("rate-only change changed counters: before=%#v after=%#v", initial.Rows, after.Rows)
+	}
+	if after.Prices["gpt-test"].Prompt != 2 {
+		t.Fatalf("current prices = %#v", after.Prices)
 	}
 }
 

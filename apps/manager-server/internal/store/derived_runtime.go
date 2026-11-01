@@ -635,7 +635,7 @@ func (r *separateDerivedRuntime) loadAccountSnapshot(ctx context.Context, keys [
 	return UsagePricingAccountSnapshot{
 		CoreRows:                     core,
 		Rows:                         pricing,
-		State:                        toUsagePricingState(pricingState, snapshot.PricingValueRevision),
+		State:                        toUsagePricingState(pricingState, snapshot.PricingStructureRevision),
 		Available:                    ready,
 		PricingIncompleteAccountKeys: incomplete,
 		Prices:                       prices,
@@ -666,7 +666,11 @@ func derivedStateReady(state derivedstore.StreamState, expectedGeneration string
 	if state.ArchiveGeneration != snapshot.ArchiveGeneration {
 		return false
 	}
-	if stream == derivedstore.StreamPricing && state.PricingValueRevision != snapshot.PricingValueRevision {
+	// Pricing materializations are token buckets. A monetary-rate revision is
+	// applied when the reader calculates cost from the current price map, so it
+	// does not invalidate counter coverage. Only a changed bucket structure can
+	// make the stored token split unsafe to read.
+	if stream == derivedstore.StreamPricing && state.PricingStructureRevision != snapshot.PricingStructureRevision {
 		return false
 	}
 	return true

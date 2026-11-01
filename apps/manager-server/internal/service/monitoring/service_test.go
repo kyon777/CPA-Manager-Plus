@@ -64,6 +64,23 @@ func TestAnalyticsQueryGroupBoundsConcurrency(t *testing.T) {
 	}
 }
 
+func TestBuildPricingAccountHistoryTotalsUsesCurrentRatesForExistingCounters(t *testing.T) {
+	rows := []store.UsagePricingAccountRow{{
+		AccountKey: "account-a", Model: "gpt-test", BillingModel: "gpt-test",
+		PricingBand: usage.PricingBand{PricingModel: "gpt-test"},
+		InputTokens: 1_000_000, Calls: 1,
+	}}
+	first := buildPricingAccountHistoryTotals(rows, map[string]store.ModelPrice{
+		"gpt-test": {Prompt: 1, PromptConfigured: true},
+	})["account-a"].cost
+	second := buildPricingAccountHistoryTotals(rows, map[string]store.ModelPrice{
+		"gpt-test": {Prompt: 2, PromptConfigured: true},
+	})["account-a"].cost
+	if first != 1 || second != 2 {
+		t.Fatalf("costs first=%v second=%v", first, second)
+	}
+}
+
 func TestBuildEventsIncludesRequestMetadata(t *testing.T) {
 	genTrue := true
 	streamFalse := false
