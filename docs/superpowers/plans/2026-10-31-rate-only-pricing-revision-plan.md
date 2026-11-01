@@ -8,6 +8,8 @@
 
 **Tech Stack:** Go, SQLite/WAL, CPAM manager server, `derivedstore`, `usagepricing`, focused `go test` package tests.
 
+**Status:** Implemented in commits ca2e13cc through b11773cb; CPAM-only deployment pending final release verification.
+
 ---
 
 ## File map
@@ -205,7 +207,7 @@ git commit -m "feat: separate pricing structure and value revisions"
 - Modify: `apps/manager-server/internal/derivedstore/engine_test.go`
 - Modify: `apps/manager-server/internal/derivedstore/sink_test.go`
 
-- [ ] **Step 1: Write failing no-replay and structural-rebuild tests.**
+- [x] **Step 1: Write failing no-replay and structural-rebuild tests.**
 
 Extend `scriptedSource` in `engine_test.go` with `eventsAfterCalls int` and `archivedAfterCalls int`, make its source-read methods pointers, and increment those counters. Add this table-driven regression:
 
@@ -266,7 +268,7 @@ func TestEngineRateOnlyPriceChangeKeepsPricingCoverageWithoutReplay(t *testing.T
 
 Add a separate threshold test that changes `ContextTiers[0].ThresholdTokens` from `100` to `200`, runs one cycle, then verifies a new pricing generation, `LastTransition == "structural_rebuild"`, and increased live/archive source-read counters.
 
-- [ ] **Step 2: Verify current value-based generation fails the no-replay test.**
+- [x] **Step 2: Verify current value-based generation fails the no-replay test.**
 
 ```powershell
 go test ./internal/derivedstore -run 'TestEngine(RateOnlyPriceChangeKeepsPricingCoverageWithoutReplay|ContextThresholdChangeCreatesPricingReplayGeneration)$' -count=1
@@ -274,7 +276,7 @@ go test ./internal/derivedstore -run 'TestEngine(RateOnlyPriceChangeKeepsPricing
 
 Expected: FAIL. Current `pricing-v1` includes the value hash, so any rate edit creates a new generation and starts from zero.
 
-- [ ] **Step 3: Change engine generation selection and snapshot race validation.**
+- [x] **Step 3: Change engine generation selection and snapshot race validation.**
 
 In `engine.go`, preserve legacy recognition but make the active generation v2:
 
@@ -314,7 +316,7 @@ Keep retry semantics. Expand the final error to include both snapshot/map struct
 
 In `pricingCatchupPlan`, make the mismatch condition include only epoch, active v2 generation, structure revision, and archive generation. A value mismatch intentionally must not demand a catch-up burst.
 
-- [ ] **Step 4: Persist a value change without resetting pricing coverage.**
+- [x] **Step 4: Persist a value change without resetting pricing coverage.**
 
 In `sink.go`, include these state columns in every select/scan in this exact order:
 
@@ -356,7 +358,7 @@ PricingValueRevision: snapshot.PricingValueRevision,
 
 A zero-event `Apply` is the required cheap value-revision metadata update; it must not call `eventsAfter` or `ArchivedEventsAfter` first.
 
-- [ ] **Step 5: Add sink-specific transition tests and run focused suite.**
+- [x] **Step 5: Add sink-specific transition tests and run focused suite.**
 
 Add `TestSinkRetainsPricingCoverageWhenOnlyValueRevisionChanges` to `sink_test.go`: apply a v2 pricing row at coverage `10`, apply an empty same-generation batch with value `values-v2`, then assert coverage `10`, processed count unchanged, one materialized row retained, and `LastTransition == "rate_only_refresh"`.
 
@@ -367,7 +369,7 @@ go test ./internal/derivedstore -run 'Test(Engine|Sink)' -count=1
 
 Expected: PASS. Rate-only cases perform zero new event/archive reads; threshold change begins normal bounded replay.
 
-- [ ] **Step 6: Commit engine/sink behavior.**
+- [x] **Step 6: Commit engine/sink behavior.**
 
 ```powershell
 git add apps/manager-server/internal/derivedstore/engine.go apps/manager-server/internal/derivedstore/sink.go apps/manager-server/internal/derivedstore/engine_test.go apps/manager-server/internal/derivedstore/sink_test.go
@@ -384,7 +386,7 @@ git commit -m "fix: avoid pricing replay for rate-only changes"
 - Modify: `apps/manager-server/internal/store/derived_runtime.go`
 - Modify: `apps/manager-server/internal/store/derived_runtime_test.go`
 
-- [ ] **Step 1: Write failing promotion tests.**
+- [x] **Step 1: Write failing promotion tests.**
 
 Create `pricing_generation_migration_test.go` with these tests:
 
@@ -434,7 +436,7 @@ func TestMigrateLegacyPricingGenerationRejectsDifferentValueRevision(t *testing.
 
 Add to `codex_identity_migration_test.go` assertions that an old pre-email identity fold ends with `PricingStructureRevision == snapshot.PricingStructureRevision`, `PricingValueRevision == snapshot.PricingValueRevision`, and `LastTransition == "legacy_promotion"`.
 
-- [ ] **Step 2: Verify missing promotion API fails.**
+- [x] **Step 2: Verify missing promotion API fails.**
 
 ```powershell
 go test ./internal/derivedstore -run 'TestMigrate(LegacyPricingGeneration|CodexEmailIdentity)' -count=1
@@ -442,7 +444,7 @@ go test ./internal/derivedstore -run 'TestMigrate(LegacyPricingGeneration|CodexE
 
 Expected: FAIL because `MigrateLegacyPricingGeneration` and `currentLegacyPricingGeneration` do not exist.
 
-- [ ] **Step 3: Implement current-v1 promotion as one derived-only transaction.**
+- [x] **Step 3: Implement current-v1 promotion as one derived-only transaction.**
 
 Create `pricing_generation_migration.go`:
 
@@ -509,7 +511,7 @@ _, err = tx.ExecContext(ctx, `update derived_stream_state set
 
 Do **not** alter `derived_applied_events`; no source event is read and no 4-million-row ledger rewrite occurs. Commit, then return `true`.
 
-- [ ] **Step 4: Update older identity folding and startup order.**
+- [x] **Step 4: Update older identity folding and startup order.**
 
 In `codex_identity_migration.go`, use `legacyPricingGenerationPrefix` only for historic v1 recognition and compare it to `snapshot.PricingValueRevision`. In `migrateCodexDerivedStream`, write both revision fields and `last_transition='legacy_promotion'` when folding into the v2 `GenerationFor` result.
 
@@ -530,7 +532,7 @@ if _, err := derivedstore.MigrateLegacyPricingGeneration(ctx, runtime.sink, snap
 
 The order is mandatory: pre-email rows must be identity-folded before their price generation is rekeyed.
 
-- [ ] **Step 5: Run compatibility regressions.**
+- [x] **Step 5: Run compatibility regressions.**
 
 ```powershell
 gofmt -w internal/derivedstore/pricing_generation_migration.go internal/derivedstore/pricing_generation_migration_test.go internal/derivedstore/codex_identity_migration.go internal/derivedstore/codex_identity_migration_test.go internal/store/derived_runtime.go internal/store/derived_runtime_test.go
@@ -539,7 +541,7 @@ go test ./internal/derivedstore ./internal/store -run 'Test(Migrate|ConfigureDer
 
 Expected: PASS. The direct-promotion test proves a partial/current checkpoint keeps its coverage and requires neither a source object nor an applied-ledger rewrite.
 
-- [ ] **Step 6: Commit legacy compatibility.**
+- [x] **Step 6: Commit legacy compatibility.**
 
 ```powershell
 git add apps/manager-server/internal/derivedstore/pricing_generation_migration.go apps/manager-server/internal/derivedstore/pricing_generation_migration_test.go apps/manager-server/internal/derivedstore/codex_identity_migration.go apps/manager-server/internal/derivedstore/codex_identity_migration_test.go apps/manager-server/internal/store/derived_runtime.go apps/manager-server/internal/store/derived_runtime_test.go
@@ -554,7 +556,7 @@ git commit -m "fix: promote current legacy pricing generation without replay"
 - Modify: `apps/manager-server/internal/store/derived_runtime_test.go`
 - Modify: `apps/manager-server/internal/service/monitoring/service_test.go`
 
-- [ ] **Step 1: Turn stale-rate regression into current-price availability regression.**
+- [x] **Step 1: Turn stale-rate regression into current-price availability regression.**
 
 Rename `TestSeparateDerivedRuntimeMarksPricingSnapshotStaleAfterPriceRevisionChanges` to `TestSeparateDerivedRuntimeKeepsPricingSnapshotAvailableAfterRateOnlyChange` and replace its final expectation with:
 
@@ -587,7 +589,7 @@ func TestBuildPricingAccountHistoryTotalsUsesCurrentRatesForExistingCounters(t *
 }
 ```
 
-- [ ] **Step 2: Verify the old readiness condition fails.**
+- [x] **Step 2: Verify the old readiness condition fails.**
 
 ```powershell
 go test ./internal/store ./internal/service/monitoring -run 'Test(SeparateDerivedRuntimeKeepsPricingSnapshotAvailableAfterRateOnlyChange|BuildPricingAccountHistoryTotalsUsesCurrentRatesForExistingCounters)$' -count=1
@@ -595,7 +597,7 @@ go test ./internal/store ./internal/service/monitoring -run 'Test(SeparateDerive
 
 Expected: store test FAILS while `derivedStateReady` rejects a changed value revision.
 
-- [ ] **Step 3: Make read readiness structural rather than monetary.**
+- [x] **Step 3: Make read readiness structural rather than monetary.**
 
 In `derived_runtime.go`, preserve epoch, generation, archive, and coverage checks. Replace the pricing value check with:
 
@@ -621,7 +623,7 @@ PricingValueRevision:     snapshot.PricingValueRevision,
 
 Do not add a synchronous currency rebuild to an HTTP path. `LoadUsagePricingAccountSnapshot` already loads the current price map through the query-only source, and `buildPricingAccountHistoryTotals` applies it against saved token buckets.
 
-- [ ] **Step 4: Run current-page/read-path regressions.**
+- [x] **Step 4: Run current-page/read-path regressions.**
 
 ```powershell
 gofmt -w internal/store/derived_runtime.go internal/store/derived_bootstrap.go internal/store/derived_runtime_test.go internal/service/monitoring/service_test.go
@@ -630,7 +632,7 @@ go test ./internal/store ./internal/service/monitoring -run 'Test(SeparateDerive
 
 Expected: PASS. Rate-only changes preserve current-page request/token rows and calculated money updates through the current price map.
 
-- [ ] **Step 5: Commit read-path behavior.**
+- [x] **Step 5: Commit read-path behavior.**
 
 ```powershell
 git add apps/manager-server/internal/store/derived_runtime.go apps/manager-server/internal/store/derived_bootstrap.go apps/manager-server/internal/store/derived_runtime_test.go apps/manager-server/internal/service/monitoring/service_test.go
@@ -643,7 +645,7 @@ git commit -m "fix: serve current prices from existing derived counters"
 - Modify: `apps/manager-server/internal/http/controller/system/handler.go`
 - Modify: `apps/manager-server/internal/store/derived_runtime_test.go`
 
-- [ ] **Step 1: Write failing status metadata assertions.**
+- [x] **Step 1: Write failing status metadata assertions.**
 
 Extend `TestSeparateDerivedStatusUsesLivePrimaryTarget` so its seeded pricing state includes:
 
@@ -655,7 +657,7 @@ LastTransition:           "rate_only_refresh",
 
 After `SeparateDerivedStatus`, find the pricing stream and assert its values exactly match those strings while `TargetEventID` still equals the newest main-source ID. This preserves the existing live-source target test and proves value/structure metadata does not fake a zero lag.
 
-- [ ] **Step 2: Verify status projection is incomplete.**
+- [x] **Step 2: Verify status projection is incomplete.**
 
 ```powershell
 go test ./internal/store -run '^TestSeparateDerivedStatusUsesLivePrimaryTarget$' -count=1
@@ -663,7 +665,7 @@ go test ./internal/store -run '^TestSeparateDerivedStatusUsesLivePrimaryTarget$'
 
 Expected: FAIL until state scanning carries the new fields through the status result.
 
-- [ ] **Step 3: Add status-only fields without exposing sensitive data.**
+- [x] **Step 3: Add status-only fields without exposing sensitive data.**
 
 Add to `derivedStorageStreamStatus` in `handler.go`:
 
@@ -675,7 +677,7 @@ LastTransition           string `json:"lastTransition,omitempty"`
 
 When building the status object, assign the three values directly from `stream`. Keep the existing `SeparateDerivedStatus` source snapshot refresh unchanged: it already replaces stale worker targets with the real main-source target before the handler computes lag. Do not return model prices, raw events, archives, account identifiers, credentials, proxies, or request payloads.
 
-- [ ] **Step 4: Run status and focused full regression suite.**
+- [x] **Step 4: Run status and focused full regression suite.**
 
 ```powershell
 gofmt -w internal/http/controller/system/handler.go internal/store/derived_runtime_test.go
@@ -685,7 +687,7 @@ go test ./internal/derivedstore ./internal/repository/sqlite ./internal/store ./
 
 Expected: PASS. The second command is intentionally restricted to the five changed CPAM packages, not the entire repository.
 
-- [ ] **Step 5: Commit status observability.**
+- [x] **Step 5: Commit status observability.**
 
 ```powershell
 git add apps/manager-server/internal/http/controller/system/handler.go apps/manager-server/internal/store/derived_runtime_test.go
@@ -697,7 +699,7 @@ git commit -m "feat: report pricing revision transitions"
 **Files:**
 - No source edits unless a focused test discovers a defect.
 
-- [ ] **Step 1: Inspect candidate scope and commits.**
+- [x] **Step 1: Inspect candidate scope and commits.**
 
 ```powershell
 git status --short
@@ -708,12 +710,12 @@ git diff --name-only d903098d..HEAD
 
 Expected: clean worktree; changed code is limited to CPAM manager-server derived pricing paths/tests plus the approved design/plan documents.
 
-- [ ] **Step 2: Build only the CPAM candidate.**
+- [x] **Step 2: Build only the CPAM candidate.**
 
 From `apps/manager-server`:
 
 ```powershell
-go build ./cmd/manager-server
+go build ./cmd/cpa-manager-plus
 ```
 
 Expected: exit code `0`. Do not build CPA Core or `cli-proxy-api`.
@@ -751,4 +753,3 @@ If rollback is required, restore only the preceding CPAM release and restart `cp
 - **Spec coverage:** Task 1 implements the explicit two-revision contract and additive migration. Task 2 proves all five monetary buckets plus context/service-tier rate changes do not replay and proves threshold changes do replay. Task 3 safely handles both current legacy and older Codex identity layouts. Task 4 keeps visible-page current pricing available from token counters. Task 5 makes status report real target/revision/transition. Task 6 preserves CPAM-only deployment and rollback boundaries.
 - **Placeholder scan:** No `TODO`, `TBD`, or unspecified test action remains. Each behavior-changing task has a named failing test, a command that demonstrates the pre-change failure, concrete code/SQL to implement, and a focused passing command.
 - **Type consistency:** `PricingStructureRevision`, `PricingValueRevision`, and `LastTransition` are the sole new Go names throughout. Database `pricing_revision` maps only to `PricingValueRevision`; `pricing_structure_revision` is the only new revision column. `GenerationFor(StreamPricing, snapshot)` is consistently v2/structure-based, while `currentLegacyPricingGeneration(snapshot)` is consistently v1/value-based.
-

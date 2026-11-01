@@ -1056,3 +1056,53 @@ fact-writing behavior.
 - Any future upstream merge touching identity revision, archive coverage, or
   derived generation must preserve this archive-aware path and its regression
   tests before deployment.
+
+## 2026-10-31: Separate-derived rate-only pricing revision (must retain)
+
+This CPAM-only pricing path exists to make rate edits immediate for a large
+live-plus-archived history without re-reading millions of usage facts. It does
+not modify CPA Core, `cli-proxy-api`, raw `usage_events`, archive records,
+credential data, quota enforcement, or downstream API billing.
+
+- `usage-derived.sqlite` pricing state has two independent fingerprints:
+  `pricing_structure_revision` and the existing `pricing_revision` column
+  (the latter is the **value** revision). `last_transition` is derived-only
+  observability metadata. The schema migration is additive; never migrate,
+  replace, or write the primary `usage.sqlite` merely to add these fields.
+- Pricing generation is `pricing-v2:<epoch>:codex-3:<structure-revision>`.
+  Its structure revision includes priced model membership and context-tier
+  thresholds only. Any monetary value edit—including prompt, completion,
+  cache, cache-read, cache-creation, context-tier rates, and service-tier
+  rates—changes only the value revision. It must retain pricing generation,
+  coverage, processed-event count, and materialized token buckets; it must
+  never start a replay from event zero.
+- Model-set changes or any context-tier threshold change are structural and
+  must create a new pricing generation, safely replaying archive plus online
+  facts. A structural replay is correct because it can change token bucket
+  assignment; a monetary edit cannot.
+- Pricing materializations contain token counters, not frozen currency. The
+  visible account-history read path must load the current price map on the
+  query-only source connection and calculate currency from those counters.
+  Therefore a pure rate change keeps the current page `Available=true` and
+  immediately changes its displayed money without waiting for the derived
+  worker. Do not add a synchronous full pricing rebuild or primary writer work
+  to an HTTP request.
+- During deployment, a current canonical v1 pricing generation
+  `pricing-v1:<epoch>:codex-3:<value-revision>` must be promoted in one
+  transaction to the v2 structure-keyed generation before engine bootstrap.
+  Preserve coverage/target/processed counters and rewrite only derived
+  materialized-row generation plus stream state. Do **not** rewrite the
+  `derived_applied_events` ledger or read source/archive events; that would
+  recreate high SQLite pressure. Pre-email identity folding remains first,
+  then this v1-to-v2 promotion.
+- `/status?scope=database-maintenance` must report the real live primary target
+  plus `pricingStructureRevision`, `pricingValueRevision`, and
+  `lastTransition` for the pricing stream. It must not show a fake zero lag
+  from an old worker snapshot, and it must not expose price maps, raw usage,
+  accounts, credentials, proxy URLs, or request payloads.
+- Required regressions: every monetary bucket preserves coverage with zero new
+  live/archive reads; a threshold edit starts a structural rebuild; v1
+  promotion preserves a partial checkpoint and leaves the applied ledger
+  untouched; current-page token counters remain available after a rate edit;
+  current rates change calculated money; and maintenance status projects both
+  revisions plus transition.

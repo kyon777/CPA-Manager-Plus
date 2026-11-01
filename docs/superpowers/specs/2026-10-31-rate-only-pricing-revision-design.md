@@ -1,7 +1,7 @@
 # Rate-Only Pricing Revision Design
 
-**Status:** Approved by LO on 2026-10-31; implementation plan pending written-spec review.  
-**Scope:** CPA Manager Plus (CPAM) only.  
+**Status:** Approved by LO on 2026-10-31; implementation plan pending written-spec review.
+**Scope:** CPA Manager Plus (CPAM) only.
 **Primary outcome:** A change to an existing model's monetary rates updates CPAM's account-level and aggregate displayed costs without replaying archived or live usage events.
 
 ## Problem and evidence
