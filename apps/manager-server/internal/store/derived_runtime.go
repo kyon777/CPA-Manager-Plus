@@ -114,6 +114,15 @@ func (s *Store) ConfigureDerivedStorage(ctx context.Context, cfg config.Config) 
 		s.markSeparateDerivedDegraded(fmt.Errorf("migrate separate derived codex identity: %w", err))
 		return nil
 	}
+	// v1 pricing generations embedded the complete monetary-rate hash. Their
+	// token counters are already structurally valid, so carry the checkpoint
+	// into the v2 structure-keyed generation instead of replaying every live and
+	// archived fact merely because an operator changed a rate.
+	if _, err := derivedstore.MigrateLegacyPricingGeneration(ctx, runtime.sink, snapshot); err != nil {
+		_ = runtime.close()
+		s.markSeparateDerivedDegraded(fmt.Errorf("promote separate derived pricing generation: %w", err))
+		return nil
+	}
 	runtime.engine = derivedstore.NewEngine(derivedstore.EngineConfig{
 		Source:                   runtime.source,
 		Sink:                     runtime.sink,

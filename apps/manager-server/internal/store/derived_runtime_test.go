@@ -175,7 +175,11 @@ func TestConfigureDerivedStorageMigratesLegacyCodexGenerationBeforeBootstrap(t *
 	}
 	legacyGeneration := func(stream derivedstore.Stream) string {
 		if stream == derivedstore.StreamPricing {
-			return "pricing-v1:" + snapshot.Identity.Epoch + ":" + snapshot.PricingValueRevision
+			// This is the last canonical v1 pricing generation: it already
+			// carries Codex email identity but still embeds the mutable rate
+			// hash. Startup must promote it in place rather than replaying
+			// compacted historical facts.
+			return "pricing-v1:" + snapshot.Identity.Epoch + ":codex-" + usageidentity.CodexIdentityRevision + ":" + snapshot.PricingValueRevision
 		}
 		return "account-history-v1:" + snapshot.Identity.Epoch
 	}
