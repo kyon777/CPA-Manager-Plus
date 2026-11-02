@@ -59,6 +59,8 @@ describe('per-auth rate limit iframe bridge', () => {
         retryInitialInterval: '250ms',
         retryMaxInterval: '1s',
         rebindSessionAfterAffinityWait: false,
+        egressConcurrencyEnabled: false,
+        maxConcurrentPerEgress: 0,
       },
     });
     if (!save || save.operation !== 'save') throw new Error('expected save request');
@@ -109,6 +111,128 @@ describe('per-auth rate limit iframe bridge', () => {
       retryInitialInterval: '300ms',
       retryMaxInterval: '2s',
       rebindSessionAfterAffinityWait: true,
+      egressConcurrencyEnabled: false,
+      maxConcurrentPerEgress: 0,
+    });
+  });
+
+  it('maps complete egress concurrency settings into the YAML concurrency patch', () => {
+    const save = parseRateLimitBridgeRequest({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_save_1',
+      operation: 'save',
+      settings: {
+        enabled: true,
+        rpm: 30,
+        minInterval: '10s',
+        maxQueueWait: '35s',
+        maxPendingRequests: 500,
+        concurrencyEnabled: true,
+        maxConcurrentPerAuth: 8,
+        affinityWait: '15s',
+        allCandidatesWait: '30s',
+        retryInitialInterval: '250ms',
+        retryMaxInterval: '1s',
+        rebindSessionAfterAffinityWait: false,
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: 12,
+        unknownSetting: 'must not cross the bridge',
+      },
+    });
+
+    expect(save).toMatchObject({
+      operation: 'save',
+      settings: {
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: 12,
+      },
+    });
+    if (!save || save.operation !== 'save') throw new Error('expected egress save request');
+
+    expect(save.settings).not.toHaveProperty('unknownSetting');
+    expect(buildRateLimitConfigPatch(save)).toEqual({
+      enabled: true,
+      default: { rpm: 30, min_interval: '10s', max_concurrent_per_auth: 8 },
+      max_queue_wait: '35s',
+      max_pending_requests: 500,
+      concurrency: {
+        enabled: true,
+        affinity_wait: '15s',
+        all_candidates_wait: '30s',
+        retry_initial_interval: '250ms',
+        retry_max_interval: '1s',
+        rebind_session_after_affinity_wait: false,
+        egress_enabled: true,
+        max_concurrent_per_egress: 12,
+      },
+      accounts: null,
+    });
+  });
+
+  it('rejects partial, malformed, or out-of-range egress concurrency settings', () => {
+    const completeAccountConcurrency = {
+      concurrencyEnabled: true,
+      maxConcurrentPerAuth: 8,
+      affinityWait: '15s',
+      allCandidatesWait: '30s',
+      retryInitialInterval: '250ms',
+      retryMaxInterval: '1s',
+      rebindSessionAfterAffinityWait: true,
+    };
+    const baseSettings = {
+      enabled: true,
+      rpm: 1,
+      minInterval: '1s',
+      maxQueueWait: '35s',
+      maxPendingRequests: 1,
+    };
+    const invalidSettings = [
+      { ...baseSettings, egressConcurrencyEnabled: true },
+      { ...baseSettings, ...completeAccountConcurrency, egressConcurrencyEnabled: true },
+      {
+        ...baseSettings,
+        ...completeAccountConcurrency,
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: -1,
+      },
+      {
+        ...baseSettings,
+        ...completeAccountConcurrency,
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: 2_147_483_648,
+      },
+      {
+        ...baseSettings,
+        ...completeAccountConcurrency,
+        egressConcurrencyEnabled: 'true',
+        maxConcurrentPerEgress: 4,
+      },
+      {
+        ...baseSettings,
+        ...completeAccountConcurrency,
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: 1.5,
+      },
+      {
+        ...baseSettings,
+        ...completeAccountConcurrency,
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: 4,
+        maxConcurrentPerAuth: '8',
+      },
+    ];
+
+    invalidSettings.forEach((settings, index) => {
+      expect(
+        parseRateLimitBridgeRequest({
+          protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+          pluginID: 'per-auth-rate-limit',
+          requestID: `egress_invalid_${index}`,
+          operation: 'save',
+          settings,
+        })
+      ).toBeNull();
     });
   });
 
@@ -153,21 +277,39 @@ describe('per-auth rate limit iframe bridge', () => {
         pluginID: 'per-auth-rate-limit',
         requestID: 'save_1',
         operation: 'save',
-        settings: { enabled: true, rpm: -1, minInterval: '10s', maxQueueWait: '35s', maxPendingRequests: 500 },
+        settings: {
+          enabled: true,
+          rpm: -1,
+          minInterval: '10s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 500,
+        },
       },
       {
         protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
         pluginID: 'per-auth-rate-limit',
         requestID: 'save_1',
         operation: 'save',
-        settings: { enabled: true, rpm: 1, minInterval: '-1s', maxQueueWait: '35s', maxPendingRequests: 500 },
+        settings: {
+          enabled: true,
+          rpm: 1,
+          minInterval: '-1s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 500,
+        },
       },
       {
         protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
         pluginID: 'per-auth-rate-limit',
         requestID: 'save_1',
         operation: 'save',
-        settings: { enabled: true, rpm: 1, minInterval: '1s', maxQueueWait: '35s', maxPendingRequests: -1 },
+        settings: {
+          enabled: true,
+          rpm: 1,
+          minInterval: '1s',
+          maxQueueWait: '35s',
+          maxPendingRequests: -1,
+        },
       },
       {
         protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
