@@ -4,6 +4,7 @@ import {
   appendRateLimitBridgeParentOrigin,
   buildRateLimitConfigPatch,
   createRateLimitBridgeHost,
+  normalizeRateLimitBridgeSettings,
   parseRateLimitBridgeRequest,
   parseTrustedRateLimitBridgeRequest,
   resolveRateLimitBridgeFrameOrigin,
@@ -29,20 +30,85 @@ describe('per-auth rate limit iframe bridge', () => {
       pluginID: 'per-auth-rate-limit',
       requestID: 'save_1',
       operation: 'save',
-      settings: { enabled: false, rpm: 30, minInterval: '10s', maxQueueWait: '35s', maxPendingRequests: 500 },
+      settings: {
+        enabled: false,
+        rpm: 30,
+        minInterval: '10s',
+        maxQueueWait: '35s',
+        maxPendingRequests: 500,
+        concurrencyEnabled: true,
+        maxConcurrentPerAuth: 8,
+        affinityWait: '15s',
+        allCandidatesWait: '30s',
+        retryInitialInterval: '250ms',
+        retryMaxInterval: '1s',
+        rebindSessionAfterAffinityWait: false,
+      },
     });
     expect(save).toMatchObject({
       operation: 'save',
-      settings: { rpm: 30, minInterval: '10s', maxQueueWait: '35s', maxPendingRequests: 500 },
+      settings: {
+        rpm: 30,
+        minInterval: '10s',
+        maxQueueWait: '35s',
+        maxPendingRequests: 500,
+        concurrencyEnabled: true,
+        maxConcurrentPerAuth: 8,
+        affinityWait: '15s',
+        allCandidatesWait: '30s',
+        retryInitialInterval: '250ms',
+        retryMaxInterval: '1s',
+        rebindSessionAfterAffinityWait: false,
+      },
     });
     if (!save || save.operation !== 'save') throw new Error('expected save request');
 
     expect(buildRateLimitConfigPatch(save)).toEqual({
       enabled: false,
-      default: { rpm: 30, min_interval: '10s' },
+      default: { rpm: 30, min_interval: '10s', max_concurrent_per_auth: 8 },
       max_queue_wait: '35s',
       max_pending_requests: 500,
+      concurrency: {
+        enabled: true,
+        affinity_wait: '15s',
+        all_candidates_wait: '30s',
+        retry_initial_interval: '250ms',
+        retry_max_interval: '1s',
+        rebind_session_after_affinity_wait: false,
+      },
       accounts: null,
+    });
+  });
+
+  it('round-trips concurrent scheduling settings between the iframe and plugin config', () => {
+    expect(
+      normalizeRateLimitBridgeSettings({
+        enabled: true,
+        default: { rpm: 0, min_interval: '0s', max_concurrent_per_auth: 40 },
+        max_queue_wait: '35s',
+        max_pending_requests: 500,
+        concurrency: {
+          enabled: true,
+          affinity_wait: '20s',
+          all_candidates_wait: '45s',
+          retry_initial_interval: '300ms',
+          retry_max_interval: '2s',
+          rebind_session_after_affinity_wait: true,
+        },
+      })
+    ).toEqual({
+      enabled: true,
+      rpm: 0,
+      minInterval: '0s',
+      maxQueueWait: '35s',
+      maxPendingRequests: 500,
+      concurrencyEnabled: true,
+      maxConcurrentPerAuth: 40,
+      affinityWait: '20s',
+      allCandidatesWait: '45s',
+      retryInitialInterval: '300ms',
+      retryMaxInterval: '2s',
+      rebindSessionAfterAffinityWait: true,
     });
   });
 
@@ -75,6 +141,46 @@ describe('per-auth rate limit iframe bridge', () => {
         requestID: 'save_1',
         operation: 'save',
         settings: { enabled: true, rpm: 1, minInterval: '1s', maxQueueWait: '35s', maxPendingRequests: -1 },
+      },
+      {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'save_1',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 1,
+          minInterval: '1s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 1,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: -1,
+          affinityWait: '15s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: true,
+        },
+      },
+      {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'save_1',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 1,
+          minInterval: '1s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 1,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: 1,
+          affinityWait: '-1s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: true,
+        },
       },
     ];
 
@@ -121,9 +227,17 @@ describe('per-auth rate limit iframe bridge', () => {
       isActiveFrameSource: (source) => source === trustedSource,
       getConfig: async () => ({
         enabled: true,
-        default: { rpm: 8, min_interval: '0s' },
+        default: { rpm: 8, min_interval: '0s', max_concurrent_per_auth: 1 },
         max_queue_wait: '35s',
         max_pending_requests: 500,
+        concurrency: {
+          enabled: true,
+          affinity_wait: '15s',
+          all_candidates_wait: '30s',
+          retry_initial_interval: '250ms',
+          retry_max_interval: '1s',
+          rebind_session_after_affinity_wait: true,
+        },
       }),
       patchConfig: async (patch) => {
         patches.push(patch);
@@ -137,7 +251,20 @@ describe('per-auth rate limit iframe bridge', () => {
         pluginID: 'per-auth-rate-limit',
         requestID: 'save_2',
         operation: 'save',
-        settings: { enabled: true, rpm: 6, minInterval: '10s', maxQueueWait: '1m', maxPendingRequests: 42 },
+        settings: {
+          enabled: true,
+          rpm: 6,
+          minInterval: '10s',
+          maxQueueWait: '1m',
+          maxPendingRequests: 42,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: 1,
+          affinityWait: '15s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: true,
+        },
       },
       origin: 'https://cpa.kyon666.top',
       source: trustedSource,
@@ -156,9 +283,17 @@ describe('per-auth rate limit iframe bridge', () => {
     expect(patches).toEqual([
       {
         enabled: true,
-        default: { rpm: 6, min_interval: '10s' },
+        default: { rpm: 6, min_interval: '10s', max_concurrent_per_auth: 1 },
         max_queue_wait: '1m',
         max_pending_requests: 42,
+        concurrency: {
+          enabled: true,
+          affinity_wait: '15s',
+          all_candidates_wait: '30s',
+          retry_initial_interval: '250ms',
+          retry_max_interval: '1s',
+          rebind_session_after_affinity_wait: true,
+        },
         accounts: null,
       },
     ]);

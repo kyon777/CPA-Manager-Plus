@@ -9,8 +9,15 @@ const requestIDPattern = /^[A-Za-z0-9_-]{1,96}$/;
 const durationPattern = /^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$/u;
 const maxRPM = 2_147_483_647;
 const maxPendingRequests = 2_147_483_647;
+const maxConcurrentPerAuth = 2_147_483_647;
 const defaultMaxQueueWait = '35s';
 const defaultMaxPendingRequests = 500;
+const defaultMaxConcurrentPerAuth = 0;
+const defaultAffinityWait = '15s';
+const defaultAllCandidatesWait = '30s';
+const defaultRetryInitialInterval = '250ms';
+const defaultRetryMaxInterval = '1s';
+const defaultRebindSessionAfterAffinityWait = true;
 
 export interface RateLimitBridgeSettings {
   enabled: boolean;
@@ -18,6 +25,13 @@ export interface RateLimitBridgeSettings {
   minInterval: string;
   maxQueueWait: string;
   maxPendingRequests: number;
+  concurrencyEnabled: boolean;
+  maxConcurrentPerAuth: number;
+  affinityWait: string;
+  allCandidatesWait: string;
+  retryInitialInterval: string;
+  retryMaxInterval: string;
+  rebindSessionAfterAffinityWait: boolean;
 }
 
 export interface RateLimitBridgeLoadRequest {
@@ -64,6 +78,12 @@ const isValidRPM = (value: unknown): value is number =>
 const isValidPendingRequests = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= maxPendingRequests;
 
+const isValidMaxConcurrentPerAuth = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isSafeInteger(value) &&
+  value >= 0 &&
+  value <= maxConcurrentPerAuth;
+
 const isValidDuration = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 64 && durationPattern.test(value.trim());
 
@@ -71,12 +91,26 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
   if (!isRecord(value)) return null;
   const minInterval = typeof value.minInterval === 'string' ? value.minInterval.trim() : '';
   const maxQueueWait = typeof value.maxQueueWait === 'string' ? value.maxQueueWait.trim() : '';
+  const affinityWait = typeof value.affinityWait === 'string' ? value.affinityWait.trim() : '';
+  const allCandidatesWait =
+    typeof value.allCandidatesWait === 'string' ? value.allCandidatesWait.trim() : '';
+  const retryInitialInterval =
+    typeof value.retryInitialInterval === 'string' ? value.retryInitialInterval.trim() : '';
+  const retryMaxInterval =
+    typeof value.retryMaxInterval === 'string' ? value.retryMaxInterval.trim() : '';
   if (
     typeof value.enabled !== 'boolean' ||
     !isValidRPM(value.rpm) ||
     !isValidDuration(minInterval) ||
     !isValidDuration(maxQueueWait) ||
-    !isValidPendingRequests(value.maxPendingRequests)
+    !isValidPendingRequests(value.maxPendingRequests) ||
+    typeof value.concurrencyEnabled !== 'boolean' ||
+    !isValidMaxConcurrentPerAuth(value.maxConcurrentPerAuth) ||
+    !isValidDuration(affinityWait) ||
+    !isValidDuration(allCandidatesWait) ||
+    !isValidDuration(retryInitialInterval) ||
+    !isValidDuration(retryMaxInterval) ||
+    typeof value.rebindSessionAfterAffinityWait !== 'boolean'
   ) {
     return null;
   }
@@ -86,6 +120,13 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
     minInterval,
     maxQueueWait,
     maxPendingRequests: value.maxPendingRequests,
+    concurrencyEnabled: value.concurrencyEnabled,
+    maxConcurrentPerAuth: value.maxConcurrentPerAuth,
+    affinityWait,
+    allCandidatesWait,
+    retryInitialInterval,
+    retryMaxInterval,
+    rebindSessionAfterAffinityWait: value.rebindSessionAfterAffinityWait,
   };
 };
 
@@ -136,9 +177,18 @@ export const buildRateLimitConfigPatch = (
   default: {
     rpm: request.settings.rpm,
     min_interval: request.settings.minInterval,
+    max_concurrent_per_auth: request.settings.maxConcurrentPerAuth,
   },
   max_queue_wait: request.settings.maxQueueWait,
   max_pending_requests: request.settings.maxPendingRequests,
+  concurrency: {
+    enabled: request.settings.concurrencyEnabled,
+    affinity_wait: request.settings.affinityWait,
+    all_candidates_wait: request.settings.allCandidatesWait,
+    retry_initial_interval: request.settings.retryInitialInterval,
+    retry_max_interval: request.settings.retryMaxInterval,
+    rebind_session_after_affinity_wait: request.settings.rebindSessionAfterAffinityWait,
+  },
   accounts: null,
 });
 
@@ -146,11 +196,24 @@ export const normalizeRateLimitBridgeSettings = (
   config: PluginConfigObject
 ): RateLimitBridgeSettings => {
   const defaultPolicy = isRecord(config.default) ? config.default : {};
+  const concurrency = isRecord(config.concurrency) ? config.concurrency : {};
   const rpm = isValidRPM(defaultPolicy.rpm) ? defaultPolicy.rpm : 0;
   const candidateInterval =
     typeof defaultPolicy.min_interval === 'string' ? defaultPolicy.min_interval.trim() : '';
   const candidateQueueWait =
     typeof config.max_queue_wait === 'string' ? config.max_queue_wait.trim() : '';
+  const candidateAffinityWait =
+    typeof concurrency.affinity_wait === 'string' ? concurrency.affinity_wait.trim() : '';
+  const candidateAllCandidatesWait =
+    typeof concurrency.all_candidates_wait === 'string'
+      ? concurrency.all_candidates_wait.trim()
+      : '';
+  const candidateRetryInitialInterval =
+    typeof concurrency.retry_initial_interval === 'string'
+      ? concurrency.retry_initial_interval.trim()
+      : '';
+  const candidateRetryMaxInterval =
+    typeof concurrency.retry_max_interval === 'string' ? concurrency.retry_max_interval.trim() : '';
 
   return {
     enabled: config.enabled !== false,
@@ -160,6 +223,24 @@ export const normalizeRateLimitBridgeSettings = (
     maxPendingRequests: isValidPendingRequests(config.max_pending_requests)
       ? config.max_pending_requests
       : defaultMaxPendingRequests,
+    concurrencyEnabled: concurrency.enabled === true,
+    maxConcurrentPerAuth: isValidMaxConcurrentPerAuth(defaultPolicy.max_concurrent_per_auth)
+      ? defaultPolicy.max_concurrent_per_auth
+      : defaultMaxConcurrentPerAuth,
+    affinityWait: isValidDuration(candidateAffinityWait) ? candidateAffinityWait : defaultAffinityWait,
+    allCandidatesWait: isValidDuration(candidateAllCandidatesWait)
+      ? candidateAllCandidatesWait
+      : defaultAllCandidatesWait,
+    retryInitialInterval: isValidDuration(candidateRetryInitialInterval)
+      ? candidateRetryInitialInterval
+      : defaultRetryInitialInterval,
+    retryMaxInterval: isValidDuration(candidateRetryMaxInterval)
+      ? candidateRetryMaxInterval
+      : defaultRetryMaxInterval,
+    rebindSessionAfterAffinityWait:
+      typeof concurrency.rebind_session_after_affinity_wait === 'boolean'
+        ? concurrency.rebind_session_after_affinity_wait
+        : defaultRebindSessionAfterAffinityWait,
   };
 };
 
