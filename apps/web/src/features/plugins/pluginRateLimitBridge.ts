@@ -18,6 +18,15 @@ const defaultAllCandidatesWait = '30s';
 const defaultRetryInitialInterval = '250ms';
 const defaultRetryMaxInterval = '1s';
 const defaultRebindSessionAfterAffinityWait = true;
+const concurrencySettingKeys = [
+  'concurrencyEnabled',
+  'maxConcurrentPerAuth',
+  'affinityWait',
+  'allCandidatesWait',
+  'retryInitialInterval',
+  'retryMaxInterval',
+  'rebindSessionAfterAffinityWait',
+] as const;
 
 export interface RateLimitBridgeSettings {
   enabled: boolean;
@@ -47,6 +56,8 @@ export interface RateLimitBridgeSaveRequest {
   requestID: string;
   operation: 'save';
   settings: RateLimitBridgeSettings;
+  /** True when the producer only knows the original v1 settings schema. */
+  legacy: boolean;
 }
 
 export type RateLimitBridgeRequest = RateLimitBridgeLoadRequest | RateLimitBridgeSaveRequest;
@@ -87,8 +98,21 @@ const isValidMaxConcurrentPerAuth = (value: unknown): value is number =>
 const isValidDuration = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 64 && durationPattern.test(value.trim());
 
+const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
 const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
   if (!isRecord(value)) return null;
+  const hasAnyConcurrencySetting = concurrencySettingKeys.some((key) => hasOwn(value, key));
+  const hasEveryConcurrencySetting = concurrencySettingKeys.every((key) => hasOwn(value, key));
+  if (hasAnyConcurrencySetting && !hasEveryConcurrencySetting) return null;
+  const legacy = !hasAnyConcurrencySetting;
+  const parsedEnabled = value.enabled;
+  const parsedRPM = value.rpm;
+  const parsedPendingRequests = value.maxPendingRequests;
+  const parsedConcurrencyEnabled = value.concurrencyEnabled;
+  const parsedMaxConcurrentPerAuth = value.maxConcurrentPerAuth;
+  const parsedRebindSessionAfterAffinityWait = value.rebindSessionAfterAffinityWait;
   const minInterval = typeof value.minInterval === 'string' ? value.minInterval.trim() : '';
   const maxQueueWait = typeof value.maxQueueWait === 'string' ? value.maxQueueWait.trim() : '';
   const affinityWait = typeof value.affinityWait === 'string' ? value.affinityWait.trim() : '';
@@ -99,34 +123,44 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
   const retryMaxInterval =
     typeof value.retryMaxInterval === 'string' ? value.retryMaxInterval.trim() : '';
   if (
-    typeof value.enabled !== 'boolean' ||
-    !isValidRPM(value.rpm) ||
+    typeof parsedEnabled !== 'boolean' ||
+    !isValidRPM(parsedRPM) ||
     !isValidDuration(minInterval) ||
     !isValidDuration(maxQueueWait) ||
-    !isValidPendingRequests(value.maxPendingRequests) ||
-    typeof value.concurrencyEnabled !== 'boolean' ||
-    !isValidMaxConcurrentPerAuth(value.maxConcurrentPerAuth) ||
-    !isValidDuration(affinityWait) ||
-    !isValidDuration(allCandidatesWait) ||
-    !isValidDuration(retryInitialInterval) ||
-    !isValidDuration(retryMaxInterval) ||
-    typeof value.rebindSessionAfterAffinityWait !== 'boolean'
+    !isValidPendingRequests(parsedPendingRequests) ||
+    (!legacy &&
+      (typeof parsedConcurrencyEnabled !== 'boolean' ||
+        !isValidMaxConcurrentPerAuth(parsedMaxConcurrentPerAuth) ||
+        !isValidDuration(affinityWait) ||
+        !isValidDuration(allCandidatesWait) ||
+        !isValidDuration(retryInitialInterval) ||
+        !isValidDuration(retryMaxInterval) ||
+        typeof parsedRebindSessionAfterAffinityWait !== 'boolean'))
   ) {
     return null;
   }
+  const normalizedConcurrencyEnabled = legacy ? false : parsedConcurrencyEnabled === true;
+  const normalizedMaxConcurrentPerAuth = legacy
+    ? defaultMaxConcurrentPerAuth
+    : isValidMaxConcurrentPerAuth(parsedMaxConcurrentPerAuth)
+      ? parsedMaxConcurrentPerAuth
+      : defaultMaxConcurrentPerAuth;
+  const normalizedRebindSessionAfterAffinityWait = legacy
+    ? defaultRebindSessionAfterAffinityWait
+    : parsedRebindSessionAfterAffinityWait === true;
   return {
-    enabled: value.enabled,
-    rpm: value.rpm,
+    enabled: parsedEnabled,
+    rpm: parsedRPM,
     minInterval,
     maxQueueWait,
-    maxPendingRequests: value.maxPendingRequests,
-    concurrencyEnabled: value.concurrencyEnabled,
-    maxConcurrentPerAuth: value.maxConcurrentPerAuth,
-    affinityWait,
-    allCandidatesWait,
-    retryInitialInterval,
-    retryMaxInterval,
-    rebindSessionAfterAffinityWait: value.rebindSessionAfterAffinityWait,
+    maxPendingRequests: parsedPendingRequests,
+    concurrencyEnabled: normalizedConcurrencyEnabled,
+    maxConcurrentPerAuth: normalizedMaxConcurrentPerAuth,
+    affinityWait: legacy ? defaultAffinityWait : affinityWait,
+    allCandidatesWait: legacy ? defaultAllCandidatesWait : allCandidatesWait,
+    retryInitialInterval: legacy ? defaultRetryInitialInterval : retryInitialInterval,
+    retryMaxInterval: legacy ? defaultRetryMaxInterval : retryMaxInterval,
+    rebindSessionAfterAffinityWait: normalizedRebindSessionAfterAffinityWait,
   };
 };
 
@@ -148,7 +182,11 @@ export const parseRateLimitBridgeRequest = (value: unknown): RateLimitBridgeRequ
     };
   }
   if (value.operation !== 'save') return null;
-  const settings = parseSettings(value.settings);
+  const settingsValue = value.settings;
+  const settings = parseSettings(settingsValue);
+  const legacy = isRecord(settingsValue)
+    ? !concurrencySettingKeys.some((key) => hasOwn(settingsValue, key))
+    : false;
   return settings
     ? {
         protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
@@ -156,6 +194,7 @@ export const parseRateLimitBridgeRequest = (value: unknown): RateLimitBridgeRequ
         requestID: value.requestID,
         operation: 'save',
         settings,
+        legacy,
       }
     : null;
 };
@@ -172,25 +211,35 @@ export const parseTrustedRateLimitBridgeRequest = (
 
 export const buildRateLimitConfigPatch = (
   request: RateLimitBridgeSaveRequest
-): PluginConfigObject => ({
-  enabled: request.settings.enabled,
-  default: {
+): PluginConfigObject => {
+  const defaultPatch: PluginConfigObject = {
     rpm: request.settings.rpm,
     min_interval: request.settings.minInterval,
-    max_concurrent_per_auth: request.settings.maxConcurrentPerAuth,
-  },
-  max_queue_wait: request.settings.maxQueueWait,
-  max_pending_requests: request.settings.maxPendingRequests,
-  concurrency: {
-    enabled: request.settings.concurrencyEnabled,
-    affinity_wait: request.settings.affinityWait,
-    all_candidates_wait: request.settings.allCandidatesWait,
-    retry_initial_interval: request.settings.retryInitialInterval,
-    retry_max_interval: request.settings.retryMaxInterval,
-    rebind_session_after_affinity_wait: request.settings.rebindSessionAfterAffinityWait,
-  },
-  accounts: null,
-});
+  };
+  if (!request.legacy) {
+    defaultPatch.max_concurrent_per_auth = request.settings.maxConcurrentPerAuth;
+  }
+
+  return {
+    enabled: request.settings.enabled,
+    default: defaultPatch,
+    max_queue_wait: request.settings.maxQueueWait,
+    max_pending_requests: request.settings.maxPendingRequests,
+    ...(request.legacy
+      ? {}
+      : {
+          concurrency: {
+            enabled: request.settings.concurrencyEnabled,
+            affinity_wait: request.settings.affinityWait,
+            all_candidates_wait: request.settings.allCandidatesWait,
+            retry_initial_interval: request.settings.retryInitialInterval,
+            retry_max_interval: request.settings.retryMaxInterval,
+            rebind_session_after_affinity_wait: request.settings.rebindSessionAfterAffinityWait,
+          },
+        }),
+    accounts: null,
+  };
+};
 
 export const normalizeRateLimitBridgeSettings = (
   config: PluginConfigObject

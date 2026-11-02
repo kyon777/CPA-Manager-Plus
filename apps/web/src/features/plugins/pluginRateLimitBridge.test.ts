@@ -112,6 +112,33 @@ describe('per-auth rate limit iframe bridge', () => {
     });
   });
 
+  it('keeps legacy v1 saves working without overwriting concurrency settings', () => {
+    const save = parseRateLimitBridgeRequest({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'legacy_save_1',
+      operation: 'save',
+      settings: {
+        enabled: true,
+        rpm: 12,
+        minInterval: '2s',
+        maxQueueWait: '35s',
+        maxPendingRequests: 500,
+      },
+    });
+
+    expect(save).toMatchObject({ operation: 'save', legacy: true });
+    if (!save || save.operation !== 'save') throw new Error('expected legacy save request');
+
+    expect(buildRateLimitConfigPatch(save)).toEqual({
+      enabled: true,
+      default: { rpm: 12, min_interval: '2s' },
+      max_queue_wait: '35s',
+      max_pending_requests: 500,
+      accounts: null,
+    });
+  });
+
   it('rejects unscoped or malformed requests before they reach the authenticated host API', () => {
     const invalid = [
       {},
@@ -180,6 +207,20 @@ describe('per-auth rate limit iframe bridge', () => {
           retryInitialInterval: '250ms',
           retryMaxInterval: '1s',
           rebindSessionAfterAffinityWait: true,
+        },
+      },
+      {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'save_1',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 1,
+          minInterval: '1s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 1,
+          concurrencyEnabled: true,
         },
       },
     ];
