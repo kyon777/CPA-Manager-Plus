@@ -301,6 +301,27 @@ export const buildRateLimitConfigPatch = (
   };
 };
 
+/**
+ * CPA's plugin PATCH endpoint merges the top level only. Keep unknown/current
+ * nested concurrency fields when an older iframe does not send the egress
+ * fields introduced by the concurrency scheduler.
+ */
+export const preserveRateLimitConcurrencyConfig = (
+  patch: PluginConfigObject,
+  current: PluginConfigObject
+): PluginConfigObject => {
+  const patchConcurrency = isRecord(patch.concurrency) ? patch.concurrency : null;
+  const currentConcurrency = isRecord(current.concurrency) ? current.concurrency : null;
+  if (!patchConcurrency || !currentConcurrency) return patch;
+  return {
+    ...patch,
+    concurrency: {
+      ...currentConcurrency,
+      ...patchConcurrency,
+    },
+  };
+};
+
 export const normalizeRateLimitBridgeSettings = (
   config: PluginConfigObject
 ): RateLimitBridgeSettings => {
@@ -417,7 +438,11 @@ export const createRateLimitBridgeHost =
         return;
       }
 
-      await options.patchConfig(buildRateLimitConfigPatch(request));
+      const patch = buildRateLimitConfigPatch(request);
+      const mergedPatch = request.legacy
+        ? patch
+        : preserveRateLimitConcurrencyConfig(patch, await options.getConfig());
+      await options.patchConfig(mergedPatch);
       options.reply(event.source, createRateLimitBridgeSuccess(request, request.settings));
     } catch {
       const error = request.operation === 'load' ? '无法读取限流设置' : '无法保存限流设置';

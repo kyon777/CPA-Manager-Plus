@@ -485,6 +485,69 @@ describe('per-auth rate limit iframe bridge', () => {
     ]);
   });
 
+  it('preserves egress concurrency when an older v2 iframe saves account-only settings', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const patches: unknown[] = [];
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig: async () => ({
+        enabled: true,
+        default: { rpm: 8, min_interval: '0s', max_concurrent_per_auth: 1 },
+        max_queue_wait: '35s',
+        max_pending_requests: 500,
+        concurrency: {
+          enabled: true,
+          affinity_wait: '15s',
+          all_candidates_wait: '30s',
+          retry_initial_interval: '250ms',
+          retry_max_interval: '1s',
+          rebind_session_after_affinity_wait: true,
+          egress_enabled: true,
+          max_concurrent_per_egress: 4,
+        },
+      }),
+      patchConfig: async (patch) => {
+        patches.push(patch);
+      },
+      reply: () => undefined,
+    });
+
+    await handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'account_only_v2_save',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 6,
+          minInterval: '10s',
+          maxQueueWait: '1m',
+          maxPendingRequests: 42,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: 2,
+          affinityWait: '15s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: true,
+        },
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+
+    expect(patches).toEqual([
+      expect.objectContaining({
+        concurrency: expect.objectContaining({
+          egress_enabled: true,
+          max_concurrent_per_egress: 4,
+        }),
+      }),
+    ]);
+  });
+
   it('keeps the resource origin exact while carrying only the non-secret parent origin', () => {
     const source = appendRateLimitBridgeParentOrigin(
       'https://cpa.kyon666.top/v0/resource/plugins/per-auth-rate-limit/settings?theme=dark',
