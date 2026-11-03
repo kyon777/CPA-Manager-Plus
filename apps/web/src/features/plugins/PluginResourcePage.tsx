@@ -189,7 +189,15 @@ function PluginResourcePageContent() {
   );
 
   useEffect(() => {
-    if (pluginID !== RATE_LIMIT_BRIDGE_PLUGIN_ID || !rateLimitBridgeFrameOrigin) return;
+    if (
+      pluginID !== RATE_LIMIT_BRIDGE_PLUGIN_ID ||
+      !connected ||
+      !supportsPlugin ||
+      !iframeSrc ||
+      !rateLimitBridgeFrameOrigin
+    ) {
+      return;
+    }
 
     const handleBridgeMessage = createRateLimitBridgeHost({
       expectedOrigin: rateLimitBridgeFrameOrigin,
@@ -215,7 +223,14 @@ function PluginResourcePageContent() {
       handleBridgeMessage.dispose();
       window.removeEventListener('message', onMessage);
     };
-  }, [pluginID, rateLimitBridgeFrameOrigin, rateLimitBridgeRequestScope]);
+  }, [
+    connected,
+    iframeSrc,
+    pluginID,
+    rateLimitBridgeFrameOrigin,
+    rateLimitBridgeRequestScope,
+    supportsPlugin,
+  ]);
 
   useEffect(() => {
     if (pluginID !== API_KEY_MODEL_POLICY_BRIDGE_PLUGIN_ID || !apiKeyModelPolicyBridgeFrameOrigin) {

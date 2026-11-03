@@ -844,6 +844,51 @@ describe('per-auth rate limit iframe bridge', () => {
     expect(responses[1]).toMatchObject({ requestID: 'modern_save', operation: 'result', ok: true });
   });
 
+  it('loads YAML egress priority affinity true into the iframe settings', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const responses: unknown[] = [];
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig: async () => ({
+        enabled: true,
+        default: { rpm: 8, min_interval: '0s', max_concurrent_per_auth: 4 },
+        max_queue_wait: '35s',
+        max_pending_requests: 500,
+        concurrency: {
+          enabled: true,
+          egress_enabled: true,
+          max_concurrent_per_egress: 4,
+          egress_account_priority_affinity_enabled: true,
+        },
+      }),
+      patchConfig: async () => undefined,
+      reply: (_source, response) => responses.push(response),
+    });
+
+    await handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'yaml_egress_priority_affinity_load',
+        operation: 'load',
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+
+    expect(responses).toEqual([
+      expect.objectContaining({
+        requestID: 'yaml_egress_priority_affinity_load',
+        operation: 'result',
+        ok: true,
+        settings: expect.objectContaining({
+          egressAccountPriorityAffinityEnabled: true,
+        }),
+      }),
+    ]);
+  });
+
   it('preserves egress concurrency when an older v2 iframe saves account-only settings', async () => {
     const trustedSource = {} as MessageEventSource;
     const patches: unknown[] = [];
