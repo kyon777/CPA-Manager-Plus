@@ -10,6 +10,14 @@ import {
   resolveRateLimitBridgeFrameOrigin,
 } from './pluginRateLimitBridge';
 
+const createDeferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
 describe('per-auth rate limit iframe bridge', () => {
   it('accepts scoped load and save commands and produces a minimal config patch', () => {
     const load = parseRateLimitBridgeRequest({
@@ -808,6 +816,125 @@ describe('per-auth rate limit iframe bridge', () => {
         egress_account_priority_affinity_enabled: true,
       }),
     });
+  });
+
+  it('serializes overlapping egress saves so an omitted affinity field cannot erase a modern save', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const initialConfig: Record<string, unknown> = {
+      enabled: true,
+      default: { rpm: 8, min_interval: '0s', max_concurrent_per_auth: 4 },
+      max_queue_wait: '35s',
+      max_pending_requests: 500,
+      concurrency: {
+        enabled: true,
+        affinity_wait: '15s',
+        all_candidates_wait: '30s',
+        retry_initial_interval: '250ms',
+        retry_max_interval: '1s',
+        rebind_session_after_affinity_wait: true,
+        egress_enabled: true,
+        max_concurrent_per_egress: 4,
+        egress_account_priority_affinity_enabled: false,
+      },
+    };
+    let savedConfig = initialConfig;
+    const firstPatchStarted = createDeferred<void>();
+    const releaseFirstPatch = createDeferred<void>();
+    const firstPatchCompleted = createDeferred<void>();
+    const patches: Record<string, unknown>[] = [];
+    const responses: unknown[] = [];
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig: async () => ({ ...savedConfig }),
+      patchConfig: async (patch) => {
+        patches.push(patch);
+        if (patches.length === 1) {
+          firstPatchStarted.resolve();
+          await releaseFirstPatch.promise;
+          savedConfig = { ...savedConfig, ...patch };
+          firstPatchCompleted.resolve();
+          return;
+        }
+        await firstPatchCompleted.promise;
+        savedConfig = { ...savedConfig, ...patch };
+      },
+      reply: (_source, message) => responses.push(message),
+    });
+
+    const modernSave = handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'modern_affinity_save',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 8,
+          minInterval: '0s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 500,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: 4,
+          affinityWait: '15s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: true,
+          egressConcurrencyEnabled: true,
+          maxConcurrentPerEgress: 8,
+          egressAccountPriorityAffinityEnabled: true,
+        },
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+    const oldEgressSave = handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'old_egress_save',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 8,
+          minInterval: '0s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 500,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: 4,
+          affinityWait: '15s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: true,
+          egressConcurrencyEnabled: true,
+          maxConcurrentPerEgress: 12,
+        },
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+
+    await firstPatchStarted.promise;
+    releaseFirstPatch.resolve();
+    await Promise.all([modernSave, oldEgressSave]);
+
+    expect(savedConfig).toMatchObject({
+      concurrency: expect.objectContaining({
+        egress_enabled: true,
+        max_concurrent_per_egress: 12,
+        egress_account_priority_affinity_enabled: true,
+      }),
+    });
+    expect(patches).toHaveLength(2);
+    expect(patches[1].concurrency).toMatchObject({
+      egress_account_priority_affinity_enabled: true,
+    });
+    expect(responses).toEqual([
+      expect.objectContaining({ requestID: 'modern_affinity_save', operation: 'result', ok: true }),
+      expect.objectContaining({ requestID: 'old_egress_save', operation: 'result', ok: true }),
+    ]);
   });
 
   it('keeps the resource origin exact while carrying only the non-secret parent origin', () => {

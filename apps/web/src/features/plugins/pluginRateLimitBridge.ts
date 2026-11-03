@@ -459,35 +459,43 @@ export interface RateLimitBridgeHostOptions {
 }
 
 export const createRateLimitBridgeHost =
-  (options: RateLimitBridgeHostOptions) =>
-  async (event: RateLimitBridgeHostEvent): Promise<void> => {
-    const request = parseTrustedRateLimitBridgeRequest(event.data, {
-      sourceMatchesFrame: options.isActiveFrameSource(event.source),
-      origin: event.origin,
-      expectedOrigin: options.expectedOrigin,
-    });
-    if (!request) return;
+  (options: RateLimitBridgeHostOptions) => {
+    let saveQueue = Promise.resolve();
 
-    try {
-      if (request.operation === 'load') {
-        const config = await options.getConfig();
-        options.reply(
-          event.source,
-          createRateLimitBridgeSuccess(request, normalizeRateLimitBridgeSettings(config))
-        );
-        return;
+    return async (event: RateLimitBridgeHostEvent): Promise<void> => {
+      const request = parseTrustedRateLimitBridgeRequest(event.data, {
+        sourceMatchesFrame: options.isActiveFrameSource(event.source),
+        origin: event.origin,
+        expectedOrigin: options.expectedOrigin,
+      });
+      if (!request) return;
+
+      try {
+        if (request.operation === 'load') {
+          const config = await options.getConfig();
+          options.reply(
+            event.source,
+            createRateLimitBridgeSuccess(request, normalizeRateLimitBridgeSettings(config))
+          );
+          return;
+        }
+
+        const saveTurn = saveQueue.then(async () => {
+          const patch = buildRateLimitConfigPatch(request);
+          const mergedPatch = request.legacy
+            ? patch
+            : preserveRateLimitConcurrencyConfig(patch, await options.getConfig());
+          await options.patchConfig(mergedPatch);
+        });
+        saveQueue = saveTurn.catch(() => undefined);
+
+        await saveTurn;
+        options.reply(event.source, createRateLimitBridgeSuccess(request, request.settings));
+      } catch {
+        const error = request.operation === 'load' ? '无法读取限流设置' : '无法保存限流设置';
+        options.reply(event.source, createRateLimitBridgeFailure(request, error));
       }
-
-      const patch = buildRateLimitConfigPatch(request);
-      const mergedPatch = request.legacy
-        ? patch
-        : preserveRateLimitConcurrencyConfig(patch, await options.getConfig());
-      await options.patchConfig(mergedPatch);
-      options.reply(event.source, createRateLimitBridgeSuccess(request, request.settings));
-    } catch {
-      const error = request.operation === 'load' ? '无法读取限流设置' : '无法保存限流设置';
-      options.reply(event.source, createRateLimitBridgeFailure(request, error));
-    }
+    };
   };
 
 const isHTTPOrigin = (url: URL): boolean => url.protocol === 'http:' || url.protocol === 'https:';
