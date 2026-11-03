@@ -113,7 +113,7 @@ describe('per-auth rate limit iframe bridge', () => {
       rebindSessionAfterAffinityWait: true,
       egressConcurrencyEnabled: false,
       maxConcurrentPerEgress: 0,
-		egressAccountPriorityAffinityEnabled: false,
+      egressAccountPriorityAffinityEnabled: false,
     });
   });
 
@@ -138,7 +138,7 @@ describe('per-auth rate limit iframe bridge', () => {
         rebindSessionAfterAffinityWait: false,
         egressConcurrencyEnabled: true,
         maxConcurrentPerEgress: 12,
-		egressAccountPriorityAffinityEnabled: true,
+        egressAccountPriorityAffinityEnabled: true,
         unknownSetting: 'must not cross the bridge',
       },
     });
@@ -148,7 +148,7 @@ describe('per-auth rate limit iframe bridge', () => {
       settings: {
         egressConcurrencyEnabled: true,
         maxConcurrentPerEgress: 12,
-		egressAccountPriorityAffinityEnabled: true,
+        egressAccountPriorityAffinityEnabled: true,
       },
     });
     if (!save || save.operation !== 'save') throw new Error('expected egress save request');
@@ -168,7 +168,58 @@ describe('per-auth rate limit iframe bridge', () => {
         rebind_session_after_affinity_wait: false,
         egress_enabled: true,
         max_concurrent_per_egress: 12,
-		egress_account_priority_affinity_enabled: true,
+        egress_account_priority_affinity_enabled: true,
+      },
+      accounts: null,
+    });
+  });
+
+  it('accepts an older egress-capable iframe without clearing priority affinity', () => {
+    const save = parseRateLimitBridgeRequest({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_legacy_save_1',
+      operation: 'save',
+      settings: {
+        enabled: true,
+        rpm: 30,
+        minInterval: '10s',
+        maxQueueWait: '35s',
+        maxPendingRequests: 500,
+        concurrencyEnabled: true,
+        maxConcurrentPerAuth: 8,
+        affinityWait: '15s',
+        allCandidatesWait: '30s',
+        retryInitialInterval: '250ms',
+        retryMaxInterval: '1s',
+        rebindSessionAfterAffinityWait: false,
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: 12,
+      },
+    });
+
+    expect(save).toMatchObject({
+      operation: 'save',
+      hasEgressConcurrencySettings: true,
+      hasEgressAccountPriorityAffinitySetting: false,
+      settings: { egressAccountPriorityAffinityEnabled: false },
+    });
+    if (!save || save.operation !== 'save') throw new Error('expected legacy egress save request');
+
+    expect(buildRateLimitConfigPatch(save)).toEqual({
+      enabled: true,
+      default: { rpm: 30, min_interval: '10s', max_concurrent_per_auth: 8 },
+      max_queue_wait: '35s',
+      max_pending_requests: 500,
+      concurrency: {
+        enabled: true,
+        affinity_wait: '15s',
+        all_candidates_wait: '30s',
+        retry_initial_interval: '250ms',
+        retry_max_interval: '1s',
+        rebind_session_after_affinity_wait: false,
+        egress_enabled: true,
+        max_concurrent_per_egress: 12,
       },
       accounts: null,
     });
@@ -225,11 +276,11 @@ describe('per-auth rate limit iframe bridge', () => {
         maxConcurrentPerEgress: 4,
         maxConcurrentPerAuth: '8',
       },
-		{
-		  ...baseSettings,
-		  ...completeAccountConcurrency,
-		  egressAccountPriorityAffinityEnabled: true,
-		},
+      {
+        ...baseSettings,
+        ...completeAccountConcurrency,
+        egressAccountPriorityAffinityEnabled: true,
+      },
     ];
 
     invalidSettings.forEach((settings, index) => {
