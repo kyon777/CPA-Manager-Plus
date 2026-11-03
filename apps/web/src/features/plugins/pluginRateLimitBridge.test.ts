@@ -113,6 +113,7 @@ describe('per-auth rate limit iframe bridge', () => {
       rebindSessionAfterAffinityWait: true,
       egressConcurrencyEnabled: false,
       maxConcurrentPerEgress: 0,
+		egressAccountPriorityAffinityEnabled: false,
     });
   });
 
@@ -137,6 +138,7 @@ describe('per-auth rate limit iframe bridge', () => {
         rebindSessionAfterAffinityWait: false,
         egressConcurrencyEnabled: true,
         maxConcurrentPerEgress: 12,
+		egressAccountPriorityAffinityEnabled: true,
         unknownSetting: 'must not cross the bridge',
       },
     });
@@ -146,6 +148,7 @@ describe('per-auth rate limit iframe bridge', () => {
       settings: {
         egressConcurrencyEnabled: true,
         maxConcurrentPerEgress: 12,
+		egressAccountPriorityAffinityEnabled: true,
       },
     });
     if (!save || save.operation !== 'save') throw new Error('expected egress save request');
@@ -165,6 +168,7 @@ describe('per-auth rate limit iframe bridge', () => {
         rebind_session_after_affinity_wait: false,
         egress_enabled: true,
         max_concurrent_per_egress: 12,
+		egress_account_priority_affinity_enabled: true,
       },
       accounts: null,
     });
@@ -221,6 +225,11 @@ describe('per-auth rate limit iframe bridge', () => {
         maxConcurrentPerEgress: 4,
         maxConcurrentPerAuth: '8',
       },
+		{
+		  ...baseSettings,
+		  ...completeAccountConcurrency,
+		  egressAccountPriorityAffinityEnabled: true,
+		},
     ];
 
     invalidSettings.forEach((settings, index) => {

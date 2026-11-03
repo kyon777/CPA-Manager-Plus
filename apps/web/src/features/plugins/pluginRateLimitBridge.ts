@@ -16,6 +16,7 @@ const defaultMaxPendingRequests = 500;
 const defaultMaxConcurrentPerAuth = 0;
 const defaultEgressConcurrencyEnabled = false;
 const defaultMaxConcurrentPerEgress = 0;
+const defaultEgressAccountPriorityAffinityEnabled = false;
 const defaultAffinityWait = '15s';
 const defaultAllCandidatesWait = '30s';
 const defaultRetryInitialInterval = '250ms';
@@ -33,6 +34,7 @@ const accountConcurrencySettingKeys = [
 const egressConcurrencySettingKeys = [
   'egressConcurrencyEnabled',
   'maxConcurrentPerEgress',
+	'egressAccountPriorityAffinityEnabled',
 ] as const;
 
 export interface RateLimitBridgeSettings {
@@ -50,6 +52,7 @@ export interface RateLimitBridgeSettings {
   rebindSessionAfterAffinityWait: boolean;
   egressConcurrencyEnabled: boolean;
   maxConcurrentPerEgress: number;
+	egressAccountPriorityAffinityEnabled: boolean;
 }
 
 export interface RateLimitBridgeLoadRequest {
@@ -151,6 +154,7 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
   const parsedRebindSessionAfterAffinityWait = value.rebindSessionAfterAffinityWait;
   const parsedEgressConcurrencyEnabled = value.egressConcurrencyEnabled;
   const parsedMaxConcurrentPerEgress = value.maxConcurrentPerEgress;
+	const parsedEgressAccountPriorityAffinityEnabled = value.egressAccountPriorityAffinityEnabled;
   const minInterval = typeof value.minInterval === 'string' ? value.minInterval.trim() : '';
   const maxQueueWait = typeof value.maxQueueWait === 'string' ? value.maxQueueWait.trim() : '';
   const affinityWait = typeof value.affinityWait === 'string' ? value.affinityWait.trim() : '';
@@ -176,7 +180,8 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
         typeof parsedRebindSessionAfterAffinityWait !== 'boolean')) ||
     (hasAnyEgressConcurrencySetting &&
       (typeof parsedEgressConcurrencyEnabled !== 'boolean' ||
-        !isValidMaxConcurrentPerEgress(parsedMaxConcurrentPerEgress)))
+				!isValidMaxConcurrentPerEgress(parsedMaxConcurrentPerEgress) ||
+				typeof parsedEgressAccountPriorityAffinityEnabled !== 'boolean'))
   ) {
     return null;
   }
@@ -196,6 +201,17 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
     hasAnyEgressConcurrencySetting && isValidMaxConcurrentPerEgress(parsedMaxConcurrentPerEgress)
       ? parsedMaxConcurrentPerEgress
       : defaultMaxConcurrentPerEgress;
+	const normalizedEgressAccountPriorityAffinityEnabled = hasAnyEgressConcurrencySetting
+		? parsedEgressAccountPriorityAffinityEnabled === true
+		: defaultEgressAccountPriorityAffinityEnabled;
+	if (
+		normalizedEgressAccountPriorityAffinityEnabled &&
+		(!normalizedConcurrencyEnabled ||
+			!normalizedEgressConcurrencyEnabled ||
+			normalizedMaxConcurrentPerEgress <= 0)
+	) {
+		return null;
+	}
   return {
     enabled: parsedEnabled,
     rpm: parsedRPM,
@@ -211,6 +227,7 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
     rebindSessionAfterAffinityWait: normalizedRebindSessionAfterAffinityWait,
     egressConcurrencyEnabled: normalizedEgressConcurrencyEnabled,
     maxConcurrentPerEgress: normalizedMaxConcurrentPerEgress,
+		egressAccountPriorityAffinityEnabled: normalizedEgressAccountPriorityAffinityEnabled,
   };
 };
 
@@ -285,6 +302,8 @@ export const buildRateLimitConfigPatch = (
   if (request.hasEgressConcurrencySettings) {
     concurrencyPatch.egress_enabled = request.settings.egressConcurrencyEnabled;
     concurrencyPatch.max_concurrent_per_egress = request.settings.maxConcurrentPerEgress;
+		concurrencyPatch.egress_account_priority_affinity_enabled =
+			request.settings.egressAccountPriorityAffinityEnabled;
   }
 
   return {
@@ -377,6 +396,8 @@ export const normalizeRateLimitBridgeSettings = (
     maxConcurrentPerEgress: isValidMaxConcurrentPerEgress(concurrency.max_concurrent_per_egress)
       ? concurrency.max_concurrent_per_egress
       : defaultMaxConcurrentPerEgress,
+		egressAccountPriorityAffinityEnabled:
+			concurrency.egress_account_priority_affinity_enabled === true,
   };
 };
 
