@@ -4,6 +4,7 @@ import { isRecord } from '@/utils/helpers';
 export const RATE_LIMIT_BRIDGE_PROTOCOL = 'cpamp.per-auth-rate-limit/v1';
 export const RATE_LIMIT_BRIDGE_PLUGIN_ID = 'per-auth-rate-limit';
 export const RATE_LIMIT_BRIDGE_PARENT_ORIGIN_PARAM = 'cpamp_bridge_parent_origin';
+export const RATE_LIMIT_BRIDGE_MAX_PENDING_SAVES = 16;
 
 const requestIDPattern = /^[A-Za-z0-9_-]{1,96}$/;
 const durationPattern = /^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$/u;
@@ -458,11 +459,20 @@ export interface RateLimitBridgeHostOptions {
   reply: (source: MessageEventSource | null, response: RateLimitBridgeResponse) => void;
 }
 
-export const createRateLimitBridgeHost =
-  (options: RateLimitBridgeHostOptions) => {
-    let saveQueue = Promise.resolve();
+export interface RateLimitBridgeHostHandler {
+  (event: RateLimitBridgeHostEvent): Promise<void>;
+  dispose(): void;
+}
 
-    return async (event: RateLimitBridgeHostEvent): Promise<void> => {
+export const createRateLimitBridgeHost =
+  (options: RateLimitBridgeHostOptions): RateLimitBridgeHostHandler => {
+    let saveQueue = Promise.resolve();
+    let pendingSaveCount = 0;
+    let disposed = false;
+
+    const handle: RateLimitBridgeHostHandler = async (event): Promise<void> => {
+      if (disposed) return;
+
       const request = parseTrustedRateLimitBridgeRequest(event.data, {
         sourceMatchesFrame: options.isActiveFrameSource(event.source),
         origin: event.origin,
@@ -470,32 +480,62 @@ export const createRateLimitBridgeHost =
       });
       if (!request) return;
 
-      try {
-        if (request.operation === 'load') {
+      if (request.operation === 'load') {
+        try {
           const config = await options.getConfig();
+          if (disposed) return;
           options.reply(
             event.source,
             createRateLimitBridgeSuccess(request, normalizeRateLimitBridgeSettings(config))
           );
-          return;
+        } catch {
+          if (disposed) return;
+          options.reply(event.source, createRateLimitBridgeFailure(request, '无法读取限流设置'));
         }
+        return;
+      }
 
-        const saveTurn = saveQueue.then(async () => {
-          const patch = buildRateLimitConfigPatch(request);
-          const mergedPatch = request.legacy
-            ? patch
-            : preserveRateLimitConcurrencyConfig(patch, await options.getConfig());
-          await options.patchConfig(mergedPatch);
-        });
-        saveQueue = saveTurn.catch(() => undefined);
+      if (pendingSaveCount >= RATE_LIMIT_BRIDGE_MAX_PENDING_SAVES) {
+        if (!disposed) {
+          options.reply(event.source, createRateLimitBridgeFailure(request, '无法保存限流设置'));
+        }
+        return;
+      }
+      pendingSaveCount += 1;
 
+      const saveTurn = saveQueue.then(async () => {
+        if (disposed) return;
+
+        const patch = buildRateLimitConfigPatch(request);
+        if (disposed) return;
+
+        const mergedPatch = request.legacy
+          ? patch
+          : preserveRateLimitConcurrencyConfig(patch, await options.getConfig());
+        if (disposed) return;
+
+        await options.patchConfig(mergedPatch);
+      });
+      saveQueue = saveTurn.catch(() => undefined);
+
+      try {
         await saveTurn;
+        if (disposed) return;
         options.reply(event.source, createRateLimitBridgeSuccess(request, request.settings));
       } catch {
-        const error = request.operation === 'load' ? '无法读取限流设置' : '无法保存限流设置';
-        options.reply(event.source, createRateLimitBridgeFailure(request, error));
+        if (disposed) return;
+        options.reply(event.source, createRateLimitBridgeFailure(request, '无法保存限流设置'));
+      } finally {
+        pendingSaveCount -= 1;
       }
     };
+
+    handle.dispose = () => {
+      if (disposed) return;
+      disposed = true;
+    };
+
+    return handle;
   };
 
 const isHTTPOrigin = (url: URL): boolean => url.protocol === 'http:' || url.protocol === 'https:';

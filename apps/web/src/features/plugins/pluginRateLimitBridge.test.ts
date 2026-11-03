@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  RATE_LIMIT_BRIDGE_MAX_PENDING_SAVES,
   RATE_LIMIT_BRIDGE_PROTOCOL,
   appendRateLimitBridgeParentOrigin,
   buildRateLimitConfigPatch,
@@ -17,6 +18,41 @@ const createDeferred = <T,>() => {
   });
   return { promise, resolve };
 };
+
+const legacySaveSettings = {
+  enabled: true,
+  rpm: 1,
+  minInterval: '1s',
+  maxQueueWait: '35s',
+  maxPendingRequests: 500,
+};
+
+const modernSaveSettings = {
+  ...legacySaveSettings,
+  concurrencyEnabled: true,
+  maxConcurrentPerAuth: 1,
+  affinityWait: '15s',
+  allCandidatesWait: '30s',
+  retryInitialInterval: '250ms',
+  retryMaxInterval: '1s',
+  rebindSessionAfterAffinityWait: true,
+};
+
+const createSaveEvent = (
+  requestID: string,
+  settings: Record<string, unknown>,
+  source: MessageEventSource
+) => ({
+  data: {
+    protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+    pluginID: 'per-auth-rate-limit',
+    requestID,
+    operation: 'save',
+    settings,
+  },
+  origin: 'https://cpa.kyon666.top',
+  source,
+});
 
 describe('per-auth rate limit iframe bridge', () => {
   it('accepts scoped load and save commands and produces a minimal config patch', () => {
@@ -597,6 +633,124 @@ describe('per-auth rate limit iframe bridge', () => {
     expect(sent).toEqual([
       expect.objectContaining({ requestID: 'save_2', operation: 'result', ok: true }),
     ]);
+  });
+
+  it('disposes a blocked save queue without starting queued APIs or replying', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const firstPatchStarted = createDeferred<void>();
+    const releaseFirstPatch = createDeferred<void>();
+    const getConfig = vi.fn(async () => ({}));
+    const patchConfig = vi.fn(async () => {
+      firstPatchStarted.resolve();
+      await releaseFirstPatch.promise;
+    });
+    const responses: unknown[] = [];
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig,
+      patchConfig,
+      reply: (_source, response) => responses.push(response),
+    });
+
+    const firstSave = handle(createSaveEvent('dispose_first', legacySaveSettings, trustedSource));
+    const secondSave = handle(createSaveEvent('dispose_second', modernSaveSettings, trustedSource));
+    await firstPatchStarted.promise;
+
+    handle.dispose();
+    handle.dispose();
+    releaseFirstPatch.resolve();
+    await Promise.all([firstSave, secondSave]);
+
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    expect(responses).toEqual([]);
+  });
+
+  it('does not reply when a load finishes after the host is disposed', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const loadStarted = createDeferred<void>();
+    const releaseLoad = createDeferred<void>();
+    const responses: unknown[] = [];
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig: async () => {
+        loadStarted.resolve();
+        await releaseLoad.promise;
+        return {};
+      },
+      patchConfig: async () => undefined,
+      reply: (_source, response) => responses.push(response),
+    });
+
+    const load = handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'disposed_load',
+        operation: 'load',
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+    await loadStarted.promise;
+
+    handle.dispose();
+    releaseLoad.resolve();
+    await load;
+
+    expect(responses).toEqual([]);
+  });
+
+  it('rejects the seventeenth pending save without calling its APIs', async () => {
+    const expectedPendingSaveLimit = 16;
+    const trustedSource = {} as MessageEventSource;
+    const firstPatchStarted = createDeferred<void>();
+    const releaseFirstPatch = createDeferred<void>();
+    const patches: unknown[] = [];
+    const responses: unknown[] = [];
+    const getConfig = vi.fn(async () => ({}));
+    const patchConfig = vi.fn(async (patch: unknown) => {
+      patches.push(patch);
+      if (patches.length === 1) {
+        firstPatchStarted.resolve();
+        await releaseFirstPatch.promise;
+      }
+    });
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig,
+      patchConfig,
+      reply: (_source, response) => responses.push(response),
+    });
+
+    const acceptedSaves = Array.from({ length: expectedPendingSaveLimit }, (_, index) =>
+      handle(createSaveEvent(`pending_${index + 1}`, legacySaveSettings, trustedSource))
+    );
+    await firstPatchStarted.promise;
+
+    const rejectedSave = handle(createSaveEvent('pending_17', legacySaveSettings, trustedSource));
+    await Promise.resolve();
+    const patchesBeforeRelease = patches.length;
+    const getConfigCallsBeforeRelease = getConfig.mock.calls.length;
+    const responsesBeforeRelease = [...responses];
+
+    releaseFirstPatch.resolve();
+    await Promise.all([...acceptedSaves, rejectedSave]);
+
+    expect(RATE_LIMIT_BRIDGE_MAX_PENDING_SAVES).toBe(expectedPendingSaveLimit);
+    expect(patchesBeforeRelease).toBe(1);
+    expect(getConfigCallsBeforeRelease).toBe(0);
+    expect(responsesBeforeRelease).toEqual([
+      expect.objectContaining({
+        requestID: 'pending_17',
+        operation: 'result',
+        ok: false,
+      }),
+    ]);
+    expect(patchConfig).toHaveBeenCalledTimes(expectedPendingSaveLimit);
   });
 
   it('round-trips modern egress priority affinity through the host load/save path', async () => {

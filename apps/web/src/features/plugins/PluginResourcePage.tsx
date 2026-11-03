@@ -67,6 +67,10 @@ function PluginResourcePageContent() {
   const connected = connectionStatus === 'connected';
   const pluginID = useMemo(() => safeDecodeURIComponent(params.pluginId), [params.pluginId]);
   const menuIndex = useMemo(() => parseMenuIndex(params.menuIndex), [params.menuIndex]);
+  const rateLimitBridgeRequestScope = useMemo(
+    () => Object.freeze({ apiBase, managementKey }),
+    [apiBase, managementKey]
+  );
 
   const listRequestIdRef = useRef(0);
   useEffect(
@@ -190,8 +194,10 @@ function PluginResourcePageContent() {
     const handleBridgeMessage = createRateLimitBridgeHost({
       expectedOrigin: rateLimitBridgeFrameOrigin,
       isActiveFrameSource: (source) => iframeRef.current?.contentWindow === source,
-      getConfig: () => pluginsApi.getConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID),
-      patchConfig: (patch) => pluginsApi.patchConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID, patch),
+      getConfig: () =>
+        pluginsApi.getConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID, rateLimitBridgeRequestScope),
+      patchConfig: (patch) =>
+        pluginsApi.patchConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID, patch, rateLimitBridgeRequestScope),
       reply: (source, response) => {
         replyToTrustedPluginFrame(source, rateLimitBridgeFrameOrigin, response);
       },
@@ -205,8 +211,11 @@ function PluginResourcePageContent() {
     };
 
     window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, [pluginID, rateLimitBridgeFrameOrigin]);
+    return () => {
+      handleBridgeMessage.dispose();
+      window.removeEventListener('message', onMessage);
+    };
+  }, [pluginID, rateLimitBridgeFrameOrigin, rateLimitBridgeRequestScope]);
 
   useEffect(() => {
     if (pluginID !== API_KEY_MODEL_POLICY_BRIDGE_PLUGIN_ID || !apiKeyModelPolicyBridgeFrameOrigin) {

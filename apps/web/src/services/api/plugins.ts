@@ -301,16 +301,26 @@ export const pluginsApi = {
     return normalizePluginDeleteResult(data);
   },
 
-  async getConfig(id: string): Promise<PluginConfigObject> {
-    const data = await apiClient.get(`/plugins/${encodeURIComponent(id)}/config`);
+  async getConfig(
+    id: string,
+    requestScope?: ApiClientRequestScope
+  ): Promise<PluginConfigObject> {
+    const data = await apiClient.get(
+      `/plugins/${encodeURIComponent(id)}/config`,
+      requestScope ? createScopedApiRequestConfig(requestScope) : undefined
+    );
     return normalizePluginConfig(data);
   },
 
   putConfig: (id: string, config: PluginConfigObject) =>
     apiClient.put(`/plugins/${encodeURIComponent(id)}/config`, config),
 
-  patchConfig: (id: string, patch: PluginConfigObject) =>
-    apiClient.patch(`/plugins/${encodeURIComponent(id)}/config`, patch),
+  patchConfig: (id: string, patch: PluginConfigObject, requestScope?: ApiClientRequestScope) =>
+    apiClient.patch(
+      `/plugins/${encodeURIComponent(id)}/config`,
+      patch,
+      requestScope ? createScopedApiRequestConfig(requestScope) : undefined
+    ),
 };
 
 export const pluginStoreApi = {

@@ -7,6 +7,7 @@ const { mocks } = vi.hoisted(() => ({
     put: vi.fn(),
     patch: vi.fn(),
     delete: vi.fn(),
+    createScopedApiRequestConfig: vi.fn(),
   },
 }));
 
@@ -18,6 +19,7 @@ vi.mock('./client', () => ({
     patch: mocks.patch,
     delete: mocks.delete,
   },
+  createScopedApiRequestConfig: mocks.createScopedApiRequestConfig,
 }));
 
 import {
@@ -25,6 +27,7 @@ import {
   normalizePluginList,
   normalizePluginStoreList,
   normalizePluginStoreInstallResult,
+  pluginsApi,
   pluginStoreApi,
 } from './plugins';
 
@@ -34,6 +37,54 @@ beforeEach(() => {
   mocks.put.mockReset();
   mocks.patch.mockReset();
   mocks.delete.mockReset();
+  mocks.createScopedApiRequestConfig.mockReset();
+});
+
+describe('plugin API config requests', () => {
+  it('passes the supplied request scope to getConfig and patchConfig', async () => {
+    const requestScope = Object.freeze({
+      apiBase: 'https://old-cpa.example',
+      managementKey: 'old-management-key',
+    });
+    const scopedRequestConfig = {
+      baseURL: 'https://old-cpa.example/v0',
+      headers: { Authorization: 'Bearer old-management-key' },
+      cpampScopedRequest: true,
+    };
+    mocks.createScopedApiRequestConfig.mockReturnValue(scopedRequestConfig);
+    mocks.get.mockResolvedValue({});
+
+    await pluginsApi.getConfig('rate-limit', requestScope);
+    await pluginsApi.patchConfig('rate-limit', { enabled: true }, requestScope);
+
+    expect(mocks.createScopedApiRequestConfig).toHaveBeenCalledTimes(2);
+    expect(mocks.createScopedApiRequestConfig).toHaveBeenNthCalledWith(1, requestScope);
+    expect(mocks.createScopedApiRequestConfig).toHaveBeenNthCalledWith(2, requestScope);
+    expect(mocks.get).toHaveBeenCalledWith(
+      '/plugins/rate-limit/config',
+      scopedRequestConfig
+    );
+    expect(mocks.patch).toHaveBeenCalledWith(
+      '/plugins/rate-limit/config',
+      { enabled: true },
+      scopedRequestConfig
+    );
+  });
+
+  it('keeps config requests unscoped when no request scope is supplied', async () => {
+    mocks.get.mockResolvedValue({});
+
+    await pluginsApi.getConfig('rate-limit');
+    await pluginsApi.patchConfig('rate-limit', { enabled: false });
+
+    expect(mocks.createScopedApiRequestConfig).not.toHaveBeenCalled();
+    expect(mocks.get).toHaveBeenCalledWith('/plugins/rate-limit/config', undefined);
+    expect(mocks.patch).toHaveBeenCalledWith(
+      '/plugins/rate-limit/config',
+      { enabled: false },
+      undefined
+    );
+  });
 });
 
 describe('plugin API normalizers', () => {
