@@ -296,6 +296,52 @@ describe('per-auth rate limit iframe bridge', () => {
     });
   });
 
+  it('rejects priority affinity when account or egress concurrency is inactive', () => {
+    const completeSettings = {
+      enabled: true,
+      rpm: 1,
+      minInterval: '1s',
+      maxQueueWait: '35s',
+      maxPendingRequests: 1,
+      concurrencyEnabled: true,
+      maxConcurrentPerAuth: 8,
+      affinityWait: '15s',
+      allCandidatesWait: '30s',
+      retryInitialInterval: '250ms',
+      retryMaxInterval: '1s',
+      rebindSessionAfterAffinityWait: true,
+      egressConcurrencyEnabled: true,
+      maxConcurrentPerEgress: 4,
+      egressAccountPriorityAffinityEnabled: true,
+    };
+    const invalidSettings = [
+      {
+        requestID: 'priority_account_disabled',
+        settings: { ...completeSettings, concurrencyEnabled: false },
+      },
+      {
+        requestID: 'priority_egress_disabled',
+        settings: { ...completeSettings, egressConcurrencyEnabled: false },
+      },
+      {
+        requestID: 'priority_egress_zero',
+        settings: { ...completeSettings, maxConcurrentPerEgress: 0 },
+      },
+    ];
+
+    invalidSettings.forEach(({ requestID, settings }) => {
+      expect(
+        parseRateLimitBridgeRequest({
+          protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+          pluginID: 'per-auth-rate-limit',
+          requestID,
+          operation: 'save',
+          settings,
+        })
+      ).toBeNull();
+    });
+  });
+
   it('keeps legacy v1 saves working without overwriting concurrency settings', () => {
     const save = parseRateLimitBridgeRequest({
       protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
@@ -545,6 +591,97 @@ describe('per-auth rate limit iframe bridge', () => {
     ]);
   });
 
+  it('round-trips modern egress priority affinity through the host load/save path', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const modernSettings = {
+      enabled: true,
+      rpm: 8,
+      minInterval: '0s',
+      maxQueueWait: '35s',
+      maxPendingRequests: 500,
+      concurrencyEnabled: true,
+      maxConcurrentPerAuth: 4,
+      affinityWait: '15s',
+      allCandidatesWait: '30s',
+      retryInitialInterval: '250ms',
+      retryMaxInterval: '1s',
+      rebindSessionAfterAffinityWait: true,
+      egressConcurrencyEnabled: true,
+      maxConcurrentPerEgress: 4,
+      egressAccountPriorityAffinityEnabled: true,
+    };
+    let savedConfig: Record<string, unknown> = {
+      enabled: true,
+      default: { rpm: 8, min_interval: '0s', max_concurrent_per_auth: 4 },
+      max_queue_wait: '35s',
+      max_pending_requests: 500,
+      concurrency: {
+        enabled: true,
+        affinity_wait: '15s',
+        all_candidates_wait: '30s',
+        retry_initial_interval: '250ms',
+        retry_max_interval: '1s',
+        rebind_session_after_affinity_wait: true,
+        egress_enabled: true,
+        max_concurrent_per_egress: 4,
+        egress_account_priority_affinity_enabled: false,
+      },
+    };
+    let loadedSettings: typeof modernSettings | undefined;
+    const responses: unknown[] = [];
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig: async () => savedConfig,
+      patchConfig: async (patch) => {
+        savedConfig = { ...savedConfig, ...patch };
+      },
+      reply: (_source, message) => {
+        responses.push(message);
+        if (message.operation === 'result' && message.ok && message.requestID === 'modern_load') {
+          loadedSettings = message.settings;
+        }
+      },
+    });
+
+    await handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'modern_load',
+        operation: 'load',
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+
+    expect(loadedSettings).toEqual({
+      ...modernSettings,
+      egressAccountPriorityAffinityEnabled: false,
+    });
+    if (!loadedSettings) throw new Error('expected modern load settings');
+
+    await handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'modern_save',
+        operation: 'save',
+        settings: { ...loadedSettings, egressAccountPriorityAffinityEnabled: true },
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+
+    expect(savedConfig).toMatchObject({
+      concurrency: expect.objectContaining({
+        egress_account_priority_affinity_enabled: true,
+      }),
+    });
+    expect(responses).toHaveLength(2);
+    expect(responses[1]).toMatchObject({ requestID: 'modern_save', operation: 'result', ok: true });
+  });
+
   it('preserves egress concurrency when an older v2 iframe saves account-only settings', async () => {
     const trustedSource = {} as MessageEventSource;
     const patches: unknown[] = [];
@@ -606,6 +743,71 @@ describe('per-auth rate limit iframe bridge', () => {
         }),
       }),
     ]);
+  });
+
+  it('preserves priority affinity when an older egress-capable iframe saves the old egress pair', async () => {
+    const trustedSource = {} as MessageEventSource;
+    let savedConfig: Record<string, unknown> = {
+      enabled: true,
+      default: { rpm: 8, min_interval: '0s', max_concurrent_per_auth: 4 },
+      max_queue_wait: '35s',
+      max_pending_requests: 500,
+      concurrency: {
+        enabled: true,
+        affinity_wait: '15s',
+        all_candidates_wait: '30s',
+        retry_initial_interval: '250ms',
+        retry_max_interval: '1s',
+        rebind_session_after_affinity_wait: true,
+        egress_enabled: true,
+        max_concurrent_per_egress: 12,
+        egress_account_priority_affinity_enabled: true,
+      },
+    };
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig: async () => savedConfig,
+      patchConfig: async (patch) => {
+        savedConfig = { ...savedConfig, ...patch };
+      },
+      reply: () => undefined,
+    });
+
+    await handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'egress_legacy_pair_save',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 6,
+          minInterval: '10s',
+          maxQueueWait: '1m',
+          maxPendingRequests: 42,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: 2,
+          affinityWait: '15s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: true,
+          egressConcurrencyEnabled: true,
+          maxConcurrentPerEgress: 12,
+        },
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+
+    expect(savedConfig).toMatchObject({
+      concurrency: expect.objectContaining({
+        egress_enabled: true,
+        max_concurrent_per_egress: 12,
+        egress_account_priority_affinity_enabled: true,
+      }),
+    });
   });
 
   it('keeps the resource origin exact while carrying only the non-secret parent origin', () => {
