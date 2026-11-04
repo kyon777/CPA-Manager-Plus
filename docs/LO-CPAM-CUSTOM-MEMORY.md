@@ -1135,3 +1135,33 @@ credential bytes, or the per-account drawer paths.
 - Required regressions cover provider-specific parallelism, 40 unique Codex
   starts, queued-work suppression after 429, no duplicate list aggregation
   during a batch, and idle-first initial list aggregation.
+
+## 2026-11-04: Bounded browser quota-cache persistence (must retain)
+
+This is a frontend-only durability and responsiveness guard for
+`STORAGE_KEY_QUOTA_CACHE` / `useQuotaStore`. It must not modify CPA Core,
+`cli-proxy-api`, CPAM server-side SQLite, credential data, quota acquisition,
+pricing, Credits, usage facts, or billing.
+
+- Keep at most **800** Codex quota entries in live browser memory, **400**
+  compact Codex entries in durable browser storage, and **50** compact durable
+  entries for each other provider. Recency is determined by valid quota update
+  time; trimming always evicts the oldest records first.
+- The complete serialized persisted value has a hard **1.25 MiB** byte budget.
+  Before every durable write, omit nonessential Codex rate-limit credits,
+  truncate persisted diagnostics to 512 characters, apply provider limits, and
+  evict oldest records until the raw UTF-8 JSON fits the budget.
+- Durable browser writes are coalesced/debounced through idle scheduling with a
+  500 ms fallback and flushed on `pagehide`; quota polling and credential-list
+  rendering must never synchronously serialize/write localStorage for every
+  incoming row.
+- If browser storage still throws a quota exception, retry once with a 256 KiB
+  emergency compact value. If that fails too, remove only this quota-cache key,
+  keep the in-memory state usable, and log a single diagnostic. Never clear
+  unrelated localStorage, browser authentication, credentials, or server data.
+- Persisted cache schema version is **1**. Hydration/migration must compact old
+  unbounded payloads before they are used, so an already-full browser heals on
+  its next load rather than repeatedly throwing `setItem` quota errors.
+- Required regressions cover Codex/live and persisted entry limits, other
+  provider limits, byte-budget trimming, legacy-cache migration, write
+  coalescing, and quota-exception recovery.
