@@ -32,9 +32,91 @@ const createMemoryStorage = (): StorageLike => {
   };
 };
 
+const createTrackingStorage = () => {
+  const storage = createMemoryStorage();
+  return {
+    ...storage,
+    setItem: vi.fn(storage.setItem),
+  };
+};
+
+const createQuotaExhaustedStorage = (): StorageLike => ({
+  getItem: () => null,
+  setItem: () => {
+    const error = new Error('storage quota exhausted');
+    error.name = 'QuotaExceededError';
+    throw error;
+  },
+  removeItem: () => undefined,
+  clear: () => undefined,
+});
+
+const QUOTA_CACHE_EXPECTED_MAX_SERIALIZED_BYTES = Math.floor(1.25 * 1024 * 1024);
+
+const makeCodexQuotaRecords = (
+  count: number,
+  options: { windowLabelBytes?: number; includeResetCredits?: boolean } = {}
+): Record<string, CodexQuotaState> =>
+  Object.fromEntries(
+    Array.from({ length: count }, (_, index) => {
+      const authFileKey = `codex-${String(index).padStart(4, '0')}`;
+      return [
+        authFileKey,
+        {
+          status: 'success',
+          windows: options.windowLabelBytes
+            ? [
+                {
+                  id: 'monthly',
+                  label: 'x'.repeat(options.windowLabelBytes),
+                  usedPercent: 10,
+                  resetLabel: 'tomorrow',
+                },
+              ]
+            : [],
+          authFileKey,
+          authFileIdentityVerified: true,
+          fetchedAtMs: index,
+          ...(options.includeResetCredits
+            ? {
+                rateLimitResetCreditsAvailableCount: 1,
+                rateLimitResetCredits: [
+                  {
+                    id: `${authFileKey}-credit`,
+                    status: 'available',
+                    grantedAt: '2026-11-04T00:00:00.000Z',
+                    expiresAt: '2026-12-04T00:00:00.000Z',
+                  },
+                ],
+              }
+            : {}),
+        } satisfies CodexQuotaState,
+      ];
+    })
+  );
+
+const makeClaudeQuotaRecords = (count: number): Record<string, ClaudeQuotaState> =>
+  Object.fromEntries(
+    Array.from({ length: count }, (_, index) => {
+      const authFileKey = `claude-${String(index).padStart(4, '0')}`;
+      return [
+        authFileKey,
+        {
+          status: 'success',
+          windows: [],
+          authFileKey,
+          authFileIdentityVerified: true,
+          fetchedAtMs: index,
+        } satisfies ClaudeQuotaState,
+      ];
+    })
+  );
+
 const readPersistedQuotaState = async () => {
+  const { flushPendingQuotaCacheWrites } = await import('./useQuotaStore');
   const { STORAGE_KEY_QUOTA_CACHE } = await import('@/utils/constants');
   const { obfuscatedStorage } = await import('@/services/storage/secureStorage');
+  flushPendingQuotaCacheWrites();
   const persisted = obfuscatedStorage.getItem<{
     state?: {
       antigravityQuota?: Record<string, AntigravityQuotaState>;
@@ -50,8 +132,10 @@ const readPersistedQuotaState = async () => {
 };
 
 const readPersistedQuotaScope = async () => {
+  const { flushPendingQuotaCacheWrites } = await import('./useQuotaStore');
   const { STORAGE_KEY_QUOTA_CACHE } = await import('@/utils/constants');
   const { obfuscatedStorage } = await import('@/services/storage/secureStorage');
+  flushPendingQuotaCacheWrites();
   const persisted = obfuscatedStorage.getItem<{
     state?: { cacheScope?: string };
   }>(STORAGE_KEY_QUOTA_CACHE);
@@ -65,9 +149,17 @@ describe('useQuotaStore persistence', () => {
     vi.resetModules();
     storage = createMemoryStorage();
     vi.stubGlobal('localStorage', storage);
+    vi.stubGlobal('window', {
+      location: { host: 'cpa.test:8317' },
+      addEventListener: vi.fn(),
+    });
+    vi.stubGlobal('navigator', { userAgent: 'quota-store-test' });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const { flushPendingQuotaCacheWrites } = await import('./useQuotaStore');
+    flushPendingQuotaCacheWrites();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -296,7 +388,7 @@ describe('useQuotaStore persistence', () => {
   });
 
   it('hydrates persisted quota success and error states', async () => {
-    const { useQuotaStore } = await import('./useQuotaStore');
+    const { flushPendingQuotaCacheWrites, useQuotaStore } = await import('./useQuotaStore');
 
     useQuotaStore.getState().setCodexQuota({
       failed: {
@@ -365,6 +457,7 @@ describe('useQuotaStore persistence', () => {
       },
     });
 
+    flushPendingQuotaCacheWrites();
     vi.resetModules();
     const { useQuotaStore: hydratedQuotaStore } = await import('./useQuotaStore');
 
@@ -393,6 +486,34 @@ describe('useQuotaStore persistence', () => {
       error: 'meta failed',
       errorStatus: 502,
     });
+  });
+
+  it('migrates an oversized version-zero Codex cache into the bounded durable cache', async () => {
+    const { STORAGE_KEY_QUOTA_CACHE } = await import('@/utils/constants');
+    const { obfuscatedStorage } = await import('@/services/storage/secureStorage');
+
+    obfuscatedStorage.setItem(STORAGE_KEY_QUOTA_CACHE, {
+      state: {
+        cacheScope: 'legacy-scope',
+        codexQuota: makeCodexQuotaRecords(405, { includeResetCredits: true }),
+      },
+      version: 0,
+    });
+
+    vi.resetModules();
+    const { flushPendingQuotaCacheWrites, useQuotaStore: hydratedQuotaStore } = await import(
+      './useQuotaStore'
+    );
+
+    expect(Object.keys(hydratedQuotaStore.getState().codexQuota)).toHaveLength(400);
+    expect(hydratedQuotaStore.getState().codexQuota['codex-0000']).toBeUndefined();
+    expect(hydratedQuotaStore.getState().codexQuota['codex-0404']).toBeDefined();
+
+    flushPendingQuotaCacheWrites();
+    const persisted = await readPersistedQuotaState();
+    expect(Object.keys(persisted.codexQuota ?? {})).toHaveLength(400);
+    expect(persisted.codexQuota?.['codex-0000']).toBeUndefined();
+    expect(persisted.codexQuota?.['codex-0404']?.rateLimitResetCredits).toBeUndefined();
   });
 
   it('normalizes legacy scalar Codex spend-control limits while hydrating quota cache', async () => {
@@ -556,5 +677,94 @@ describe('useQuotaStore persistence', () => {
       })
     ).toBe(false);
     expect(committed).toBe(false);
+  });
+
+  it('keeps only the 800 most recently refreshed Codex quota states in memory', async () => {
+    const { useQuotaStore } = await import('./useQuotaStore');
+
+    useQuotaStore.getState().setCodexQuota(makeCodexQuotaRecords(805));
+
+    const quota = useQuotaStore.getState().codexQuota;
+    expect(Object.keys(quota)).toHaveLength(800);
+    expect(quota['codex-0000']).toBeUndefined();
+    expect(quota['codex-0804']).toBeDefined();
+  });
+
+  it('persists only the 400 newest compact Codex quota states', async () => {
+    const { useQuotaStore } = await import('./useQuotaStore');
+
+    useQuotaStore.getState().setCodexQuota(
+      makeCodexQuotaRecords(405, { includeResetCredits: true })
+    );
+
+    const persisted = await readPersistedQuotaState();
+    expect(Object.keys(persisted.codexQuota ?? {})).toHaveLength(400);
+    expect(persisted.codexQuota?.['codex-0404']?.rateLimitResetCredits).toBeUndefined();
+  });
+
+  it('persists only the 50 newest records for a non-Codex quota provider', async () => {
+    const { useQuotaStore } = await import('./useQuotaStore');
+
+    useQuotaStore.getState().setClaudeQuota(makeClaudeQuotaRecords(55));
+
+    const persisted = await readPersistedQuotaState();
+    expect(Object.keys(persisted.claudeQuota ?? {})).toHaveLength(50);
+    expect(persisted.claudeQuota?.['claude-0000']).toBeUndefined();
+    expect(persisted.claudeQuota?.['claude-0054']).toBeDefined();
+  });
+
+  it('keeps the durable quota cache envelope below the serialized byte budget', async () => {
+    const { STORAGE_KEY_QUOTA_CACHE } = await import('@/utils/constants');
+    const { obfuscatedStorage } = await import('@/services/storage/secureStorage');
+    const { flushPendingQuotaCacheWrites, useQuotaStore } = await import('./useQuotaStore');
+
+    useQuotaStore.getState().setCodexQuota(makeCodexQuotaRecords(405, { windowLabelBytes: 10_000 }));
+
+    flushPendingQuotaCacheWrites();
+    const persisted = obfuscatedStorage.getItem(STORAGE_KEY_QUOTA_CACHE);
+    const bytes = new TextEncoder().encode(JSON.stringify(persisted)).byteLength;
+    expect(bytes).toBeLessThanOrEqual(QUOTA_CACHE_EXPECTED_MAX_SERIALIZED_BYTES);
+  });
+
+  it('coalesces a refresh burst into one durable quota-cache write', async () => {
+    const trackedStorage = createTrackingStorage();
+    vi.stubGlobal('localStorage', trackedStorage);
+    const { flushPendingQuotaCacheWrites, useQuotaStore } = await import('./useQuotaStore');
+
+    useQuotaStore.getState().setCodexQuota(makeCodexQuotaRecords(1));
+    useQuotaStore.getState().setCodexQuota(makeCodexQuotaRecords(2));
+
+    expect(trackedStorage.setItem).not.toHaveBeenCalled();
+    flushPendingQuotaCacheWrites();
+    expect(trackedStorage.setItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not add a timer while quota-cache persistence waits for browser idle time', async () => {
+    vi.useFakeTimers();
+    const { flushPendingQuotaCacheWrites, useQuotaStore } = await import('./useQuotaStore');
+
+    useQuotaStore.getState().setCodexQuota(makeCodexQuotaRecords(1));
+
+    expect(vi.getTimerCount()).toBe(0);
+    flushPendingQuotaCacheWrites();
+  });
+
+  it('keeps live quota state when browser durable storage reports quota exhaustion', async () => {
+    vi.stubGlobal('localStorage', createQuotaExhaustedStorage());
+    const { flushPendingQuotaCacheWrites, useQuotaStore } = await import('./useQuotaStore');
+
+    expect(() =>
+      useQuotaStore.getState().setCodexQuota({
+        current: {
+          status: 'success',
+          windows: [],
+          authFileKey: 'current',
+          authFileIdentityVerified: true,
+          fetchedAtMs: 1,
+        },
+      })
+    ).not.toThrow();
+    expect(() => flushPendingQuotaCacheWrites()).not.toThrow();
+    expect(useQuotaStore.getState().codexQuota.current).toBeDefined();
   });
 });
