@@ -158,6 +158,9 @@ describe('per-auth rate limit iframe bridge', () => {
       egressConcurrencyEnabled: false,
       maxConcurrentPerEgress: 0,
       egressAccountPriorityAffinityEnabled: false,
+      egressAuthRecoveryTTL: '900s',
+      egress502HandoffTTL: '30s',
+      egress429HandoffTTL: '120s',
     });
   });
 
@@ -215,6 +218,145 @@ describe('per-auth rate limit iframe bridge', () => {
         egress_account_priority_affinity_enabled: true,
       },
       accounts: null,
+    });
+  });
+
+  it('round-trips the three egress recovery TTLs between the modern iframe and YAML', () => {
+    const save = parseRateLimitBridgeRequest({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_recovery_ttl_save',
+      operation: 'save',
+      settings: {
+        enabled: true,
+        rpm: 30,
+        minInterval: '10s',
+        maxQueueWait: '35s',
+        maxPendingRequests: 500,
+        concurrencyEnabled: true,
+        maxConcurrentPerAuth: 8,
+        affinityWait: '15s',
+        allCandidatesWait: '30s',
+        retryInitialInterval: '250ms',
+        retryMaxInterval: '1s',
+        rebindSessionAfterAffinityWait: false,
+        egressConcurrencyEnabled: true,
+        maxConcurrentPerEgress: 12,
+        egressAccountPriorityAffinityEnabled: true,
+        egressAuthRecoveryTTL: '900s',
+        egress502HandoffTTL: '30s',
+        egress429HandoffTTL: '120s',
+      },
+    });
+
+    expect(save).toMatchObject({
+      operation: 'save',
+      hasEgressRecoverySettings: true,
+      settings: {
+        egressAuthRecoveryTTL: '900s',
+        egress502HandoffTTL: '30s',
+        egress429HandoffTTL: '120s',
+      },
+    });
+    if (!save || save.operation !== 'save') throw new Error('expected egress recovery TTL save');
+
+    expect(buildRateLimitConfigPatch(save)).toMatchObject({
+      concurrency: expect.objectContaining({
+        egress_auth_recovery_ttl: '900s',
+        egress_502_handoff_ttl: '30s',
+        egress_429_handoff_ttl: '120s',
+      }),
+    });
+    expect(
+      normalizeRateLimitBridgeSettings({
+        enabled: true,
+        default: { rpm: 30, min_interval: '10s', max_concurrent_per_auth: 8 },
+        max_queue_wait: '35s',
+        max_pending_requests: 500,
+        concurrency: {
+          enabled: true,
+          egress_enabled: true,
+          max_concurrent_per_egress: 12,
+          egress_account_priority_affinity_enabled: true,
+          egress_auth_recovery_ttl: '900s',
+          egress_502_handoff_ttl: '30s',
+          egress_429_handoff_ttl: '120s',
+        },
+      })
+    ).toMatchObject({
+      egressAuthRecoveryTTL: '900s',
+      egress502HandoffTTL: '30s',
+      egress429HandoffTTL: '120s',
+    });
+  });
+
+  it('rejects a partial egress recovery TTL group', () => {
+    expect(
+      parseRateLimitBridgeRequest({
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'egress_recovery_ttl_partial',
+        operation: 'save',
+        settings: {
+          enabled: true,
+          rpm: 30,
+          minInterval: '10s',
+          maxQueueWait: '35s',
+          maxPendingRequests: 500,
+          concurrencyEnabled: true,
+          maxConcurrentPerAuth: 8,
+          affinityWait: '15s',
+          allCandidatesWait: '30s',
+          retryInitialInterval: '250ms',
+          retryMaxInterval: '1s',
+          rebindSessionAfterAffinityWait: false,
+          egressConcurrencyEnabled: true,
+          maxConcurrentPerEgress: 12,
+          egressAccountPriorityAffinityEnabled: true,
+          egressAuthRecoveryTTL: '15m',
+        },
+      })
+    ).toBeNull();
+  });
+
+  it('rejects non-canonical, sub-second, and overflow egress recovery TTLs', () => {
+    const completeSettings = {
+      enabled: true,
+      rpm: 30,
+      minInterval: '10s',
+      maxQueueWait: '35s',
+      maxPendingRequests: 500,
+      concurrencyEnabled: true,
+      maxConcurrentPerAuth: 8,
+      affinityWait: '15s',
+      allCandidatesWait: '30s',
+      retryInitialInterval: '250ms',
+      retryMaxInterval: '1s',
+      rebindSessionAfterAffinityWait: false,
+      egressConcurrencyEnabled: true,
+      maxConcurrentPerEgress: 12,
+      egressAccountPriorityAffinityEnabled: true,
+      egressAuthRecoveryTTL: '900s',
+      egress502HandoffTTL: '30s',
+      egress429HandoffTTL: '120s',
+    };
+    const invalidTTLs = [
+      { egressAuthRecoveryTTL: '999ms' },
+      { egress502HandoffTTL: '0.5s' },
+      { egress429HandoffTTL: '9223372037s' },
+      { egressAuthRecoveryTTL: '15m' },
+    ];
+
+    invalidTTLs.forEach((overrides, index) => {
+      expect(
+        parseRateLimitBridgeRequest({
+          protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+          pluginID: 'per-auth-rate-limit',
+          requestID: `egress_recovery_ttl_invalid_${index}`,
+          operation: 'save',
+          settings: { ...completeSettings, ...overrides },
+        })
+      ).toBeNull();
     });
   });
 
@@ -357,6 +499,9 @@ describe('per-auth rate limit iframe bridge', () => {
       egressConcurrencyEnabled: true,
       maxConcurrentPerEgress: 4,
       egressAccountPriorityAffinityEnabled: true,
+      egressAuthRecoveryTTL: '900s',
+      egress502HandoffTTL: '30s',
+      egress429HandoffTTL: '120s',
     };
     const invalidSettings = [
       {
@@ -771,6 +916,9 @@ describe('per-auth rate limit iframe bridge', () => {
       egressConcurrencyEnabled: true,
       maxConcurrentPerEgress: 4,
       egressAccountPriorityAffinityEnabled: true,
+      egressAuthRecoveryTTL: '900s',
+      egress502HandoffTTL: '30s',
+      egress429HandoffTTL: '120s',
     };
     let savedConfig: Record<string, unknown> = {
       enabled: true,
@@ -969,6 +1117,9 @@ describe('per-auth rate limit iframe bridge', () => {
         egress_enabled: true,
         max_concurrent_per_egress: 12,
         egress_account_priority_affinity_enabled: true,
+        egress_auth_recovery_ttl: '15m',
+        egress_502_handoff_ttl: '30s',
+        egress_429_handoff_ttl: '2m',
       },
     };
     const handle = createRateLimitBridgeHost({
@@ -1013,6 +1164,9 @@ describe('per-auth rate limit iframe bridge', () => {
         egress_enabled: true,
         max_concurrent_per_egress: 12,
         egress_account_priority_affinity_enabled: true,
+        egress_auth_recovery_ttl: '15m',
+        egress_502_handoff_ttl: '30s',
+        egress_429_handoff_ttl: '2m',
       }),
     });
   });

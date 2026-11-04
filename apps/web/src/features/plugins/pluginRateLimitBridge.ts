@@ -12,12 +12,19 @@ const maxRPM = 2_147_483_647;
 const maxPendingRequests = 2_147_483_647;
 const maxConcurrentPerAuth = 2_147_483_647;
 const maxConcurrentPerEgress = 2_147_483_647;
+// Go's time.Duration is a signed int64 count of nanoseconds. Keep values written
+// by the bridge within the largest whole-second duration the CPA plugin can parse.
+const maxEgressRecoveryTTLSeconds = 9_223_372_036;
+const egressRecoveryTTLPattern = /^(0|[1-9]\d*)s$/;
 const defaultMaxQueueWait = '35s';
 const defaultMaxPendingRequests = 500;
 const defaultMaxConcurrentPerAuth = 0;
 const defaultEgressConcurrencyEnabled = false;
 const defaultMaxConcurrentPerEgress = 0;
 const defaultEgressAccountPriorityAffinityEnabled = false;
+const defaultEgressAuthRecoveryTTL = '900s';
+const defaultEgress502HandoffTTL = '30s';
+const defaultEgress429HandoffTTL = '120s';
 const defaultAffinityWait = '15s';
 const defaultAllCandidatesWait = '30s';
 const defaultRetryInitialInterval = '250ms';
@@ -37,6 +44,11 @@ const egressConcurrencySettingKeys = [
   'maxConcurrentPerEgress',
 ] as const;
 const egressAccountPriorityAffinitySettingKey = 'egressAccountPriorityAffinityEnabled';
+const egressRecoverySettingKeys = [
+  'egressAuthRecoveryTTL',
+  'egress502HandoffTTL',
+  'egress429HandoffTTL',
+] as const;
 
 export interface RateLimitBridgeSettings {
   enabled: boolean;
@@ -54,6 +66,9 @@ export interface RateLimitBridgeSettings {
   egressConcurrencyEnabled: boolean;
   maxConcurrentPerEgress: number;
   egressAccountPriorityAffinityEnabled: boolean;
+  egressAuthRecoveryTTL: string;
+  egress502HandoffTTL: string;
+  egress429HandoffTTL: string;
 }
 
 export interface RateLimitBridgeLoadRequest {
@@ -75,6 +90,8 @@ export interface RateLimitBridgeSaveRequest {
   hasEgressConcurrencySettings: boolean;
   /** True when the producer understands and explicitly set the priority-affinity toggle. */
   hasEgressAccountPriorityAffinitySetting: boolean;
+  /** True when the producer supplied all three egress recovery handoff TTLs. */
+  hasEgressRecoverySettings: boolean;
 }
 
 export type RateLimitBridgeRequest = RateLimitBridgeLoadRequest | RateLimitBridgeSaveRequest;
@@ -124,6 +141,17 @@ const isValidMaxConcurrentPerEgress = (value: unknown): value is number =>
 const isValidDuration = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 64 && durationPattern.test(value.trim());
 
+// The iframe saves these three fields in canonical whole seconds. Do not accept
+// generic Go duration syntax here: the plugin intentionally rejects sub-second
+// handoff values, and a duration above this bound overflows Go time.Duration.
+const isValidEgressRecoveryTTL = (value: unknown): value is string => {
+  if (typeof value !== 'string' || value.length > 64) return false;
+  const match = egressRecoveryTTLPattern.exec(value.trim());
+  if (!match) return false;
+  const seconds = Number(match[1]);
+  return Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= maxEgressRecoveryTTLSeconds;
+};
+
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
@@ -145,6 +173,10 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
     value,
     egressAccountPriorityAffinitySettingKey
   );
+  const hasAnyEgressRecoverySetting = egressRecoverySettingKeys.some((key) => hasOwn(value, key));
+  const hasEveryEgressRecoverySetting = egressRecoverySettingKeys.every((key) =>
+    hasOwn(value, key)
+  );
   if (hasAnyAccountConcurrencySetting && !hasEveryAccountConcurrencySetting) return null;
   if (
     hasAnyEgressConcurrencySetting &&
@@ -155,6 +187,14 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
   if (
     hasEgressAccountPriorityAffinitySetting &&
     (!hasEveryAccountConcurrencySetting || !hasEveryEgressConcurrencySetting)
+  ) {
+    return null;
+  }
+  if (
+    hasAnyEgressRecoverySetting &&
+    (!hasEveryAccountConcurrencySetting ||
+      !hasEveryEgressConcurrencySetting ||
+      !hasEveryEgressRecoverySetting)
   ) {
     return null;
   }
@@ -177,6 +217,12 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
     typeof value.retryInitialInterval === 'string' ? value.retryInitialInterval.trim() : '';
   const retryMaxInterval =
     typeof value.retryMaxInterval === 'string' ? value.retryMaxInterval.trim() : '';
+  const egressAuthRecoveryTTL =
+    typeof value.egressAuthRecoveryTTL === 'string' ? value.egressAuthRecoveryTTL.trim() : '';
+  const egress502HandoffTTL =
+    typeof value.egress502HandoffTTL === 'string' ? value.egress502HandoffTTL.trim() : '';
+  const egress429HandoffTTL =
+    typeof value.egress429HandoffTTL === 'string' ? value.egress429HandoffTTL.trim() : '';
   if (
     typeof parsedEnabled !== 'boolean' ||
     !isValidRPM(parsedRPM) ||
@@ -195,7 +241,11 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
       (typeof parsedEgressConcurrencyEnabled !== 'boolean' ||
         !isValidMaxConcurrentPerEgress(parsedMaxConcurrentPerEgress))) ||
     (hasEgressAccountPriorityAffinitySetting &&
-      typeof parsedEgressAccountPriorityAffinityEnabled !== 'boolean')
+      typeof parsedEgressAccountPriorityAffinityEnabled !== 'boolean') ||
+    (hasAnyEgressRecoverySetting &&
+      (!isValidEgressRecoveryTTL(egressAuthRecoveryTTL) ||
+        !isValidEgressRecoveryTTL(egress502HandoffTTL) ||
+        !isValidEgressRecoveryTTL(egress429HandoffTTL)))
   ) {
     return null;
   }
@@ -218,6 +268,18 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
   const normalizedEgressAccountPriorityAffinityEnabled = hasEgressAccountPriorityAffinitySetting
     ? parsedEgressAccountPriorityAffinityEnabled === true
     : defaultEgressAccountPriorityAffinityEnabled;
+  const normalizedEgressAuthRecoveryTTL =
+    hasAnyEgressRecoverySetting && isValidEgressRecoveryTTL(egressAuthRecoveryTTL)
+      ? egressAuthRecoveryTTL
+      : defaultEgressAuthRecoveryTTL;
+  const normalizedEgress502HandoffTTL =
+    hasAnyEgressRecoverySetting && isValidEgressRecoveryTTL(egress502HandoffTTL)
+      ? egress502HandoffTTL
+      : defaultEgress502HandoffTTL;
+  const normalizedEgress429HandoffTTL =
+    hasAnyEgressRecoverySetting && isValidEgressRecoveryTTL(egress429HandoffTTL)
+      ? egress429HandoffTTL
+      : defaultEgress429HandoffTTL;
   if (
     normalizedEgressAccountPriorityAffinityEnabled &&
     (!normalizedConcurrencyEnabled ||
@@ -242,6 +304,9 @@ const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
     egressConcurrencyEnabled: normalizedEgressConcurrencyEnabled,
     maxConcurrentPerEgress: normalizedMaxConcurrentPerEgress,
     egressAccountPriorityAffinityEnabled: normalizedEgressAccountPriorityAffinityEnabled,
+    egressAuthRecoveryTTL: normalizedEgressAuthRecoveryTTL,
+    egress502HandoffTTL: normalizedEgress502HandoffTTL,
+    egress429HandoffTTL: normalizedEgress429HandoffTTL,
   };
 };
 
@@ -274,6 +339,9 @@ export const parseRateLimitBridgeRequest = (value: unknown): RateLimitBridgeRequ
   const hasEgressAccountPriorityAffinitySetting = isRecord(settingsValue)
     ? hasOwn(settingsValue, egressAccountPriorityAffinitySettingKey)
     : false;
+  const hasEgressRecoverySettings = isRecord(settingsValue)
+    ? egressRecoverySettingKeys.every((key) => hasOwn(settingsValue, key))
+    : false;
   return settings
     ? {
         protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
@@ -284,6 +352,7 @@ export const parseRateLimitBridgeRequest = (value: unknown): RateLimitBridgeRequ
         legacy,
         hasEgressConcurrencySettings,
         hasEgressAccountPriorityAffinitySetting,
+        hasEgressRecoverySettings,
       }
     : null;
 };
@@ -324,6 +393,11 @@ export const buildRateLimitConfigPatch = (
   if (request.hasEgressAccountPriorityAffinitySetting) {
     concurrencyPatch.egress_account_priority_affinity_enabled =
       request.settings.egressAccountPriorityAffinityEnabled;
+  }
+  if (request.hasEgressRecoverySettings) {
+    concurrencyPatch.egress_auth_recovery_ttl = request.settings.egressAuthRecoveryTTL;
+    concurrencyPatch.egress_502_handoff_ttl = request.settings.egress502HandoffTTL;
+    concurrencyPatch.egress_429_handoff_ttl = request.settings.egress429HandoffTTL;
   }
 
   return {
@@ -383,6 +457,18 @@ export const normalizeRateLimitBridgeSettings = (
       : '';
   const candidateRetryMaxInterval =
     typeof concurrency.retry_max_interval === 'string' ? concurrency.retry_max_interval.trim() : '';
+  const candidateEgressAuthRecoveryTTL =
+    typeof concurrency.egress_auth_recovery_ttl === 'string'
+      ? concurrency.egress_auth_recovery_ttl.trim()
+      : '';
+  const candidateEgress502HandoffTTL =
+    typeof concurrency.egress_502_handoff_ttl === 'string'
+      ? concurrency.egress_502_handoff_ttl.trim()
+      : '';
+  const candidateEgress429HandoffTTL =
+    typeof concurrency.egress_429_handoff_ttl === 'string'
+      ? concurrency.egress_429_handoff_ttl.trim()
+      : '';
 
   return {
     enabled: config.enabled !== false,
@@ -418,6 +504,15 @@ export const normalizeRateLimitBridgeSettings = (
       : defaultMaxConcurrentPerEgress,
     egressAccountPriorityAffinityEnabled:
       concurrency.egress_account_priority_affinity_enabled === true,
+    egressAuthRecoveryTTL: isValidDuration(candidateEgressAuthRecoveryTTL)
+      ? candidateEgressAuthRecoveryTTL
+      : defaultEgressAuthRecoveryTTL,
+    egress502HandoffTTL: isValidDuration(candidateEgress502HandoffTTL)
+      ? candidateEgress502HandoffTTL
+      : defaultEgress502HandoffTTL,
+    egress429HandoffTTL: isValidDuration(candidateEgress429HandoffTTL)
+      ? candidateEgress429HandoffTTL
+      : defaultEgress429HandoffTTL,
   };
 };
 
