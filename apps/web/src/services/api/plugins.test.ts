@@ -87,6 +87,45 @@ describe('plugin API config requests', () => {
   });
 });
 
+describe('rate-limit egress diagnostics API', () => {
+  it('uses the fixed diagnostics path with a scoped CPA request', async () => {
+    const requestScope = Object.freeze({
+      apiBase: 'https://cpa.example.test',
+      managementKey: 'management-key',
+    });
+    const scopedRequestConfig = {
+      baseURL: 'https://cpa.example.test/v0/management',
+      headers: { Authorization: 'Bearer management-key' },
+      cpampScopedRequest: true,
+    };
+    mocks.createScopedApiRequestConfig.mockReturnValue(scopedRequestConfig);
+    mocks.get.mockResolvedValue({ generated_at: '2026-11-05T12:00:00Z' });
+
+    await pluginsApi.getRateLimitEgressDiagnostics(100, requestScope);
+
+    expect(mocks.createScopedApiRequestConfig).toHaveBeenCalledWith(requestScope);
+    expect(mocks.get).toHaveBeenCalledWith(
+      '/plugins/per-auth-rate-limit/egress-diagnostics',
+      {
+        ...scopedRequestConfig,
+        params: { limit: 100 },
+      }
+    );
+  });
+
+  it('rejects an unsafe diagnostics limit without issuing a request', async () => {
+    for (const limit of [0, -1, 1025, 1.5, Number.NaN]) {
+      await expect(pluginsApi.getRateLimitEgressDiagnostics(limit)).rejects.toThrow(
+        'invalid diagnostics limit'
+      );
+    }
+
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.createScopedApiRequestConfig).not.toHaveBeenCalled();
+  });
+});
+
+
 describe('plugin API normalizers', () => {
   it('normalizes plugin list responses and filters invalid entries', () => {
     const result = normalizePluginList({

@@ -206,6 +206,8 @@ function PluginResourcePageContent() {
         pluginsApi.getConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID, rateLimitBridgeRequestScope),
       patchConfig: (patch) =>
         pluginsApi.patchConfig(RATE_LIMIT_BRIDGE_PLUGIN_ID, patch, rateLimitBridgeRequestScope),
+      getDiagnostics: (limit) =>
+        pluginsApi.getRateLimitEgressDiagnostics(limit, rateLimitBridgeRequestScope),
       reply: (source, response) => {
         replyToTrustedPluginFrame(source, rateLimitBridgeFrameOrigin, response);
       },

@@ -1304,4 +1304,203 @@ describe('per-auth rate limit iframe bridge', () => {
       'https://cpa.kyon666.top'
     );
   });
-});
+
+  it('accepts a bounded diagnostics request and defaults its event limit', () => {
+    const explicit = parseRateLimitBridgeRequest({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_diag_100',
+      operation: 'diagnostics',
+      limit: 100,
+    });
+    const implicit = parseRateLimitBridgeRequest({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_diag_default',
+      operation: 'diagnostics',
+    });
+
+    expect(explicit).toEqual({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_diag_100',
+      operation: 'diagnostics',
+      limit: 100,
+    });
+    expect(implicit).toEqual({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_diag_default',
+      operation: 'diagnostics',
+      limit: 100,
+    });
+  });
+
+  it('rejects invalid diagnostics limits and strips arbitrary routing fields', () => {
+    const base = {
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_diag_invalid',
+      operation: 'diagnostics',
+    } as const;
+
+    for (const limit of [0, -1, 1025, 1.5, '100', null]) {
+      expect(parseRateLimitBridgeRequest({ ...base, limit })).toBeNull();
+    }
+
+    expect(
+      parseRateLimitBridgeRequest({
+        ...base,
+        requestID: 'egress_diag_stripped',
+        limit: 1,
+        url: 'https://attacker.invalid/management',
+        path: '/v0/management/config',
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer should-not-forward' },
+      })
+    ).toEqual({
+      protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+      pluginID: 'per-auth-rate-limit',
+      requestID: 'egress_diag_stripped',
+      operation: 'diagnostics',
+      limit: 1,
+    });
+  });
+
+  it('reads diagnostics only for the trusted frame and returns a bounded safe projection', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const responses: unknown[] = [];
+    const getDiagnostics = vi.fn(async (limit: number) => {
+      expect(limit).toBe(1);
+      return {
+        generated_at: '2026-11-05T12:00:00Z',
+        access_token: 'never-forward',
+        bindings: [
+          {
+            egress_host: '64.8.252.252',
+            owner_auth_id: 'account-a',
+            hold_kind: 'overload_502',
+            hold_until: '2026-11-05T12:00:30Z',
+            updated_at: '2026-11-05T12:00:00Z',
+            in_flight: 1,
+            release_after_in_flight: true,
+            proxy_url: 'http://user:pass@64.8.252.252:8080',
+          },
+          {
+            egress_host: 'user:pass@invalid.example',
+            owner_auth_id: 'must-not-render',
+            updated_at: '2026-11-05T12:00:00Z',
+            in_flight: 0,
+          },
+        ],
+        events: [
+          {
+            at: '2026-11-05T12:00:00Z',
+            event: 'owner_bound',
+            reason: 'healthy',
+            egress_host: '64.8.252.252',
+            auth_id: 'account-a',
+            hold_kind: 'overload_502',
+            hold_until: '2026-11-05T12:00:30Z',
+            refresh_token: 'never-forward',
+          },
+          {
+            at: '2026-11-05T12:00:01Z',
+            event: 'owner_released',
+            egress_host: '64.8.252.252',
+            auth_id: 'account-a',
+          },
+        ],
+      };
+    });
+    const getConfig = vi.fn(async () => ({}));
+    const patchConfig = vi.fn(async () => undefined);
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig,
+      patchConfig,
+      getDiagnostics,
+      reply: (_source, response) => responses.push(response),
+    });
+
+    await handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'egress_diag_safe',
+        operation: 'diagnostics',
+        limit: 1,
+      },
+      origin: 'https://cpa.kyon666.top',
+      source: trustedSource,
+    });
+
+    expect(getDiagnostics).toHaveBeenCalledTimes(1);
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(responses).toEqual([
+      {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'egress_diag_safe',
+        operation: 'result',
+        ok: true,
+        diagnostics: {
+          generatedAt: '2026-11-05T12:00:00Z',
+          bindings: [
+            {
+              egressHost: '64.8.252.252',
+              ownerAuthID: 'account-a',
+              holdKind: 'overload_502',
+              holdUntil: '2026-11-05T12:00:30Z',
+              updatedAt: '2026-11-05T12:00:00Z',
+              inFlight: 1,
+              releaseAfterInFlight: true,
+            },
+          ],
+          events: [
+            {
+              at: '2026-11-05T12:00:01Z',
+              event: 'owner_released',
+              egressHost: '64.8.252.252',
+              authID: 'account-a',
+            },
+          ],
+        },
+      },
+    ]);
+    const serialized = JSON.stringify(responses);
+    expect(serialized).not.toContain('proxy_url');
+    expect(serialized).not.toContain('access_token');
+    expect(serialized).not.toContain('refresh_token');
+    expect(serialized).not.toContain('user:pass');
+    expect(serialized).not.toContain('must-not-render');
+  });
+
+  it('does not invoke diagnostics for an untrusted frame', async () => {
+    const trustedSource = {} as MessageEventSource;
+    const getDiagnostics = vi.fn(async () => ({}));
+    const handle = createRateLimitBridgeHost({
+      expectedOrigin: 'https://cpa.kyon666.top',
+      isActiveFrameSource: (source) => source === trustedSource,
+      getConfig: async () => ({}),
+      patchConfig: async () => undefined,
+      getDiagnostics,
+      reply: () => undefined,
+    });
+
+    await handle({
+      data: {
+        protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+        pluginID: 'per-auth-rate-limit',
+        requestID: 'egress_diag_untrusted',
+        operation: 'diagnostics',
+        limit: 100,
+      },
+      origin: 'https://evil.invalid',
+      source: trustedSource,
+    });
+
+    expect(getDiagnostics).not.toHaveBeenCalled();
+  });});

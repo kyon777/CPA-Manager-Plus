@@ -30,6 +30,12 @@ const defaultAllCandidatesWait = '30s';
 const defaultRetryInitialInterval = '250ms';
 const defaultRetryMaxInterval = '1s';
 const defaultRebindSessionAfterAffinityWait = true;
+const defaultEgressDiagnosticsLimit = 100;
+const maxEgressDiagnosticsLimit = 1024;
+const maxEgressDiagnosticBindings = 4096;
+const maxEgressDiagnosticStringLength = 512;
+const maxEgressDiagnosticReasonLength = 128;
+const maxEgressDiagnosticInFlight = 4_294_967_295;
 const accountConcurrencySettingKeys = [
   'concurrencyEnabled',
   'maxConcurrentPerAuth',
@@ -94,28 +100,85 @@ export interface RateLimitBridgeSaveRequest {
   hasEgressRecoverySettings: boolean;
 }
 
-export type RateLimitBridgeRequest = RateLimitBridgeLoadRequest | RateLimitBridgeSaveRequest;
+export interface RateLimitBridgeDiagnosticsRequest {
+  protocol: typeof RATE_LIMIT_BRIDGE_PROTOCOL;
+  pluginID: typeof RATE_LIMIT_BRIDGE_PLUGIN_ID;
+  requestID: string;
+  operation: 'diagnostics';
+  limit: number;
+}
+
+export type RateLimitBridgeRequest =
+  | RateLimitBridgeLoadRequest
+  | RateLimitBridgeSaveRequest
+  | RateLimitBridgeDiagnosticsRequest;
+
+export interface RateLimitEgressDiagnosticBinding {
+  egressHost: string;
+  ownerAuthID?: string;
+  holdKind?: string;
+  holdUntil?: string;
+  updatedAt: string;
+  inFlight: number;
+  releaseAfterInFlight?: boolean;
+}
+
+export interface RateLimitEgressDiagnosticEvent {
+  at: string;
+  event: string;
+  reason?: string;
+  egressHost?: string;
+  authID?: string;
+  holdKind?: string;
+  holdUntil?: string;
+}
+
+export interface RateLimitEgressDiagnostics {
+  generatedAt: string;
+  bindings: RateLimitEgressDiagnosticBinding[];
+  events: RateLimitEgressDiagnosticEvent[];
+}
+
+type RateLimitBridgeSettingsSuccess = {
+  protocol: typeof RATE_LIMIT_BRIDGE_PROTOCOL;
+  pluginID: typeof RATE_LIMIT_BRIDGE_PLUGIN_ID;
+  requestID: string;
+  operation: 'result';
+  ok: true;
+  settings: RateLimitBridgeSettings;
+};
+
+type RateLimitBridgeDiagnosticsSuccess = {
+  protocol: typeof RATE_LIMIT_BRIDGE_PROTOCOL;
+  pluginID: typeof RATE_LIMIT_BRIDGE_PLUGIN_ID;
+  requestID: string;
+  operation: 'result';
+  ok: true;
+  diagnostics: RateLimitEgressDiagnostics;
+};
+
+type RateLimitBridgeFailure = {
+  protocol: typeof RATE_LIMIT_BRIDGE_PROTOCOL;
+  pluginID: typeof RATE_LIMIT_BRIDGE_PLUGIN_ID;
+  requestID: string;
+  operation: 'result';
+  ok: false;
+  error: string;
+};
 
 export type RateLimitBridgeResponse =
-  | {
-      protocol: typeof RATE_LIMIT_BRIDGE_PROTOCOL;
-      pluginID: typeof RATE_LIMIT_BRIDGE_PLUGIN_ID;
-      requestID: string;
-      operation: 'result';
-      ok: true;
-      settings: RateLimitBridgeSettings;
-    }
-  | {
-      protocol: typeof RATE_LIMIT_BRIDGE_PROTOCOL;
-      pluginID: typeof RATE_LIMIT_BRIDGE_PLUGIN_ID;
-      requestID: string;
-      operation: 'result';
-      ok: false;
-      error: string;
-    };
+  | RateLimitBridgeSettingsSuccess
+  | RateLimitBridgeDiagnosticsSuccess
+  | RateLimitBridgeFailure;
 
 const isValidRequestID = (value: unknown): value is string =>
   typeof value === 'string' && requestIDPattern.test(value);
+
+const isValidDiagnosticsLimit = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isSafeInteger(value) &&
+  value >= 1 &&
+  value <= maxEgressDiagnosticsLimit;
 
 const isValidRPM = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= maxRPM;
@@ -154,6 +217,141 @@ const isValidEgressRecoveryTTL = (value: unknown): value is string => {
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
+
+const diagnosticEventNames = new Set([
+  'owner_pending',
+  'owner_bound',
+  'failure_hold',
+  'owner_recovered',
+  'owner_released',
+]);
+
+const diagnosticHoldKinds = new Set(['auth_recovery', 'overload_502', 'quota_429']);
+
+const normalizeDiagnosticText = (value: unknown, maximumLength: number): string => {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > maximumLength ||
+    /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    return '';
+  }
+  return normalized;
+};
+
+const normalizeDiagnosticTimestamp = (value: unknown): string => {
+  const normalized = normalizeDiagnosticText(value, 64);
+  return normalized && Number.isFinite(Date.parse(normalized)) ? normalized : '';
+};
+
+const normalizeDiagnosticEgressHost = (value: unknown): string => {
+  const normalized = normalizeDiagnosticText(value, 256);
+  if (!normalized || /[@\/\\\s]/u.test(normalized)) return '';
+
+  if (normalized.includes(':')) {
+    if (normalized.indexOf(':') === normalized.lastIndexOf(':')) return '';
+    try {
+      new URL('http://[' + normalized + ']');
+      return normalized;
+    } catch {
+      return '';
+    }
+  }
+
+  return /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,254}[A-Za-z0-9])?$/u.test(normalized)
+    ? normalized
+    : '';
+};
+
+const normalizeDiagnosticHoldKind = (value: unknown): string => {
+  const normalized = normalizeDiagnosticText(value, 64);
+  return diagnosticHoldKinds.has(normalized) ? normalized : '';
+};
+
+const normalizeDiagnosticEventName = (value: unknown): string => {
+  const normalized = normalizeDiagnosticText(value, 64);
+  return diagnosticEventNames.has(normalized) ? normalized : '';
+};
+
+const normalizeRateLimitEgressDiagnosticBinding = (
+  value: unknown
+): RateLimitEgressDiagnosticBinding | null => {
+  if (!isRecord(value)) return null;
+  const egressHost = normalizeDiagnosticEgressHost(value.egress_host ?? value.egressHost);
+  const updatedAt = normalizeDiagnosticTimestamp(value.updated_at ?? value.updatedAt);
+  const inFlight = value.in_flight ?? value.inFlight;
+  if (
+    !egressHost ||
+    !updatedAt ||
+    typeof inFlight !== 'number' ||
+    !Number.isSafeInteger(inFlight) ||
+    inFlight < 0 ||
+    inFlight > maxEgressDiagnosticInFlight
+  ) {
+    return null;
+  }
+
+  const binding: RateLimitEgressDiagnosticBinding = { egressHost, updatedAt, inFlight };
+  const ownerAuthID = normalizeDiagnosticText(value.owner_auth_id ?? value.ownerAuthID, maxEgressDiagnosticStringLength);
+  const holdKind = normalizeDiagnosticHoldKind(value.hold_kind ?? value.holdKind);
+  const holdUntil = normalizeDiagnosticTimestamp(value.hold_until ?? value.holdUntil);
+  if (ownerAuthID) binding.ownerAuthID = ownerAuthID;
+  if (holdKind) binding.holdKind = holdKind;
+  if (holdUntil) binding.holdUntil = holdUntil;
+  if (value.release_after_in_flight === true || value.releaseAfterInFlight === true) {
+    binding.releaseAfterInFlight = true;
+  }
+  return binding;
+};
+
+const normalizeRateLimitEgressDiagnosticEvent = (
+  value: unknown
+): RateLimitEgressDiagnosticEvent | null => {
+  if (!isRecord(value)) return null;
+  const at = normalizeDiagnosticTimestamp(value.at);
+  const event = normalizeDiagnosticEventName(value.event);
+  if (!at || !event) return null;
+
+  const result: RateLimitEgressDiagnosticEvent = { at, event };
+  const reason = normalizeDiagnosticText(value.reason, maxEgressDiagnosticReasonLength);
+  const egressHost = normalizeDiagnosticEgressHost(value.egress_host ?? value.egressHost);
+  const authID = normalizeDiagnosticText(value.auth_id ?? value.authID, maxEgressDiagnosticStringLength);
+  const holdKind = normalizeDiagnosticHoldKind(value.hold_kind ?? value.holdKind);
+  const holdUntil = normalizeDiagnosticTimestamp(value.hold_until ?? value.holdUntil);
+  if (reason) result.reason = reason;
+  if (egressHost) result.egressHost = egressHost;
+  if (authID) result.authID = authID;
+  if (holdKind) result.holdKind = holdKind;
+  if (holdUntil) result.holdUntil = holdUntil;
+  return result;
+};
+
+export const normalizeRateLimitEgressDiagnostics = (
+  value: unknown,
+  limit: number
+): RateLimitEgressDiagnostics | null => {
+  if (!isRecord(value) || !isValidDiagnosticsLimit(limit)) return null;
+  const generatedAt = normalizeDiagnosticTimestamp(value.generated_at ?? value.generatedAt);
+  if (!generatedAt) return null;
+
+  const bindings = Array.isArray(value.bindings)
+    ? value.bindings
+        .slice(0, maxEgressDiagnosticBindings)
+        .map((entry) => normalizeRateLimitEgressDiagnosticBinding(entry))
+        .filter((entry): entry is RateLimitEgressDiagnosticBinding => entry !== null)
+    : [];
+  const events = Array.isArray(value.events)
+    ? value.events
+        .slice(-maxEgressDiagnosticsLimit)
+        .map((entry) => normalizeRateLimitEgressDiagnosticEvent(entry))
+        .filter((entry): entry is RateLimitEgressDiagnosticEvent => entry !== null)
+        .slice(-limit)
+    : [];
+
+  return { generatedAt, bindings, events };
+};
 
 const parseSettings = (value: unknown): RateLimitBridgeSettings | null => {
   if (!isRecord(value)) return null;
@@ -326,6 +524,18 @@ export const parseRateLimitBridgeRequest = (value: unknown): RateLimitBridgeRequ
       requestID: value.requestID,
       operation: 'load',
     };
+  }
+  if (value.operation === 'diagnostics') {
+    const limit = hasOwn(value, 'limit') ? value.limit : defaultEgressDiagnosticsLimit;
+    return isValidDiagnosticsLimit(limit)
+      ? {
+          protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+          pluginID: RATE_LIMIT_BRIDGE_PLUGIN_ID,
+          requestID: value.requestID,
+          operation: 'diagnostics',
+          limit,
+        }
+      : null;
   }
   if (value.operation !== 'save') return null;
   const settingsValue = value.settings;
@@ -517,7 +727,7 @@ export const normalizeRateLimitBridgeSettings = (
 };
 
 export const createRateLimitBridgeSuccess = (
-  request: RateLimitBridgeRequest,
+  request: RateLimitBridgeLoadRequest | RateLimitBridgeSaveRequest,
   settings: RateLimitBridgeSettings
 ): RateLimitBridgeResponse => ({
   protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
@@ -526,6 +736,18 @@ export const createRateLimitBridgeSuccess = (
   operation: 'result',
   ok: true,
   settings,
+});
+
+export const createRateLimitBridgeDiagnosticsSuccess = (
+  request: RateLimitBridgeDiagnosticsRequest,
+  diagnostics: RateLimitEgressDiagnostics
+): RateLimitBridgeResponse => ({
+  protocol: RATE_LIMIT_BRIDGE_PROTOCOL,
+  pluginID: RATE_LIMIT_BRIDGE_PLUGIN_ID,
+  requestID: request.requestID,
+  operation: 'result',
+  ok: true,
+  diagnostics,
 });
 
 export const createRateLimitBridgeFailure = (
@@ -551,6 +773,7 @@ export interface RateLimitBridgeHostOptions {
   isActiveFrameSource: (source: MessageEventSource | null) => boolean;
   getConfig: () => Promise<PluginConfigObject>;
   patchConfig: (patch: PluginConfigObject) => Promise<unknown>;
+  getDiagnostics?: (limit: number) => Promise<unknown>;
   reply: (source: MessageEventSource | null, response: RateLimitBridgeResponse) => void;
 }
 
@@ -574,6 +797,32 @@ export const createRateLimitBridgeHost =
         expectedOrigin: options.expectedOrigin,
       });
       if (!request) return;
+
+      if (request.operation === 'diagnostics') {
+        if (!options.getDiagnostics) {
+          options.reply(event.source, createRateLimitBridgeFailure(request, '出口绑定监控不可用'));
+          return;
+        }
+        try {
+          const diagnostics = normalizeRateLimitEgressDiagnostics(
+            await options.getDiagnostics(request.limit),
+            request.limit
+          );
+          if (disposed) return;
+          if (!diagnostics) {
+            options.reply(event.source, createRateLimitBridgeFailure(request, '出口绑定监控数据无效'));
+            return;
+          }
+          options.reply(
+            event.source,
+            createRateLimitBridgeDiagnosticsSuccess(request, diagnostics)
+          );
+        } catch {
+          if (disposed) return;
+          options.reply(event.source, createRateLimitBridgeFailure(request, '无法读取出口绑定监控'));
+        }
+        return;
+      }
 
       if (request.operation === 'load') {
         try {

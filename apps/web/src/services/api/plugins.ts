@@ -312,6 +312,20 @@ export const pluginsApi = {
     return normalizePluginConfig(data);
   },
 
+  async getRateLimitEgressDiagnostics(
+    limit: number,
+    requestScope?: ApiClientRequestScope
+  ): Promise<unknown> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1024) {
+      throw new Error('invalid diagnostics limit');
+    }
+    const requestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : {};
+    return apiClient.get('/plugins/per-auth-rate-limit/egress-diagnostics', {
+      ...requestConfig,
+      params: { limit },
+    });
+  },
+
   putConfig: (id: string, config: PluginConfigObject) =>
     apiClient.put(`/plugins/${encodeURIComponent(id)}/config`, config),
 
