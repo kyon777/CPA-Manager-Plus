@@ -1202,3 +1202,18 @@ or deploy CPA Core / `cli-proxy-api`.
   Never fall back to a direct CPA delete after a Manager batch request has
   started or failed; direct serial safe deletion remains only when Manager is
   unavailable or selection exceeds the 100-identity Manager cap.
+
+## 2026-11-06: Proxy current-enabled binding count (must retain)
+
+- `current_enabled_account_count` is an additive current-CPA-inventory metric.
+  It counts every non-disabled credential with a non-empty normalized current
+  proxy URL, including no-request, pending/unknown, and history-identity-
+  ineligible credentials.
+- It must never redefine `enabled_active_account_count`; the latter remains the
+  enabled subset of strictly matched 72-hour active evidence for compatibility.
+- The proxy-overload UI displays the new current count as `当前已启用`, but
+  overload, non-overload, rate, filter, sort, copy, saved/unobserved proxies,
+  and observed row existence remain based on the prior 72-hour logic.
+- Derive both counts from the single existing inventory fetch. Do not add a
+  per-account CPA call or SQLite query, and do not create a row for a proxy
+  with current bindings only and no 72-hour active evidence.
