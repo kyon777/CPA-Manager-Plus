@@ -1425,6 +1425,7 @@ export interface ProxyOverloadSummaryRow {
   proxy_url: string;
   active_account_count: number;
   enabled_active_account_count?: number;
+  current_enabled_account_count?: number;
   overloaded_account_count: number;
   non_overloaded_account_count: number;
   overloaded_rate: number;
@@ -1435,6 +1436,7 @@ export interface ProxyOverloadSummaryResponse {
   window_start_ms: number;
   active_account_count: number;
   enabled_active_account_count?: number;
+  current_enabled_account_count?: number;
   missing_proxy_account_count: number;
   proxy_count: number;
   overloaded_account_count: number;
@@ -5126,6 +5128,7 @@ export const monitoringAnalyticsApi = {
         window_start_ms: generatedAtMs - 72 * 60 * 60 * 1000,
         active_account_count: 2,
         enabled_active_account_count: 2,
+        current_enabled_account_count: 2,
         missing_proxy_account_count: 0,
         proxy_count: 1,
         overloaded_account_count: 0,
@@ -5139,6 +5142,7 @@ export const monitoringAnalyticsApi = {
             proxy_url: 'http://demo-proxy.example:8080',
             active_account_count: 2,
             enabled_active_account_count: 2,
+            current_enabled_account_count: 2,
             overloaded_account_count: 0,
             non_overloaded_account_count: 2,
             overloaded_rate: 0,

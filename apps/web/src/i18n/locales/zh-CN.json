@@ -1514,9 +1514,9 @@
 
     "proxy_overload_button": "代理过载统计",
     "proxy_overload_title": "代理过载统计",
-    "proxy_overload_hint": "统计最近 3 天内有请求的账号；每个账号最多检查最近 9 条请求，并按当前代理 URL 归属。仅 HTTP 502 且错误码为 server_is_overloaded 计为服务过载。",
-    "proxy_overload_active": "活跃账号 {{count}} 个（已启用 {{enabled}} 个）",
-    "proxy_overload_active_cell": "{{count}}（已启用 {{enabled}}）",
+    "proxy_overload_hint": "统计最近 3 天内有请求的账号；每个账号最多检查最近 9 条请求，并按当前代理 URL 归属。仅 HTTP 502 且错误码为 server_is_overloaded 计为服务过载。当前已启用按当前绑定该代理且未禁用的账号统计，包含待判定和无最近请求账号；活跃、过载与成功率仍只按最近 3 天请求统计。",
+    "proxy_overload_active": "活跃账号 {{count}} 个（当前已启用 {{enabled}} 个）",
+    "proxy_overload_active_cell": "{{count}}（当前已启用 {{enabled}}）",
     "proxy_overload_missing": "未配置代理 {{count}} 个",
     "proxy_overload_proxy_count": "可比较代理 {{count}} 个",
     "proxy_overload_accounts": "发生过载账号 {{count}} 个",

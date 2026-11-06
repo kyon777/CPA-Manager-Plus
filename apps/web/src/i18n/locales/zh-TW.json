@@ -1514,9 +1514,9 @@
 
     "proxy_overload_button": "代理過載統計",
     "proxy_overload_title": "代理過載統計",
-    "proxy_overload_hint": "統計最近 3 天內有請求的帳號；每個帳號最多檢查最近 9 筆請求，並按目前代理 URL 歸屬。僅 HTTP 502 且錯誤碼為 server_is_overloaded 會計為服務過載。",
-    "proxy_overload_active": "活躍帳號 {{count}} 個（已啟用 {{enabled}} 個）",
-    "proxy_overload_active_cell": "{{count}}（已啟用 {{enabled}}）",
+    "proxy_overload_hint": "統計最近 3 天內有請求的帳號；每個帳號最多檢查最近 9 筆請求，並按目前代理 URL 歸屬。僅 HTTP 502 且錯誤碼為 server_is_overloaded 會計為服務過載。目前已啟用依目前綁定該代理且未停用的帳號統計，包含待判定與無最近請求帳號；活躍、過載與成功率仍只按最近 3 天請求統計。",
+    "proxy_overload_active": "活躍帳號 {{count}} 個（目前已啟用 {{enabled}} 個）",
+    "proxy_overload_active_cell": "{{count}}（目前已啟用 {{enabled}}）",
     "proxy_overload_missing": "未設定代理 {{count}} 個",
     "proxy_overload_proxy_count": "可比較代理 {{count}} 個",
     "proxy_overload_accounts": "發生過載帳號 {{count}} 個",

@@ -50,7 +50,8 @@ export function ProxyOverloadSummaryModal({
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [copying, setCopying] = useState(false);
   const savedListAvailable = result?.saved_proxy_list_available === true;
-  const enabledActiveCount = result?.enabled_active_account_count ?? 0;
+  const currentEnabledCount =
+    result?.current_enabled_account_count ?? result?.enabled_active_account_count ?? 0;
 
   useEffect(() => {
     setFilter('all');
@@ -156,7 +157,7 @@ export function ProxyOverloadSummaryModal({
               <span>
                 {t('accounts.proxy_overload_active', {
                   count: result.active_account_count,
-                  enabled: enabledActiveCount,
+                  enabled: currentEnabledCount,
                 })}
               </span>
               <span>
@@ -310,40 +311,46 @@ export function ProxyOverloadSummaryModal({
                       </tr>
                     </thead>
                     <tbody>
-                      {observedRows.map((row) => (
-                        <tr
-                          key={row.proxy_url}
-                          data-proxy-overload-row
-                          data-proxy-overload-kind="observed"
-                          data-proxy-url={row.proxy_url}
-                        >
-                          <td>
-                            <input
-                              aria-label={row.proxy_url}
-                              type="checkbox"
-                              checked={selected.has(row.proxy_url)}
-                              disabled={busy}
-                              onChange={() =>
-                                setSelected((current) =>
-                                  toggleProxyOverloadSelection(current, row.proxy_url)
-                                )
-                              }
-                            />
-                          </td>
-                          <td>
-                            <code title={row.proxy_url}>{row.proxy_url}</code>
-                          </td>
-                          <td>
-                            {t('accounts.proxy_overload_active_cell', {
-                              count: row.active_account_count,
-                              enabled: row.enabled_active_account_count ?? 0,
-                            })}
-                          </td>
-                          <td>{row.overloaded_account_count}</td>
-                          <td>{row.non_overloaded_account_count}</td>
-                          <td>{formatRate(successRateForProxy(row))}</td>
-                        </tr>
-                      ))}
+                      {observedRows.map((row) => {
+                        const rowCurrentEnabledCount =
+                          row.current_enabled_account_count ??
+                          row.enabled_active_account_count ??
+                          0;
+                        return (
+                          <tr
+                            key={row.proxy_url}
+                            data-proxy-overload-row
+                            data-proxy-overload-kind="observed"
+                            data-proxy-url={row.proxy_url}
+                          >
+                            <td>
+                              <input
+                                aria-label={row.proxy_url}
+                                type="checkbox"
+                                checked={selected.has(row.proxy_url)}
+                                disabled={busy}
+                                onChange={() =>
+                                  setSelected((current) =>
+                                    toggleProxyOverloadSelection(current, row.proxy_url)
+                                  )
+                                }
+                              />
+                            </td>
+                            <td>
+                              <code title={row.proxy_url}>{row.proxy_url}</code>
+                            </td>
+                            <td>
+                              {t('accounts.proxy_overload_active_cell', {
+                                count: row.active_account_count,
+                                enabled: rowCurrentEnabledCount,
+                              })}
+                            </td>
+                            <td>{row.overloaded_account_count}</td>
+                            <td>{row.non_overloaded_account_count}</td>
+                            <td>{formatRate(successRateForProxy(row))}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
