@@ -15,6 +15,7 @@ import (
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	authfilesbanneddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbanneddelete"
 	authfilesexportsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesexport"
+	authfilesselecteddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesselecteddelete"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	credentialruntimesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialruntime"
 	proxyreplacementsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxyreplacement"
@@ -168,6 +169,38 @@ func TestRouterRoutesAccountBannedDeleteBeforeCoreManagementProxy(t *testing.T) 
 	}
 }
 
+func TestRouterRoutesSelectedAuthDeleteBeforeCoreManagementProxy(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "router-selected-delete.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const adminKey = "cpamp_router_selected_delete"
+	credential, err := security.NewAdminCredential(adminKey, "test")
+	if err != nil {
+		t.Fatalf("new admin credential: %v", err)
+	}
+	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
+		t.Fatalf("save admin credential: %v", err)
+	}
+	appContext := &app.Context{
+		Config:           config.Config{CORSOrigins: []string{"*"}},
+		AdminAuthService: adminauthsvc.New(config.Config{}, st),
+		SelectedAuthFileDeleteService: authfilesselecteddeletesvc.NewWithOptions(authfilesselecteddeletesvc.Options{
+			SetupResolver: routerCredentialRuntimeSetupResolver{baseURL: "http://cpa.example.test"},
+			AuthFiles:     routerSelectedDeleteAuthFiles{},
+		}),
+	}
+	handler := New(appContext)
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/delete-selected-batch", bytes.NewBufferString(`{"targets":[{"fileName":"a.json","authIndex":"7","provider":"codex","runtimeId":"runtime-a"}]}`))
+	request.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"deleted"`)) {
+		t.Fatalf("route status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRouterRoutesSelectedAuthExportBeforeCoreManagementProxy(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "router-auth-export.sqlite"))
 	if err != nil {
@@ -262,6 +295,16 @@ func (routerBannedAuthFiles) Fetch(context.Context, string, string) ([]cpaauthfi
 }
 
 func (routerBannedAuthFiles) Delete(context.Context, string, string, string) error { return nil }
+
+type routerSelectedDeleteAuthFiles struct{}
+
+func (routerSelectedDeleteAuthFiles) Fetch(context.Context, string, string) ([]cpaauthfiles.File, error) {
+	return []cpaauthfiles.File{{ID: "runtime-a", Name: "a.json", AuthIndex: "7", Provider: "codex"}}, nil
+}
+
+func (routerSelectedDeleteAuthFiles) Delete(context.Context, string, string, string) error {
+	return nil
+}
 func TestRouterRoutesPriorityDemotionUpdatesBeforeCoreManagementProxy(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "router-server-error-priority.sqlite"))
 	if err != nil {

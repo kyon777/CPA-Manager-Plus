@@ -17,6 +17,7 @@ import (
 	authfilesbanneddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbanneddelete"
 	authfilesbatchsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesbatch"
 	authfilesexportsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesexport"
+	authfilesselecteddeletesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/authfilesselecteddelete"
 	automationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/automation"
 	bootstrapsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
 	codexinspectionsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/codexinspection"
@@ -89,6 +90,7 @@ type Context struct {
 	AuthFileBatchUploadService         *authfilesbatchsvc.Service
 	AuthFileExportService              *authfilesexportsvc.Service
 	AccountBannedAuthFileDeleteService *authfilesbanneddeletesvc.Service
+	SelectedAuthFileDeleteService      *authfilesselecteddeletesvc.Service
 	PanelService                       *panelsvc.Service
 	AutomationRuntimeService           AutomationRuntimeService
 	DatabaseMaintenance                DatabaseMaintenanceStatusProvider
@@ -300,6 +302,12 @@ func fromExisting(
 		AccountBannedAuthFileDeleteService: authfilesbanneddeletesvc.NewWithOptions(authfilesbanneddeletesvc.Options{
 			SetupResolver:       managerConfigService,
 			Recovery:            tokenRecoveryService,
+			AuthFiles:           authFiles,
+			MutationCoordinator: authFileMutationCoordinator,
+			Invalidator:         proxyService,
+		}),
+		SelectedAuthFileDeleteService: authfilesselecteddeletesvc.NewWithOptions(authfilesselecteddeletesvc.Options{
+			SetupResolver:       managerConfigService,
 			AuthFiles:           authFiles,
 			MutationCoordinator: authFileMutationCoordinator,
 			Invalidator:         proxyService,

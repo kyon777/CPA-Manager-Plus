@@ -10,6 +10,7 @@ import (
 	authfilesbanneddeletecontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesbanneddelete"
 	authfilesbatchcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesbatch"
 	authfilesexportcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesexport"
+	authfilesselecteddeletecontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/authfilesselecteddelete"
 	automationcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/automation"
 	codexinspectioncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/codexinspection"
 	credentiallistcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/credentiallist"
@@ -61,6 +62,10 @@ func New(appCtx *app.Context) http.Handler {
 		App:     appCtx,
 		Service: appCtx.AccountBannedAuthFileDeleteService,
 	}
+	authFileSelectedDeleteHandler := &authfilesselecteddeletecontroller.Handler{
+		App:     appCtx,
+		Service: appCtx.SelectedAuthFileDeleteService,
+	}
 	authFileExportHandler := &authfilesexportcontroller.Handler{
 		App:     appCtx,
 		Service: appCtx.AuthFileExportService,
@@ -88,7 +93,7 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
 	mux.HandleFunc("/favicon.ico", panelHandler.Favicon)
 	mux.HandleFunc("/apple-touch-icon.png", panelHandler.AppleTouchIcon)
-	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, credentialListHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, authFileBatchUploadHandler, authFileBannedDeleteHandler, authFileExportHandler, proxyReplacementHandler, serverErrorPriorityHandler, managerConfigHandler, proxyHandler))
+	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, tokenRecoveryHandler, credentialRuntimeHandler, credentialListHandler, dashboardHandler, monitoringHandler, quotaSnapshotHandler, authFileBatchUploadHandler, authFileBannedDeleteHandler, authFileSelectedDeleteHandler, authFileExportHandler, proxyReplacementHandler, serverErrorPriorityHandler, managerConfigHandler, proxyHandler))
 
 	return middleware.Recovery(middleware.RequestLogger(mux))
 }
@@ -108,6 +113,7 @@ func rootHandler(
 	quotaSnapshotHandler *quotasnapshotcontroller.Handler,
 	authFileBatchUploadHandler *authfilesbatchcontroller.Handler,
 	authFileBannedDeleteHandler *authfilesbanneddeletecontroller.Handler,
+	authFileSelectedDeleteHandler *authfilesselecteddeletecontroller.Handler,
 	authFileExportHandler *authfilesexportcontroller.Handler,
 	proxyReplacementHandler *proxyreplacementcontroller.Handler,
 	serverErrorPriorityHandler *servererrorprioritycontroller.Handler,
@@ -162,6 +168,10 @@ func rootHandler(
 		}
 		if strings.TrimRight(r.URL.Path, "/") == "/v0/management/auth-files/delete-account-banned-batch" {
 			middleware.WithCORS(appCtx.Config, authFileBannedDeleteHandler.Handle)(w, r)
+			return
+		}
+		if strings.TrimRight(r.URL.Path, "/") == "/v0/management/auth-files/delete-selected-batch" {
+			middleware.WithCORS(appCtx.Config, authFileSelectedDeleteHandler.Handle)(w, r)
 			return
 		}
 		if strings.TrimRight(r.URL.Path, "/") == "/v0/management/auth-files/export-selected" {
