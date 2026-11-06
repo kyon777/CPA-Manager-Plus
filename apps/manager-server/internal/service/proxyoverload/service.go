@@ -61,23 +61,25 @@ type Options struct {
 }
 
 type Summary struct {
-	GeneratedAtMS            int64      `json:"generated_at_ms"`
-	WindowStartMS            int64      `json:"window_start_ms"`
-	ActiveAccountCount       int        `json:"active_account_count"`
-	MissingProxyAccountCount int        `json:"missing_proxy_account_count"`
-	ProxyCount               int        `json:"proxy_count"`
-	OverloadedAccountCount   int        `json:"overloaded_account_count"`
-	Proxies                  []ProxyRow `json:"proxies"`
-	SavedProxyListAvailable  bool       `json:"saved_proxy_list_available"`
-	SavedProxyCount          int        `json:"saved_proxy_count"`
-	ObservedSavedProxyCount  int        `json:"observed_saved_proxy_count"`
-	UnobservedProxyCount     int        `json:"unobserved_proxy_count"`
-	UnobservedProxies        []string   `json:"unobserved_proxies"`
+	GeneratedAtMS             int64      `json:"generated_at_ms"`
+	WindowStartMS             int64      `json:"window_start_ms"`
+	ActiveAccountCount        int        `json:"active_account_count"`
+	EnabledActiveAccountCount int        `json:"enabled_active_account_count"`
+	MissingProxyAccountCount  int        `json:"missing_proxy_account_count"`
+	ProxyCount                int        `json:"proxy_count"`
+	OverloadedAccountCount    int        `json:"overloaded_account_count"`
+	Proxies                   []ProxyRow `json:"proxies"`
+	SavedProxyListAvailable   bool       `json:"saved_proxy_list_available"`
+	SavedProxyCount           int        `json:"saved_proxy_count"`
+	ObservedSavedProxyCount   int        `json:"observed_saved_proxy_count"`
+	UnobservedProxyCount      int        `json:"unobserved_proxy_count"`
+	UnobservedProxies         []string   `json:"unobserved_proxies"`
 }
 
 type ProxyRow struct {
 	ProxyURL                  string  `json:"proxy_url"`
 	ActiveAccountCount        int     `json:"active_account_count"`
+	EnabledActiveAccountCount int     `json:"enabled_active_account_count"`
 	OverloadedAccountCount    int     `json:"overloaded_account_count"`
 	NonOverloadedAccountCount int     `json:"non_overloaded_account_count"`
 	OverloadedRate            float64 `json:"overloaded_rate"`
@@ -272,6 +274,9 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 			continue
 		}
 		result.ActiveAccountCount++
+		if !filesByTarget[index].Disabled {
+			result.EnabledActiveAccountCount++
+		}
 		key, displayURL := normalizeProxyURL(filesByTarget[index].ProxyURL)
 		if key == "" {
 			result.MissingProxyAccountCount++
@@ -283,6 +288,9 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 			groups[key] = group
 		}
 		group.activeCount++
+		if !filesByTarget[index].Disabled {
+			group.enabledActiveCount++
+		}
 		if item.ServerOverloaded {
 			group.overloadedCount++
 			result.OverloadedAccountCount++
@@ -293,6 +301,7 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 		row := ProxyRow{
 			ProxyURL:                  group.proxyURL,
 			ActiveAccountCount:        group.activeCount,
+			EnabledActiveAccountCount: group.enabledActiveCount,
 			OverloadedAccountCount:    group.overloadedCount,
 			NonOverloadedAccountCount: group.activeCount - group.overloadedCount,
 		}
@@ -363,10 +372,11 @@ func decorateSavedProxyDifference(result Summary, savedProxyURLs []string) Summa
 }
 
 type proxyAggregate struct {
-	key             string
-	proxyURL        string
-	activeCount     int
-	overloadedCount int
+	key                string
+	proxyURL           string
+	activeCount        int
+	enabledActiveCount int
+	overloadedCount    int
 }
 
 func latestRequestTarget(index int, file cpaauthfiles.File) (store.LatestAccountRequestQuery, bool) {

@@ -72,6 +72,50 @@ func TestSummaryFetchesCurrentProxyInventoryOnceAndGroupsCurrentURLs(t *testing.
 	}
 }
 
+func TestSummaryCountsEnabledSubsetWithoutChangingExistingTotals(t *testing.T) {
+	now := time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
+	disabled := testCodexFile("disabled-a.json", "2", "disabled@example.test", "workspace-disabled", "http://proxy-a.example:8080")
+	disabled.Disabled = true
+	service := New(Options{
+		SetupResolver: fakeSetupResolver{setup: configuredSetup(), ok: true},
+		AuthFiles: &fakeInventoryReader{files: []cpaauthfiles.File{
+			testCodexFile("enabled-a.json", "1", "enabled-a@example.test", "workspace-enabled-a", "http://proxy-a.example:8080"),
+			disabled,
+			testCodexFile("enabled-b.json", "3", "enabled-b@example.test", "workspace-enabled-b", "http://proxy-b.example:8080"),
+		}},
+		Evidence: &fakeEvidenceReader{items: []store.ProxyOverloadEvidence{
+			{RequestIndex: 0, Active: true},
+			{RequestIndex: 1, Active: true, ServerOverloaded: true},
+			{RequestIndex: 2, Active: true},
+		}},
+		Now: func() time.Time { return now },
+	})
+
+	result, err := service.Summary(context.Background(), true)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if got, want := result.ActiveAccountCount, 3; got != want {
+		t.Fatalf("active accounts = %d, want %d", got, want)
+	}
+	if got, want := result.EnabledActiveAccountCount, 2; got != want {
+		t.Fatalf("enabled active accounts = %d, want %d", got, want)
+	}
+	if got, want := result.OverloadedAccountCount, 1; got != want {
+		t.Fatalf("overloaded accounts = %d, want %d", got, want)
+	}
+	rows := make(map[string]ProxyRow, len(result.Proxies))
+	for _, row := range result.Proxies {
+		rows[row.ProxyURL] = row
+	}
+	if got := rows["http://proxy-a.example:8080"]; got.ActiveAccountCount != 2 || got.EnabledActiveAccountCount != 1 || got.OverloadedAccountCount != 1 {
+		t.Fatalf("proxy a row = %#v", got)
+	}
+	if got := rows["http://proxy-b.example:8080"]; got.ActiveAccountCount != 1 || got.EnabledActiveAccountCount != 1 || got.OverloadedAccountCount != 0 {
+		t.Fatalf("proxy b row = %#v", got)
+	}
+}
+
 func TestSummaryNormalizesTrailingSlashesOnlyForGrouping(t *testing.T) {
 	now := time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
 	service := New(Options{
