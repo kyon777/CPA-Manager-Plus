@@ -1165,3 +1165,40 @@ pricing, Credits, usage facts, or billing.
 - Required regressions cover Codex/live and persisted entry limits, other
   provider limits, byte-budget trimming, legacy-cache migration, write
   coalescing, and quota-exception recovery.
+
+## 2026-11-05: Proxy enabled subset and selected permanent deletion (must retain)
+
+This change is CPAM-only. It must never alter, build, restart, proxy through,
+or deploy CPA Core / `cli-proxy-api`.
+
+- Proxy-overload statistics remain an all-current-inventory, rolling **72-hour**
+  request-evidence view. `enabled_active_account_count` is a display-only
+  subset determined from the current CPA auth-file disabled/status state.
+  Disabled credentials remain in every pre-existing calculation: active count,
+  HTTP-502-overload count, non-overload count, success/overload rate,
+  missing-proxy count, saved-proxy difference, copy selection, and row sort.
+  The manager server must derive this subset from the inventory it already
+  fetched; do not add a per-account CPA request or a new SQLite query.
+- The proxy-overload modal displays the subset in the top total and each
+  observed proxy row. Older Manager responses may omit the field, and the web
+  renderer must display zero rather than `undefined` or change established
+  rate/order behavior.
+- Generic selected permanent deletion preserves the existing first confirmation
+  and irreversible second confirmation. When a Manager request scope exists,
+  the browser sends only selected stable identity fields to
+  `POST /v0/management/auth-files/delete-selected-batch`: physical file name,
+  provider, auth index/runtime id, account id snapshot, and account snapshot.
+  Never send raw auth JSON, tokens, proxy URLs, or a CPA management key.
+- The Manager selected-delete service accepts at most 100 logical credentials.
+  It resolves CPA setup server-side, acquires the shared physical auth-file
+  mutation coordinator locks before exactly one current inventory fetch,
+  verifies *every* member of each shared physical source, and deletes only
+  fully-selected verified sources with at most **8** concurrent workers. A
+  plugin virtual-selector conflict may retry only the already verified physical
+  source; it must not fetch again or widen selection. Invalidate auth-file
+  inventory once only after at least one physical deletion succeeds.
+- The browser removes rows only for Manager-confirmed physical deletion names.
+  Skipped/failed rows stay visible and use the existing partial-result notice.
+  Never fall back to a direct CPA delete after a Manager batch request has
+  started or failed; direct serial safe deletion remains only when Manager is
+  unavailable or selection exceeds the 100-identity Manager cap.
