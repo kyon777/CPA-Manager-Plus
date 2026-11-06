@@ -1518,6 +1518,7 @@ export function AccountsPage() {
   } = useAuthFilesData({
     connectionFingerprint,
     requestScope: authFilesRequestScope,
+    managerRequestScope,
     onCredentialMutation: handleCredentialMutation,
   });
 

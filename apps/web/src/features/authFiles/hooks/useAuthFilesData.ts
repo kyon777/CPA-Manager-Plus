@@ -16,6 +16,10 @@ import {
   type AuthFileLookupTarget,
   type AuthFilesApiRequestScope,
 } from '@/services/api';
+import {
+  usageServiceApi,
+  type SelectedAuthFileDeleteTargetRequest,
+} from '@/services/api/usageService';
 import { apiClient, createScopedApiRequestConfig } from '@/services/api/client';
 import { useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
@@ -154,6 +158,7 @@ const CREDENTIAL_REFRESH_POLL_INTERVAL_MS = 1_000;
 const CREDENTIAL_REFRESH_POLL_ATTEMPTS = 15;
 const CREDENTIAL_REFRESH_CLOCK_SKEW_MS = 5 * 60_000;
 const CREDENTIAL_REFRESH_TIMESTAMP_RESOLUTION_MS = 1_000;
+const MANAGER_SELECTED_AUTH_FILE_DELETE_MAX_TARGETS = 100;
 
 const getAuthFileSourceMembers = (files: AuthFileItem[], physicalName: string): AuthFileItem[] =>
   files.filter((file) => readAuthFileStatusPhysicalName(file) === physicalName);
@@ -254,6 +259,66 @@ const buildAuthFileDeleteSnapshots = (
     snapshots.push({ name, preferredTarget, members });
   });
   return snapshots;
+};
+
+const buildManagerSelectedAuthFileDeleteTargets = (
+  snapshots: readonly AuthFileDeleteSnapshot[]
+): SelectedAuthFileDeleteTargetRequest[] =>
+  snapshots.flatMap((snapshot) =>
+    snapshot.members.map((member) => {
+      const identity = getAuthFilePatchTarget(member);
+      const provider = typeof identity.provider === 'string' ? identity.provider.trim() : '';
+      const authIndex =
+        identity.authIndex === undefined || identity.authIndex === null
+          ? ''
+          : String(identity.authIndex).trim();
+      const runtimeId = typeof identity.runtimeId === 'string' ? identity.runtimeId.trim() : '';
+      const accountId = typeof identity.accountId === 'string' ? identity.accountId.trim() : '';
+      const accountSnapshot =
+        typeof identity.accountSnapshot === 'string' ? identity.accountSnapshot.trim() : '';
+      return {
+        fileName: snapshot.name,
+        provider,
+        ...(authIndex ? { authIndex } : {}),
+        ...(runtimeId ? { runtimeId } : {}),
+        ...(accountId ? { accountId } : {}),
+        ...(accountSnapshot ? { accountSnapshot } : {}),
+      };
+    })
+  );
+
+const deleteManagerSelectedAuthFileSnapshots = async (
+  snapshots: readonly AuthFileDeleteSnapshot[],
+  managerRequestScope: AuthFilesApiRequestScope,
+  unconfirmedError: string
+): Promise<AuthFileDeleteExecutionResult> => {
+  const targets = buildManagerSelectedAuthFileDeleteTargets(snapshots);
+  if (targets.length === 0 || targets.length > MANAGER_SELECTED_AUTH_FILE_DELETE_MAX_TARGETS) {
+    throw new Error(unconfirmedError);
+  }
+  const response = await usageServiceApi.deleteSelectedAuthFilesBatch(
+    managerRequestScope.apiBase,
+    managerRequestScope.managementKey,
+    targets
+  );
+  const deletedItems = Array.isArray(response.deleted) ? response.deleted : [];
+  const skippedItems = Array.isArray(response.skipped) ? response.skipped : [];
+  const failedItems = Array.isArray(response.failed) ? response.failed : [];
+  const files = Array.from(
+    new Set(
+      deletedItems
+        .map((item) => item.physicalName?.trim() || item.fileName.trim())
+        .filter(Boolean)
+    )
+  );
+  return {
+    deleted: deletedItems.length,
+    files,
+    failed: [...skippedItems, ...failedItems].map((item) => ({
+      name: item.physicalName?.trim() || item.fileName.trim(),
+      error: item.message?.trim() || item.code?.trim() || unconfirmedError,
+    })),
+  };
 };
 
 const resolveVerifiedAuthFileDeleteSelector = (
@@ -777,6 +842,7 @@ export const prepareAuthFilesForUpload = async (files: File[]): Promise<Prepared
 type UseAuthFilesDataOptions = {
   connectionFingerprint?: string | null;
   requestScope?: AuthFilesApiRequestScope;
+  managerRequestScope?: AuthFilesApiRequestScope;
   onCredentialMutation?: (mutation: AuthFilesCredentialMutation) => void;
   /**
    * When the Manager Server owns the visible paged projection, mutation
@@ -792,6 +858,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
   const { showNotification, showConfirmation } = useNotificationStore();
   const connectionFingerprint = options.connectionFingerprint?.trim() ?? '';
   const requestScope = options.requestScope;
+  const managerRequestScope = options.managerRequestScope;
   const onCredentialMutation = options.onCredentialMutation;
   const deferReloadAfterMutation = options.deferReloadAfterMutation;
 
@@ -2173,6 +2240,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     (targets: AuthFileItem[], options?: AuthFilesBatchDeleteOptions) => {
       const confirmationConnectionFingerprint = connectionFingerprint;
       const confirmationRequestScope = requestScope;
+      const confirmationManagerRequestScope = managerRequestScope;
       const confirmationGeneration = authFilesOperationGenerationRef.current;
       const uniqueNames = Array.from(
         new Set(targets.map(readAuthFileStatusPhysicalName).filter(Boolean))
@@ -2219,12 +2287,24 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
             return;
           const operationGeneration = authFilesOperationGenerationRef.current;
           try {
-            const result = await deleteVerifiedAuthFileSnapshots(
-              deleteSnapshots,
-              t('auth_files.delete_target_changed'),
-              t('notification.delete_failed'),
-              confirmationRequestScope
-            );
+            const managerTargets = confirmationManagerRequestScope
+              ? buildManagerSelectedAuthFileDeleteTargets(deleteSnapshots)
+              : [];
+            const result =
+              confirmationManagerRequestScope &&
+              managerTargets.length > 0 &&
+              managerTargets.length <= MANAGER_SELECTED_AUTH_FILE_DELETE_MAX_TARGETS
+                ? await deleteManagerSelectedAuthFileSnapshots(
+                    deleteSnapshots,
+                    confirmationManagerRequestScope,
+                    t('notification.delete_failed')
+                  )
+                : await deleteVerifiedAuthFileSnapshots(
+                    deleteSnapshots,
+                    t('auth_files.delete_target_changed'),
+                    t('notification.delete_failed'),
+                    confirmationRequestScope
+                  );
             if (authFilesOperationGenerationRef.current !== operationGeneration) return;
             applyDeletedFiles(result.files);
 
@@ -2255,6 +2335,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       applyDeletedFiles,
       connectionFingerprint,
       files,
+      managerRequestScope,
       requestScope,
       showConfirmation,
       showNotification,

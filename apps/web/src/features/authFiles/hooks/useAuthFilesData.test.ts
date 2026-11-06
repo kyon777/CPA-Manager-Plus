@@ -3,6 +3,7 @@ import { create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthFileItem } from '@/types';
 import type { AuthFileLookupTarget } from '@/services/api';
+import type { SelectedAuthFileDeleteTargetRequest } from '@/services/api/usageService';
 import {
   readAuthFileStatusAuthIndex,
   readAuthFileStatusPhysicalName,
@@ -24,6 +25,7 @@ const { mocks } = vi.hoisted(() => {
       patchFieldsForAuthIndexes: vi.fn(),
       setStatus: vi.fn(),
       requestCredentialRefresh: vi.fn(),
+      deleteSelectedAuthFilesBatch: vi.fn(),
       showNotification: vi.fn(),
       showConfirmation: vi.fn(),
     },
@@ -89,6 +91,12 @@ vi.mock('@/services/api', () => ({
     setStatusWithPluginSourceFallback: mocks.setStatus,
     setVerifiedSourceFileStatus: mocks.setStatus,
     requestCredentialRefresh: mocks.requestCredentialRefresh,
+  },
+}));
+
+vi.mock('@/services/api/usageService', () => ({
+  usageServiceApi: {
+    deleteSelectedAuthFilesBatch: mocks.deleteSelectedAuthFilesBatch,
   },
 }));
 
@@ -158,7 +166,8 @@ const mountUseAuthFilesData = (
   ) => void,
   onCredentialFilesChanged?: (mutation: AuthFilesCredentialMutation) => void,
   requestScope?: { apiBase: string; managementKey: string },
-  deferReloadAfterMutation = false
+  deferReloadAfterMutation = false,
+  managerRequestScope?: { apiBase: string; managementKey: string }
 ): UseAuthFilesDataHarness => {
   let currentConnectionFingerprint = connectionFingerprint;
   let lastLayoutConnectionFingerprint: string | undefined | symbol = Symbol('uninitialized');
@@ -179,6 +188,7 @@ const mountUseAuthFilesData = (
     const value = useAuthFilesData({
       connectionFingerprint: currentConnectionFingerprint,
       requestScope,
+      managerRequestScope,
       onCredentialMutation: onCredentialFilesChanged,
       deferReloadAfterMutation,
     });
@@ -232,6 +242,7 @@ beforeEach(() => {
   mocks.patchFieldsForAuthIndexes.mockReset();
   mocks.setStatus.mockReset();
   mocks.requestCredentialRefresh.mockReset();
+  mocks.deleteSelectedAuthFilesBatch.mockReset();
   mocks.showNotification.mockReset();
   mocks.showConfirmation.mockReset();
 
@@ -247,6 +258,12 @@ beforeEach(() => {
   mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
   mocks.setStatus.mockResolvedValue({ status: 'ok', disabled: false });
   mocks.requestCredentialRefresh.mockResolvedValue(undefined);
+  mocks.deleteSelectedAuthFilesBatch.mockResolvedValue({
+    requested: 0,
+    deleted: [],
+    skipped: [],
+    failed: [],
+  });
 });
 
 afterEach(() => {
@@ -1883,6 +1900,107 @@ describe('useAuthFilesData handleDelete', () => {
 });
 
 describe('useAuthFilesData batchDelete', () => {
+  it('uses one Manager batch request and removes only Manager-confirmed physical sources', async () => {
+    const first = {
+      id: 'runtime-first',
+      name: 'first.json',
+      type: 'codex',
+      auth_index: 'auth-first',
+      account: 'first@example.com',
+      account_id: 'workspace-first',
+    } as AuthFileItem;
+    const second = {
+      id: 'runtime-second',
+      name: 'second.json',
+      type: 'xai',
+      auth_index: 'auth-second',
+      account: 'second@example.com',
+    } as AuthFileItem;
+    const managerScope = { apiBase: 'https://manager.example.test', managementKey: 'manager-key' };
+    const hook = mountUseAuthFilesData(undefined, undefined, undefined, undefined, false, managerScope);
+    mocks.list.mockResolvedValue({ files: [first, second] });
+    mocks.deleteSelectedAuthFilesBatch.mockResolvedValue({
+      requested: 2,
+      deleted: [
+        { fileName: 'first.json', physicalName: 'first.json' },
+        { fileName: 'second.json', physicalName: 'second.json' },
+      ],
+      skipped: [],
+      failed: [],
+    });
+    await act(async () => hook.getCurrent().loadFiles());
+    mocks.list.mockClear();
+
+    act(() => hook.getCurrent().batchDelete([first, second]));
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void>; secondConfirmation?: { message?: string } }
+      | undefined;
+    expect(confirmation?.secondConfirmation?.message).toBe('auth_files.delete_many_second_confirm');
+
+    await act(async () => confirmation?.onConfirm?.());
+
+    expect(mocks.deleteSelectedAuthFilesBatch).toHaveBeenCalledWith(
+      managerScope.apiBase,
+      managerScope.managementKey,
+      [
+        {
+          fileName: 'first.json',
+          provider: 'codex',
+          authIndex: 'auth-first',
+          runtimeId: 'runtime-first',
+          accountId: 'workspace-first',
+          accountSnapshot: 'first@example.com',
+        },
+        {
+          fileName: 'second.json',
+          provider: 'xai',
+          authIndex: 'auth-second',
+          runtimeId: 'runtime-second',
+          accountSnapshot: 'second@example.com',
+        },
+      ] satisfies SelectedAuthFileDeleteTargetRequest[]
+    );
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.deleteFileByName).not.toHaveBeenCalled();
+    expect(hook.getCurrent().files).toEqual([]);
+    hook.unmount();
+  });
+
+  it('leaves skipped Manager sources visible after a partial selected delete', async () => {
+    const first = {
+      id: 'runtime-first', name: 'first.json', type: 'codex', auth_index: 'auth-first', account: 'first@example.com',
+    } as AuthFileItem;
+    const second = {
+      id: 'runtime-second', name: 'second.json', type: 'codex', auth_index: 'auth-second', account: 'second@example.com',
+    } as AuthFileItem;
+    const hook = mountUseAuthFilesData(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      { apiBase: 'https://manager.example.test', managementKey: 'manager-key' }
+    );
+    mocks.list.mockResolvedValue({ files: [first, second] });
+    mocks.deleteSelectedAuthFilesBatch.mockResolvedValue({
+      requested: 2,
+      deleted: [{ fileName: 'first.json', physicalName: 'first.json' }],
+      skipped: [{ fileName: 'second.json', code: 'identity_changed', message: 'changed' }],
+      failed: [],
+    });
+    await act(async () => hook.getCurrent().loadFiles());
+
+    act(() => hook.getCurrent().batchDelete([first, second]));
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void> }
+      | undefined;
+    await act(async () => confirmation?.onConfirm?.());
+
+    expect(hook.getCurrent().files).toEqual([second]);
+    expect(mocks.showNotification).toHaveBeenCalledWith('auth_files.delete_filtered_partial', 'warning');
+    hook.unmount();
+  });
+
   it('requires a second confirmation and uses verified runtime selectors', async () => {
     const first = {
       id: 'runtime-first',

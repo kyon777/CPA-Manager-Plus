@@ -127,6 +127,48 @@ describe('credential runtime manager API', () => {
     expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('access_token');
   });
 
+  it('posts only stable identity evidence when deleting selected credentials', async () => {
+    const controller = new AbortController();
+    await usageServiceApi.deleteSelectedAuthFilesBatch(
+      BASE,
+      KEY,
+      [
+        {
+          fileName: 'a.json',
+          provider: 'codex',
+          authIndex: '7',
+          runtimeId: 'runtime-a',
+          accountId: 'account-a',
+          accountSnapshot: 'person@example.com',
+        },
+      ],
+      controller.signal
+    );
+
+    expect(postSpy).toHaveBeenCalledWith(
+      'http://manager.local:18317/v0/management/auth-files/delete-selected-batch',
+      {
+        targets: [
+          {
+            fileName: 'a.json',
+            provider: 'codex',
+            authIndex: '7',
+            runtimeId: 'runtime-a',
+            accountId: 'account-a',
+            accountSnapshot: 'person@example.com',
+          },
+        ],
+      },
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer manager-key' },
+        signal: controller.signal,
+        timeout: 240_000,
+      })
+    );
+    expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('access_token');
+    expect(JSON.stringify(postSpy.mock.calls[0]?.[1])).not.toContain('proxy_url');
+  });
+
   it('exports selected auth JSON with identity fields only', async () => {
     const target = {
       ...TARGET,

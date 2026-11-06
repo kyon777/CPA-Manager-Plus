@@ -667,6 +667,32 @@ export interface AccountBannedAuthFileDeleteResponse {
   failed: AccountBannedAuthFileDeleteItem[];
 }
 
+// Selected permanent deletion uses the same redacted identity boundary as
+// account-banned deletion, but supports every selected current credential and
+// deliberately has no recovery-task or client-key requirement.
+export interface SelectedAuthFileDeleteTargetRequest {
+  fileName: string;
+  provider: string;
+  authIndex?: string;
+  runtimeId?: string;
+  accountId?: string;
+  accountSnapshot?: string;
+}
+
+export interface SelectedAuthFileDeleteItem {
+  fileName: string;
+  physicalName?: string;
+  code?: string;
+  message?: string;
+}
+
+export interface SelectedAuthFileDeleteResponse {
+  requested: number;
+  deleted: SelectedAuthFileDeleteItem[];
+  skipped: SelectedAuthFileDeleteItem[];
+  failed: SelectedAuthFileDeleteItem[];
+}
+
 // Identity-only request/response types for exporting exactly the selected
 // original auth JSON objects. Raw credentials are returned only in records;
 // browser requests can never carry token or proxy fields.
@@ -2613,6 +2639,15 @@ const accountBannedDeleteTargetPayload = (target: AccountBannedAuthFileDeleteTar
   ...(target.accountSnapshot ? { accountSnapshot: target.accountSnapshot } : {}),
 });
 
+const selectedAuthFileDeleteTargetPayload = (target: SelectedAuthFileDeleteTargetRequest) => ({
+  fileName: target.fileName,
+  provider: target.provider,
+  ...(target.authIndex ? { authIndex: target.authIndex } : {}),
+  ...(target.runtimeId ? { runtimeId: target.runtimeId } : {}),
+  ...(target.accountId ? { accountId: target.accountId } : {}),
+  ...(target.accountSnapshot ? { accountSnapshot: target.accountSnapshot } : {}),
+});
+
 const authJsonExportTargetPayload = (target: AuthJsonExportTargetRequest) => ({
   clientKey: target.clientKey,
   fileName: target.fileName,
@@ -3860,6 +3895,39 @@ export const usageServiceApi = {
       const response = await axios.post<AccountBannedAuthFileDeleteResponse>(
         buildUrl(base, '/v0/management/auth-files/delete-account-banned-batch'),
         { targets: targets.map(accountBannedDeleteTargetPayload) },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          ...optionalAbortSignal(signal),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  deleteSelectedAuthFilesBatch: async (
+    base: string,
+    managementKey: string | undefined,
+    targets: SelectedAuthFileDeleteTargetRequest[],
+    signal?: AbortSignal
+  ): Promise<SelectedAuthFileDeleteResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        requested: targets.length,
+        deleted: [],
+        skipped: targets.map((target) => ({
+          fileName: target.fileName,
+          code: 'demo_mode',
+          message: 'Demo mode does not delete credentials',
+        })),
+        failed: [],
+      };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<SelectedAuthFileDeleteResponse>(
+        buildUrl(base, '/v0/management/auth-files/delete-selected-batch'),
+        { targets: targets.map(selectedAuthFileDeleteTargetPayload) },
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
