@@ -369,7 +369,7 @@ Expected: clean worktree; no change outside CPAM.
 - No source changes.
 - Reference: `CPAM_UPDATE_RUNBOOK.md` only if the user explicitly requests “更新 CPAM” / “更新cpam”.
 
-- [ ] **Step 1: Capture candidate identity before deployment**
+- [x] **Step 1: Capture candidate identity before deployment**
 
 Run:
 
@@ -380,7 +380,7 @@ git status --short --branch
 
 Expected: a clean `lo/custom` candidate with all three implementation/memory commits present.
 
-- [ ] **Step 2: Follow CPAM-only deployment boundaries**
+- [x] **Step 2: Follow CPAM-only deployment boundaries**
 
 When deployment is requested, use the established CPAM deployment flow:
 
@@ -394,7 +394,7 @@ When deployment is requested, use the established CPAM deployment flow:
 
 Never restart, build, modify, or deploy CPA Core / `cli-proxy-api`; never touch `/home/cpa`, `cpa.service`, SQLite usage history, `data.key`, OpenResty, certificates, or unrelated services.
 
-- [ ] **Step 3: Perform post-deployment behavior verification**
+- [x] **Step 3: Perform post-deployment behavior verification**
 
 Use a panel-authenticated request to the existing endpoint:
 
