@@ -61,28 +61,30 @@ type Options struct {
 }
 
 type Summary struct {
-	GeneratedAtMS             int64      `json:"generated_at_ms"`
-	WindowStartMS             int64      `json:"window_start_ms"`
-	ActiveAccountCount        int        `json:"active_account_count"`
-	EnabledActiveAccountCount int        `json:"enabled_active_account_count"`
-	MissingProxyAccountCount  int        `json:"missing_proxy_account_count"`
-	ProxyCount                int        `json:"proxy_count"`
-	OverloadedAccountCount    int        `json:"overloaded_account_count"`
-	Proxies                   []ProxyRow `json:"proxies"`
-	SavedProxyListAvailable   bool       `json:"saved_proxy_list_available"`
-	SavedProxyCount           int        `json:"saved_proxy_count"`
-	ObservedSavedProxyCount   int        `json:"observed_saved_proxy_count"`
-	UnobservedProxyCount      int        `json:"unobserved_proxy_count"`
-	UnobservedProxies         []string   `json:"unobserved_proxies"`
+	GeneratedAtMS              int64      `json:"generated_at_ms"`
+	WindowStartMS              int64      `json:"window_start_ms"`
+	ActiveAccountCount         int        `json:"active_account_count"`
+	EnabledActiveAccountCount  int        `json:"enabled_active_account_count"`
+	CurrentEnabledAccountCount int        `json:"current_enabled_account_count"`
+	MissingProxyAccountCount   int        `json:"missing_proxy_account_count"`
+	ProxyCount                 int        `json:"proxy_count"`
+	OverloadedAccountCount     int        `json:"overloaded_account_count"`
+	Proxies                    []ProxyRow `json:"proxies"`
+	SavedProxyListAvailable    bool       `json:"saved_proxy_list_available"`
+	SavedProxyCount            int        `json:"saved_proxy_count"`
+	ObservedSavedProxyCount    int        `json:"observed_saved_proxy_count"`
+	UnobservedProxyCount       int        `json:"unobserved_proxy_count"`
+	UnobservedProxies          []string   `json:"unobserved_proxies"`
 }
 
 type ProxyRow struct {
-	ProxyURL                  string  `json:"proxy_url"`
-	ActiveAccountCount        int     `json:"active_account_count"`
-	EnabledActiveAccountCount int     `json:"enabled_active_account_count"`
-	OverloadedAccountCount    int     `json:"overloaded_account_count"`
-	NonOverloadedAccountCount int     `json:"non_overloaded_account_count"`
-	OverloadedRate            float64 `json:"overloaded_rate"`
+	ProxyURL                   string  `json:"proxy_url"`
+	ActiveAccountCount         int     `json:"active_account_count"`
+	EnabledActiveAccountCount  int     `json:"enabled_active_account_count"`
+	CurrentEnabledAccountCount int     `json:"current_enabled_account_count"`
+	OverloadedAccountCount     int     `json:"overloaded_account_count"`
+	NonOverloadedAccountCount  int     `json:"non_overloaded_account_count"`
+	OverloadedRate             float64 `json:"overloaded_rate"`
 }
 
 type cachedSummary struct {
@@ -216,6 +218,26 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 		return Summary{}, ErrUnavailable
 	}
 	savedProxyURLs, savedProxyListAvailable := s.readSavedProxyURLs(ctx)
+	now := s.now()
+	result := Summary{
+		GeneratedAtMS:           now.UnixMilli(),
+		WindowStartMS:           now.Add(-summaryWindow).UnixMilli(),
+		Proxies:                 []ProxyRow{},
+		SavedProxyListAvailable: savedProxyListAvailable,
+		UnobservedProxies:       []string{},
+	}
+	currentEnabledByProxy := make(map[string]int, len(files))
+	for _, file := range files {
+		if file.Disabled {
+			continue
+		}
+		key, _ := normalizeProxyURL(file.ProxyURL)
+		if key == "" {
+			continue
+		}
+		result.CurrentEnabledAccountCount++
+		currentEnabledByProxy[key]++
+	}
 
 	targets := make([]store.LatestAccountRequestQuery, 0, len(files))
 	filesByTarget := make([]cpaauthfiles.File, 0, len(files))
@@ -226,14 +248,6 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 		}
 		targets = append(targets, target)
 		filesByTarget = append(filesByTarget, file)
-	}
-	now := s.now()
-	result := Summary{
-		GeneratedAtMS:           now.UnixMilli(),
-		WindowStartMS:           now.Add(-summaryWindow).UnixMilli(),
-		Proxies:                 []ProxyRow{},
-		SavedProxyListAvailable: savedProxyListAvailable,
-		UnobservedProxies:       []string{},
 	}
 	if len(targets) == 0 {
 		return decorateSavedProxyDifference(result, savedProxyURLs), nil
@@ -284,7 +298,11 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 		}
 		group := groups[key]
 		if group == nil {
-			group = &proxyAggregate{key: key, proxyURL: displayURL}
+			group = &proxyAggregate{
+				key:                 key,
+				proxyURL:            displayURL,
+				currentEnabledCount: currentEnabledByProxy[key],
+			}
 			groups[key] = group
 		}
 		group.activeCount++
@@ -299,11 +317,12 @@ func (s *Service) compute(ctx context.Context) (Summary, error) {
 	result.Proxies = make([]ProxyRow, 0, len(groups))
 	for _, group := range groups {
 		row := ProxyRow{
-			ProxyURL:                  group.proxyURL,
-			ActiveAccountCount:        group.activeCount,
-			EnabledActiveAccountCount: group.enabledActiveCount,
-			OverloadedAccountCount:    group.overloadedCount,
-			NonOverloadedAccountCount: group.activeCount - group.overloadedCount,
+			ProxyURL:                   group.proxyURL,
+			ActiveAccountCount:         group.activeCount,
+			EnabledActiveAccountCount:  group.enabledActiveCount,
+			CurrentEnabledAccountCount: group.currentEnabledCount,
+			OverloadedAccountCount:     group.overloadedCount,
+			NonOverloadedAccountCount:  group.activeCount - group.overloadedCount,
 		}
 		if row.ActiveAccountCount > 0 {
 			row.OverloadedRate = float64(row.OverloadedAccountCount) / float64(row.ActiveAccountCount)
@@ -372,11 +391,12 @@ func decorateSavedProxyDifference(result Summary, savedProxyURLs []string) Summa
 }
 
 type proxyAggregate struct {
-	key                string
-	proxyURL           string
-	activeCount        int
-	enabledActiveCount int
-	overloadedCount    int
+	key                 string
+	proxyURL            string
+	activeCount         int
+	enabledActiveCount  int
+	currentEnabledCount int
+	overloadedCount     int
 }
 
 func latestRequestTarget(index int, file cpaauthfiles.File) (store.LatestAccountRequestQuery, bool) {

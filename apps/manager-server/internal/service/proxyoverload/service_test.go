@@ -116,6 +116,59 @@ func TestSummaryCountsEnabledSubsetWithoutChangingExistingTotals(t *testing.T) {
 	}
 }
 
+func TestSummaryCountsCurrentEnabledBindingsOutsideActiveEvidence(t *testing.T) {
+	now := time.Date(2026, time.November, 6, 12, 0, 0, 0, time.UTC)
+	historyIneligible := testCodexFile(
+		"history-ineligible.json", "3", "ineligible@example.test", "workspace-c", "http://proxy-a.example:8080",
+	)
+	historyIneligible.AccountIDInvalid = true
+	disabled := testCodexFile(
+		"disabled.json", "4", "disabled@example.test", "workspace-d", "http://proxy-a.example:8080",
+	)
+	disabled.Disabled = true
+	inventory := &fakeInventoryReader{files: []cpaauthfiles.File{
+		testCodexFile("active.json", "1", "active@example.test", "workspace-a", "http://proxy-a.example:8080/"),
+		testCodexFile("no-event.json", "2", "no-event@example.test", "workspace-b", "http://proxy-a.example:8080////"),
+		historyIneligible,
+		disabled,
+		testCodexFile("other-active.json", "5", "other@example.test", "workspace-e", "http://proxy-b.example:8080"),
+	}}
+	evidence := &fakeEvidenceReader{items: []store.ProxyOverloadEvidence{
+		{RequestIndex: 0, Active: true},
+		{RequestIndex: 3, Active: true, ServerOverloaded: true},
+	}}
+	service := New(Options{
+		SetupResolver: fakeSetupResolver{setup: configuredSetup(), ok: true},
+		AuthFiles:     inventory,
+		Evidence:      evidence,
+		Now:           func() time.Time { return now },
+	})
+
+	result, err := service.Summary(context.Background(), true)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if result.ActiveAccountCount != 2 || result.EnabledActiveAccountCount != 2 {
+		t.Fatalf("active current subset = %#v", result)
+	}
+	if result.CurrentEnabledAccountCount != 4 {
+		t.Fatalf("current enabled bindings = %d, want 4", result.CurrentEnabledAccountCount)
+	}
+	rows := make(map[string]ProxyRow, len(result.Proxies))
+	for _, row := range result.Proxies {
+		rows[row.ProxyURL] = row
+	}
+	if got := rows["http://proxy-a.example:8080/"]; got.CurrentEnabledAccountCount != 3 || got.ActiveAccountCount != 1 {
+		t.Fatalf("proxy a = %#v", got)
+	}
+	if got := rows["http://proxy-b.example:8080"]; got.CurrentEnabledAccountCount != 1 || got.OverloadedAccountCount != 1 {
+		t.Fatalf("proxy b = %#v", got)
+	}
+	if inventory.callCount() != 1 || evidence.callCount() != 1 {
+		t.Fatalf("inventory/evidence calls = %d/%d, want 1/1", inventory.callCount(), evidence.callCount())
+	}
+}
+
 func TestSummaryNormalizesTrailingSlashesOnlyForGrouping(t *testing.T) {
 	now := time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
 	service := New(Options{
