@@ -50,6 +50,7 @@ export function ProxyOverloadSummaryModal({
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [copying, setCopying] = useState(false);
   const savedListAvailable = result?.saved_proxy_list_available === true;
+  const enabledActiveCount = result?.enabled_active_account_count ?? 0;
 
   useEffect(() => {
     setFilter('all');
@@ -153,7 +154,10 @@ export function ProxyOverloadSummaryModal({
           <>
             <div className={styles.summary} aria-live="polite">
               <span>
-                {t('accounts.proxy_overload_active', { count: result.active_account_count })}
+                {t('accounts.proxy_overload_active', {
+                  count: result.active_account_count,
+                  enabled: enabledActiveCount,
+                })}
               </span>
               <span>
                 {t('accounts.proxy_overload_missing', {
@@ -329,7 +333,12 @@ export function ProxyOverloadSummaryModal({
                           <td>
                             <code title={row.proxy_url}>{row.proxy_url}</code>
                           </td>
-                          <td>{row.active_account_count}</td>
+                          <td>
+                            {t('accounts.proxy_overload_active_cell', {
+                              count: row.active_account_count,
+                              enabled: row.enabled_active_account_count ?? 0,
+                            })}
+                          </td>
                           <td>{row.overloaded_account_count}</td>
                           <td>{row.non_overloaded_account_count}</td>
                           <td>{formatRate(successRateForProxy(row))}</td>

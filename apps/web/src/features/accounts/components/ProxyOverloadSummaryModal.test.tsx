@@ -7,8 +7,12 @@ import { ProxyOverloadSummaryModal } from './ProxyOverloadSummaryModal';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, values?: Record<string, unknown>) =>
-      typeof values?.count === 'number' ? `${key}:${values.count}` : key,
+    t: (key: string, values?: Record<string, unknown>) => {
+      if (typeof values?.count !== 'number') return key;
+      return typeof values.enabled === 'number'
+        ? `${key}:${values.count}:${values.enabled}`
+        : `${key}:${values.count}`;
+    },
   }),
 }));
 
@@ -25,6 +29,7 @@ const result: ProxyOverloadSummaryResponse = {
   generated_at_ms: 1_792_752_000_000,
   window_start_ms: 1_792_492_800_000,
   active_account_count: 4,
+  enabled_active_account_count: 2,
   missing_proxy_account_count: 1,
   proxy_count: 3,
   overloaded_account_count: 2,
@@ -37,6 +42,7 @@ const result: ProxyOverloadSummaryResponse = {
     {
       proxy_url: 'http://loaded.example:8080',
       active_account_count: 2,
+      enabled_active_account_count: 0,
       overloaded_account_count: 2,
       non_overloaded_account_count: 0,
       overloaded_rate: 1,
@@ -44,6 +50,7 @@ const result: ProxyOverloadSummaryResponse = {
     {
       proxy_url: 'http://healthy.example:8080',
       active_account_count: 2,
+      enabled_active_account_count: 2,
       overloaded_account_count: 0,
       non_overloaded_account_count: 2,
       overloaded_rate: 0,
@@ -51,6 +58,7 @@ const result: ProxyOverloadSummaryResponse = {
     {
       proxy_url: 'http://missing-load.example:8080',
       active_account_count: 1,
+      enabled_active_account_count: 1,
       overloaded_account_count: 0,
       non_overloaded_account_count: 1,
       overloaded_rate: 0,
@@ -106,7 +114,12 @@ describe('ProxyOverloadSummaryModal', () => {
     ]);
     expect(
       renderer!.root.findAll((node) =>
-        hasText(node.props.children, 'accounts.proxy_overload_active:4')
+        hasText(node.props.children, 'accounts.proxy_overload_active:4:2')
+      ).length
+    ).toBeGreaterThan(0);
+    expect(
+      renderer!.root.findAll((node) =>
+        hasText(node.props.children, 'accounts.proxy_overload_active_cell:2:2')
       ).length
     ).toBeGreaterThan(0);
     expect(
@@ -294,6 +307,34 @@ describe('ProxyOverloadSummaryModal', () => {
       ).length
     ).toBeGreaterThan(0);
     expect(() => findButton(renderer!, 'accounts.proxy_overload_filter_unobserved')).toThrow();
+    renderer!.unmount();
+  });
+
+  it('defaults omitted enabled counters to zero for an older Manager response', () => {
+    let renderer: ReactTestRenderer;
+    act(() => {
+      renderer = renderModal({
+        result: {
+          ...result,
+          enabled_active_account_count: undefined,
+          proxies: result.proxies.map((row) => ({
+            ...row,
+            enabled_active_account_count: undefined,
+          })),
+        },
+      });
+    });
+
+    expect(
+      renderer!.root.findAll((node) =>
+        hasText(node.props.children, 'accounts.proxy_overload_active:4:0')
+      ).length
+    ).toBeGreaterThan(0);
+    expect(
+      renderer!.root.findAll((node) =>
+        hasText(node.props.children, 'accounts.proxy_overload_active_cell:2:0')
+      ).length
+    ).toBeGreaterThan(0);
     renderer!.unmount();
   });
 });
