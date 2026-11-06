@@ -65,7 +65,7 @@ The old field is not deleted or redefined. The new field counts only inventory i
 - Modify: `apps/manager-server/internal/service/proxyoverload/service.go`
 - Modify: `apps/manager-server/internal/service/proxyoverload/service_test.go`
 
-- [ ] **Step 1: Establish the untouched focused-test baseline**
+- [x] **Step 1: Establish the untouched focused-test baseline**
 
 Run:
 
@@ -76,7 +76,7 @@ go test ./internal/service/proxyoverload -count=1
 
 Expected: `PASS` before adding the regression.
 
-- [ ] **Step 2: Write the failing current-binding test**
+- [x] **Step 2: Write the failing current-binding test**
 
 Add `TestSummaryCountsCurrentEnabledBindingsOutsideActiveEvidence` beside `TestSummaryCountsEnabledSubsetWithoutChangingExistingTotals`. Use one current proxy with three enabled files and one disabled file, but supply active evidence for only one enabled file. Mark another enabled file `AccountIDInvalid = true` so it is deliberately excluded from strict history targets but must still count as a current binding.
 
@@ -131,7 +131,7 @@ func TestSummaryCountsCurrentEnabledBindingsOutsideActiveEvidence(t *testing.T) 
 }
 ```
 
-- [ ] **Step 3: Run only the new regression and confirm it fails**
+- [x] **Step 3: Run only the new regression and confirm it fails**
 
 Run:
 
@@ -142,7 +142,7 @@ go test ./internal/service/proxyoverload -run TestSummaryCountsCurrentEnabledBin
 
 Expected: compile failure because `CurrentEnabledAccountCount` does not yet exist.
 
-- [ ] **Step 4: Add the minimal additive backend contract**
+- [x] **Step 4: Add the minimal additive backend contract**
 
 In `Summary`, `ProxyRow`, and `proxyAggregate`, add `CurrentEnabledAccountCount` / `currentEnabledCount` with the exact JSON key `current_enabled_account_count`.
 
@@ -193,7 +193,7 @@ CurrentEnabledAccountCount: group.currentEnabledCount,
 
 Do not prepopulate `groups` from `currentEnabledByProxy`; only active evidence creates observable proxy rows. Do not alter `decorateSavedProxyDifference`, `latestRequestTarget`, the 72-hour limit, nine-event cap, or any use of `EnabledActiveAccountCount`.
 
-- [ ] **Step 5: Verify backend behavior and commit it**
+- [x] **Step 5: Verify backend behavior and commit it**
 
 Run:
 
@@ -218,7 +218,7 @@ Expected: focused package passes; one commit contains only backend implementatio
 - Modify: `apps/web/src/i18n/locales/en.json`
 - Modify: `apps/web/src/i18n/locales/ru.json`
 
-- [ ] **Step 1: Write failing modal display and fallback tests**
+- [x] **Step 1: Write failing modal display and fallback tests**
 
 Update the `result` fixture so active-only counts differ from current binding counts:
 
@@ -249,7 +249,7 @@ expect(
 
 Add an old-Manager fallback test that removes only `current_enabled_account_count`, preserves `enabled_active_account_count`, and expects `:4:2` and `:2:2`. Keep the existing all-omitted test and make it expect zero.
 
-- [ ] **Step 2: Run the focused modal test and confirm it fails**
+- [x] **Step 2: Run the focused modal test and confirm it fails**
 
 Run:
 
@@ -259,7 +259,7 @@ npm --prefix apps/web test -- --run src/features/accounts/components/ProxyOverlo
 
 Expected: assertions fail because the current UI still renders `enabled_active_account_count`.
 
-- [ ] **Step 3: Extend client response types and demo data**
+- [x] **Step 3: Extend client response types and demo data**
 
 In `usageService.ts`, add optional fields to both response interfaces:
 
@@ -269,7 +269,7 @@ current_enabled_account_count?: number;
 
 In the demo response, provide the new summary and row values explicitly. Do not change endpoint URLs, query parameters, timeouts, fetch cadence, or the proxy sorting model.
 
-- [ ] **Step 4: Make only the displayed enabled value prefer the new field**
+- [x] **Step 4: Make only the displayed enabled value prefer the new field**
 
 In `ProxyOverloadSummaryModal.tsx`, replace the old summary variable with:
 
@@ -292,7 +292,7 @@ const currentEnabledCount =
 
 Use a block callback for `observedRows.map` so the per-row local variable is scoped safely. Keep filters, selection keys, sorting, copy text, unobserved rows, and success-rate calculation byte-for-byte semantically unchanged.
 
-- [ ] **Step 5: Update all existing locale keys, not the table shape**
+- [x] **Step 5: Update all existing locale keys, not the table shape**
 
 Replace the existing values for `proxy_overload_active`, `proxy_overload_active_cell`, and `proxy_overload_hint` in all four locale JSON files. Use these Chinese values:
 
@@ -304,7 +304,7 @@ Replace the existing values for `proxy_overload_active`, `proxy_overload_active_
 
 Use equivalent localized wording in `zh-TW`, `en`, and `ru`. Do not add a table column or change its width.
 
-- [ ] **Step 6: Verify web behavior and commit it**
+- [x] **Step 6: Verify web behavior and commit it**
 
 Run:
 
@@ -323,7 +323,7 @@ Expected: the focused modal suite, type check, and production bundle all pass; o
 **Files:**
 - Modify: `docs/LO-CPAM-CUSTOM-MEMORY.md`
 
-- [ ] **Step 1: Add the retained invariant to custom memory**
+- [x] **Step 1: Add the retained invariant to custom memory**
 
 Append a dated subsection stating all of the following explicitly:
 
@@ -336,7 +336,7 @@ Append a dated subsection stating all of the following explicitly:
 - Derive both counts from the single existing inventory fetch. Do not add a per-account CPA call or SQLite query, and do not create a row for a proxy with current bindings only and no 72-hour active evidence.
 ```
 
-- [ ] **Step 2: Run the combined targeted suite**
+- [x] **Step 2: Run the combined targeted suite**
 
 Run:
 
@@ -351,7 +351,7 @@ git status --short
 
 Expected: all four validations pass, `git diff --check` has no output, and the only uncommitted file is the custom-memory update.
 
-- [ ] **Step 3: Commit the invariant record**
+- [x] **Step 3: Commit the invariant record**
 
 Run:
 
