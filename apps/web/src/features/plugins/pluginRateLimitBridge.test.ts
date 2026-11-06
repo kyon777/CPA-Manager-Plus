@@ -948,7 +948,12 @@ describe('per-auth rate limit iframe bridge', () => {
       },
       reply: (_source, message) => {
         responses.push(message);
-        if (message.operation === 'result' && message.ok && message.requestID === 'modern_load') {
+        if (
+          message.operation === 'result' &&
+          message.ok &&
+          'settings' in message &&
+          message.requestID === 'modern_load'
+        ) {
           loadedSettings = message.settings;
         }
       },
