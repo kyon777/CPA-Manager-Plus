@@ -20,6 +20,8 @@ const { mocks } = vi.hoisted(() => ({
     copyToClipboard: vi.fn(async () => true),
     translationCalls: [] as Array<[string, Record<string, unknown> | undefined]>,
     usageState: null as unknown,
+    usageUiState: { apiKeyCostMultiplier: 1 },
+    writeUsageAnalyticsUiState: vi.fn(),
   },
 }));
 
@@ -47,6 +49,11 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('./useUsageAnalytics', () => ({
   useUsageAnalytics: () => mocks.usageState,
+}));
+
+vi.mock('./usageAnalyticsUiState', () => ({
+  readUsageAnalyticsUiState: () => mocks.usageUiState,
+  writeUsageAnalyticsUiState: mocks.writeUsageAnalyticsUiState,
 }));
 
 vi.mock('@/utils/clipboard', () => ({
@@ -567,6 +574,15 @@ beforeEach(() => {
   mocks.copyToClipboard.mockResolvedValue(true);
   mocks.translationCalls.length = 0;
   mocks.usageState = createUsageState();
+  mocks.usageUiState = { apiKeyCostMultiplier: 1 };
+  mocks.writeUsageAnalyticsUiState.mockReset();
+  mocks.writeUsageAnalyticsUiState.mockImplementation(
+    (patch: { apiKeyCostMultiplier?: number }) => {
+      if (patch.apiKeyCostMultiplier !== undefined) {
+        mocks.usageUiState = { apiKeyCostMultiplier: patch.apiKeyCostMultiplier };
+      }
+    }
+  );
 });
 
 describe('UsageAnalyticsPage', () => {
@@ -1148,6 +1164,37 @@ describe('UsageAnalyticsPage', () => {
     });
     expect(findApiKeyMultiplierInput(renderer).props.value).toBe('1');
     expect(usageState.apiKeyRows[0]?.estimatedCost).toBe(1.25);
+  });
+
+  it('persists the API key display multiplier across page remounts without refreshing data', () => {
+    mocks.usageUiState = { apiKeyCostMultiplier: 0.3 };
+
+    const usageState = createUsageState({ activeTab: 'apiKeys' });
+    mocks.usageState = usageState;
+    const renderer = renderPage();
+
+    expect(findApiKeyMultiplierInput(renderer).props.value).toBe('0.3');
+    expect(getApiKeyCostCellText(renderer)).toContain('$0.38');
+
+    act(() => {
+      findApiKeyMultiplierInput(renderer).props.onChange({ target: { value: '0.7' } });
+    });
+
+    expect(mocks.writeUsageAnalyticsUiState).toHaveBeenLastCalledWith({
+      apiKeyCostMultiplier: 0.7,
+    });
+    expect(getApiKeyCostCellText(renderer)).toContain('$0.88');
+    expect(usageState.refresh).not.toHaveBeenCalled();
+    expect(usageState.apiKeyRows[0]?.estimatedCost).toBe(1.25);
+
+    act(() => {
+      renderer.unmount();
+    });
+
+    const remounted = renderPage();
+    expect(findApiKeyMultiplierInput(remounted).props.value).toBe('0.7');
+    expect(getApiKeyCostCellText(remounted)).toContain('$0.88');
+    expect(usageState.refresh).not.toHaveBeenCalled();
   });
 
   it('does not render the multiplier control outside the API key tab', () => {

@@ -1,6 +1,7 @@
 import {
   USAGE_ANALYTICS_DEFAULT_FILTERS,
   USAGE_ANALYTICS_TABS,
+  normalizeUsageDisplayMultiplier,
   type UsageAnalyticsCacheStatus,
   type UsageAnalyticsCustomRange,
   type UsageAnalyticsFiltersState,
@@ -16,11 +17,13 @@ export const USAGE_ANALYTICS_UI_STATE_STORAGE_KEY = 'usageAnalytics.uiState';
 export type UsageAnalyticsUiState = {
   activeTab: UsageAnalyticsTab;
   filters: UsageAnalyticsFiltersState;
+  apiKeyCostMultiplier: number;
 };
 
 export type UsageAnalyticsUiStatePatch = {
   activeTab?: UsageAnalyticsTab;
   filters?: Partial<UsageAnalyticsFiltersState>;
+  apiKeyCostMultiplier?: number;
 };
 
 const TIME_RANGE_SET = new Set<UsageAnalyticsTimeRange>([
@@ -75,6 +78,9 @@ const normalizeSelectValue = (value: unknown): string => {
 const normalizeInputValue = (value: unknown): string =>
   typeof value === 'string' ? value : '';
 
+const normalizeApiKeyCostMultiplier = (value: unknown): number =>
+  normalizeUsageDisplayMultiplier(typeof value === 'string' ? value : String(value ?? ''));
+
 const normalizeCustomRange = (value: unknown): UsageAnalyticsCustomRange | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
 
@@ -96,6 +102,7 @@ const normalizeCustomRange = (value: unknown): UsageAnalyticsCustomRange | null 
 export const getDefaultUsageAnalyticsUiState = (): UsageAnalyticsUiState => ({
   activeTab: 'overview',
   filters: USAGE_ANALYTICS_DEFAULT_FILTERS,
+  apiKeyCostMultiplier: 1,
 });
 
 export const normalizeUsageAnalyticsFilters = (value: unknown): UsageAnalyticsFiltersState => {
@@ -128,9 +135,11 @@ export const normalizeUsageAnalyticsUiState = (value: unknown): UsageAnalyticsUi
     return getDefaultUsageAnalyticsUiState();
   }
 
+  const record = value as Record<string, unknown>;
   return {
-    activeTab: normalizeActiveTab((value as Record<string, unknown>).activeTab),
-    filters: normalizeUsageAnalyticsFilters((value as Record<string, unknown>).filters),
+    activeTab: normalizeActiveTab(record.activeTab),
+    filters: normalizeUsageAnalyticsFilters(record.filters),
+    apiKeyCostMultiplier: normalizeApiKeyCostMultiplier(record.apiKeyCostMultiplier),
   };
 };
 
@@ -182,6 +191,7 @@ export const buildUsageAnalyticsUiStateFromSearchParams = (
     return {
       activeTab,
       filters: fallback.filters,
+      apiKeyCostMultiplier: fallback.apiKeyCostMultiplier,
     };
   }
 
@@ -215,6 +225,7 @@ export const buildUsageAnalyticsUiStateFromSearchParams = (
   return {
     activeTab,
     filters: normalizeUsageAnalyticsFilters(record),
+    apiKeyCostMultiplier: fallback.apiKeyCostMultiplier,
   };
 };
 
@@ -230,8 +241,13 @@ const setNonDefaultParam = (
   }
 };
 
-export const buildUsageAnalyticsSearchParams = (state: UsageAnalyticsUiState) => {
-  const normalized = normalizeUsageAnalyticsUiState(state);
+export const buildUsageAnalyticsSearchParams = (
+  state: Pick<UsageAnalyticsUiState, 'activeTab' | 'filters'>
+) => {
+  const normalized = normalizeUsageAnalyticsUiState({
+    ...getDefaultUsageAnalyticsUiState(),
+    ...state,
+  });
   const { activeTab, filters } = normalized;
   const defaults = USAGE_ANALYTICS_DEFAULT_FILTERS;
   const params = new URLSearchParams();
@@ -277,6 +293,7 @@ export const writeUsageAnalyticsUiState = (state: UsageAnalyticsUiStatePatch) =>
     const next = normalizeUsageAnalyticsUiState({
       activeTab: state.activeTab ?? current.activeTab,
       filters: state.filters ? { ...current.filters, ...state.filters } : current.filters,
+      apiKeyCostMultiplier: state.apiKeyCostMultiplier ?? current.apiKeyCostMultiplier,
     });
     window.localStorage.setItem(
       USAGE_ANALYTICS_UI_STATE_STORAGE_KEY,

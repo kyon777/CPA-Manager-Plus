@@ -89,6 +89,7 @@ import {
   type UsageTrendMetricKey,
 } from './usageAnalyticsModel';
 import { useUsageAnalytics } from './useUsageAnalytics';
+import { readUsageAnalyticsUiState, writeUsageAnalyticsUiState } from './usageAnalyticsUiState';
 import { UsageSummarySection } from './components/UsageSummaryCards';
 import {
   buildUsageEntitySummaryCards,
@@ -2355,7 +2356,9 @@ function UsageAnalyticsPageInner() {
   const [showAllModels, setShowAllModels] = useState(false);
   const [credentialWarningsForSelectionOnly, setCredentialWarningsForSelectionOnly] =
     useState(false);
-  const [apiKeyCostMultiplierInput, setApiKeyCostMultiplierInput] = useState('1');
+  const [apiKeyCostMultiplierInput, setApiKeyCostMultiplierInput] = useState(() =>
+    String(readUsageAnalyticsUiState().apiKeyCostMultiplier)
+  );
   const [customRangeFallbackEndMs] = useState(() => Date.now());
   const customStartInputRef = useRef<HTMLInputElement | null>(null);
   const customEndInputRef = useRef<HTMLInputElement | null>(null);
@@ -2377,6 +2380,17 @@ function UsageAnalyticsPageInner() {
   const allStatusOptionLabel = t('monitoring.filter_all_statuses');
   const allAuthFileOptionLabel = t('usage_analytics.filter_all_auth_files');
   const apiKeyCostMultiplier = normalizeUsageDisplayMultiplier(apiKeyCostMultiplierInput);
+  const updateApiKeyCostMultiplierInput = (value: string) => {
+    setApiKeyCostMultiplierInput(value);
+    writeUsageAnalyticsUiState({
+      apiKeyCostMultiplier: normalizeUsageDisplayMultiplier(value),
+    });
+  };
+  const normalizeApiKeyCostMultiplierInput = () => {
+    const normalized = String(apiKeyCostMultiplier);
+    setApiKeyCostMultiplierInput(normalized);
+    writeUsageAnalyticsUiState({ apiKeyCostMultiplier });
+  };
 
   const incomingOptionCache = useMemo<StableUsageOptionCache>(() => {
     const apiKeys = mergeSelectOptions([
@@ -3263,8 +3277,8 @@ function UsageAnalyticsPageInner() {
                       min="0"
                       step="0.01"
                       value={apiKeyCostMultiplierInput}
-                      onChange={(event) => setApiKeyCostMultiplierInput(event.target.value)}
-                      onBlur={() => setApiKeyCostMultiplierInput(String(apiKeyCostMultiplier))}
+                      onChange={(event) => updateApiKeyCostMultiplierInput(event.target.value)}
+                      onBlur={normalizeApiKeyCostMultiplierInput}
                     />
                   </label>
                   <div className={styles.apiSearchBar}>

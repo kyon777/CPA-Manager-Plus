@@ -56,9 +56,45 @@ describe('usageAnalyticsUiState', () => {
     expect(getDefaultUsageAnalyticsUiState()).toEqual({
       activeTab: 'overview',
       filters: USAGE_ANALYTICS_DEFAULT_FILTERS,
+      apiKeyCostMultiplier: 1,
     });
     expect(readUsageAnalyticsUiState()).toEqual(getDefaultUsageAnalyticsUiState());
     expect(readUsageAnalyticsUiState().filters.timeRange).toBe('24h');
+  });
+
+  it('defaults the API key display multiplier to one when no setting has been saved', () => {
+    expect(readUsageAnalyticsUiState()).toMatchObject({
+      apiKeyCostMultiplier: 1,
+    });
+  });
+
+  it('reads a valid persisted API key display multiplier and rejects dirty values', () => {
+    storage.setItem(
+      USAGE_ANALYTICS_UI_STATE_STORAGE_KEY,
+      JSON.stringify({
+        activeTab: 'apiKeys',
+        filters: USAGE_ANALYTICS_DEFAULT_FILTERS,
+        apiKeyCostMultiplier: 0.3,
+      })
+    );
+
+    expect(readUsageAnalyticsUiState()).toMatchObject({
+      activeTab: 'apiKeys',
+      apiKeyCostMultiplier: 0.3,
+    });
+
+    storage.setItem(
+      USAGE_ANALYTICS_UI_STATE_STORAGE_KEY,
+      JSON.stringify({
+        activeTab: 'apiKeys',
+        filters: USAGE_ANALYTICS_DEFAULT_FILTERS,
+        apiKeyCostMultiplier: -1,
+      })
+    );
+
+    expect(readUsageAnalyticsUiState()).toMatchObject({
+      apiKeyCostMultiplier: 1,
+    });
   });
 
   it('normalizes persisted filters and ignores removed fields', () => {
@@ -120,10 +156,12 @@ describe('usageAnalyticsUiState', () => {
         ...USAGE_ANALYTICS_DEFAULT_FILTERS,
         model: 'all',
       },
+      apiKeyCostMultiplier: 1,
     });
   });
 
-  it('persists and reads filters via localStorage', () => {
+  it('persists UI-state filters and keeps the API key display multiplier via localStorage', () => {
+    writeUsageAnalyticsUiState({ apiKeyCostMultiplier: 0.3 });
     writeUsageAnalyticsUiState({
       filters: {
         ...USAGE_ANALYTICS_DEFAULT_FILTERS,
@@ -141,6 +179,7 @@ describe('usageAnalyticsUiState', () => {
         model: 'gpt-4o',
         cacheStatus: 'miss',
       },
+      apiKeyCostMultiplier: 0.3,
     });
     expect(readUsageAnalyticsUiState()).toEqual({
       activeTab: 'overview',
@@ -150,6 +189,7 @@ describe('usageAnalyticsUiState', () => {
         model: 'gpt-4o',
         cacheStatus: 'miss',
       },
+      apiKeyCostMultiplier: 0.3,
     });
   });
 
@@ -182,6 +222,7 @@ describe('usageAnalyticsUiState', () => {
         cacheStatus: 'hit',
         apiKeyKeyword: 'key',
       },
+      apiKeyCostMultiplier: 1,
     });
   });
 
@@ -219,5 +260,6 @@ describe('usageAnalyticsUiState', () => {
     expect(params.get('min_latency_ms')).toBe('10000');
     expect(params.get('cache_status')).toBe('hit');
     expect(params.get('api_key_keyword')).toBe('key');
+    expect(params.has('api_key_cost_multiplier')).toBe(false);
   });
 });
