@@ -2826,6 +2826,14 @@ export const formatMetricValue = (key: UsageMetricKey, value: number) => {
   return formatCompactNumber(value);
 };
 
+export const normalizeUsageDisplayMultiplier = (value: string): number => {
+  const trimmed = value.trim();
+  if (!trimmed) return 1;
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
+};
+
 export const formatHeatmapMetricValue = (key: UsageHeatmapMetricKey, value: number) => {
   if (key === 'failureRate') return `${((Number.isFinite(value) ? value : 0) * 100).toFixed(1)}%`;
   if (key === 'estimatedCost') return formatUsd(value);

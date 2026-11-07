@@ -1114,6 +1114,44 @@
   }
 }
 
+.apiKeyToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 1 1 420px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.apiKeyMultiplierControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--usage-muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+
+  input {
+    width: 76px;
+    min-height: 38px;
+    padding: 0 10px;
+    border: 1px solid var(--usage-border);
+    border-radius: 10px;
+    background: var(--usage-surface);
+    color: var(--usage-text);
+    font: inherit;
+  }
+}
+
+.multiplierCost {
+  margin-left: 6px;
+  color: var(--usage-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .sidePanels {
   display: grid;
   gap: 14px;
@@ -2731,6 +2769,15 @@
 
   .trendEntityHeader {
     align-items: flex-start;
+  }
+
+  .apiKeyToolbar {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .apiSearchBar {
+    flex: 1 1 220px;
   }
 
   .chartCanvas {

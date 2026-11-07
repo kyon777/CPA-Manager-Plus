@@ -4872,6 +4872,8 @@
     "model_compare_title": "Model Trend Comparison",
     "api_key_compare_title": "Client Key Trend",
     "api_key_keyword_placeholder": "Search client key, account, or auth label",
+    "api_key_multiplier_setting": "Multiplier",
+    "api_key_multiplier_amount": "Multiplier {{value}}",
     "api_key_rank_title": "Client Key Usage Ranking",
     "api_key_rank_context_top": "Top {{limit}} · {{total}} total client keys · sorted by cost",
     "api_key_rank_context_total": "{{total}} total client keys · sorted by cost",

@@ -41,6 +41,7 @@ import {
   getUsageRangeBounds,
   getSelectableApiKeyHash,
   maskApiKeyHash,
+  normalizeUsageDisplayMultiplier,
   resolveUsageGranularity,
   USAGE_ANALYTICS_DEFAULT_FILTERS,
 } from './usageAnalyticsModel';
@@ -73,6 +74,21 @@ const expectZeroTimelinePoint = (point: UsageTimelinePoint) => {
   expect(point.p95LatencyMs).toBeNull();
   expect(point.p95TtftMs).toBeNull();
 };
+
+describe('usage display multiplier', () => {
+  it.each([
+    ['1', 1],
+    ['0.3', 0.3],
+    ['0', 0],
+    ['', 1],
+    ['   ', 1],
+    ['-0.1', 1],
+    ['NaN', 1],
+    ['Infinity', 1],
+  ])('normalizes %s to %s', (input, expected) => {
+    expect(normalizeUsageDisplayMultiplier(input)).toBe(expected);
+  });
+});
 
 describe('usage analytics request model', () => {
   it('keeps synthetic fallback groups out of API key filters', () => {

@@ -4865,6 +4865,8 @@
     "model_compare_title": "模型趨勢對比",
     "api_key_compare_title": "客戶端 Key 趨勢",
     "api_key_keyword_placeholder": "搜尋客戶端 Key、帳號或認證標籤",
+    "api_key_multiplier_setting": "倍率設定",
+    "api_key_multiplier_amount": "倍率 {{value}}",
     "api_key_rank_title": "客戶端 Key 消耗排行",
     "api_key_rank_context_top": "Top {{limit}} · 共 {{total}} 個客戶端 Key · 按費用排序",
     "api_key_rank_context_total": "共 {{total}} 個客戶端 Key · 按費用排序",

@@ -33,6 +33,9 @@ vi.mock('react-i18next', () => ({
     i18n: { language: 'en' },
     t: (key: string, options?: Record<string, unknown>) => {
       mocks.translationCalls.push([key, options]);
+      if (key === 'usage_analytics.api_key_multiplier_amount' && options?.value !== undefined) {
+        return `${key} ${String(options.value)}`;
+      }
       if (!options) return key;
       return Object.entries(options).reduce(
         (value, [name, replacement]) => value.replace(`{{${name}}}`, String(replacement)),
@@ -64,6 +67,26 @@ const renderPage = () => {
     renderer = create(<UsageAnalyticsPage />);
   });
   return renderer;
+};
+
+const findApiKeyMultiplierInput = (renderer: ReactTestRenderer) => {
+  const input = renderer.root.findAllByType('input').find(
+    (node) => node.props['aria-label'] === 'usage_analytics.api_key_multiplier_setting'
+  );
+  if (!input) throw new Error('API key multiplier input not found');
+  return input;
+};
+
+const getApiKeyCostCellText = (renderer: ReactTestRenderer) => {
+  const section = renderer.root.findAllByType('section').find((candidate) =>
+    candidate
+      .findAllByType('h2')
+      .some((heading) => getText(heading) === 'usage_analytics.api_key_rank_title')
+  );
+  if (!section) throw new Error('API key rank section not found');
+  const row = section.findAllByType('tbody')[0]?.findAllByType('tr')[0];
+  if (!row) throw new Error('API key rank row not found');
+  return getText(row.findAllByType('td')[8]!);
 };
 
 const findHostButtonByText = (renderer: ReactTestRenderer, text: string) => {
@@ -1087,6 +1110,52 @@ describe('UsageAnalyticsPage', () => {
       apiKeyHash: 'abcdef1234567890',
     });
     expect(usageState.setActiveTab).toHaveBeenCalledWith('heatmap');
+  });
+
+  it('shows the original and inline multiplier cost only in the API key rank table', () => {
+    const usageState = createUsageState({ activeTab: 'apiKeys' });
+    mocks.usageState = usageState;
+    const renderer = renderPage();
+
+    expect(findApiKeyMultiplierInput(renderer).props.value).toBe('1');
+    expect(getApiKeyCostCellText(renderer)).toContain('$1.25');
+    expect(getApiKeyCostCellText(renderer)).toContain(
+      'usage_analytics.api_key_multiplier_amount'
+    );
+    expect(usageState.refresh).not.toHaveBeenCalled();
+
+    act(() => {
+      findApiKeyMultiplierInput(renderer).props.onChange({ target: { value: '0.3' } });
+    });
+
+    expect(getApiKeyCostCellText(renderer)).toContain('$0.38');
+    expect(usageState.refresh).not.toHaveBeenCalled();
+  });
+
+  it('normalizes an empty multiplier on blur without changing the API key data row', () => {
+    const usageState = createUsageState({ activeTab: 'apiKeys' });
+    mocks.usageState = usageState;
+    const renderer = renderPage();
+    const input = findApiKeyMultiplierInput(renderer);
+
+    act(() => {
+      input.props.onChange({ target: { value: '' } });
+    });
+    expect(getApiKeyCostCellText(renderer)).toContain('$1.25');
+
+    act(() => {
+      findApiKeyMultiplierInput(renderer).props.onBlur();
+    });
+    expect(findApiKeyMultiplierInput(renderer).props.value).toBe('1');
+    expect(usageState.apiKeyRows[0]?.estimatedCost).toBe(1.25);
+  });
+
+  it('does not render the multiplier control outside the API key tab', () => {
+    mocks.usageState = createUsageState({ activeTab: 'models' });
+    const renderer = renderPage();
+    expect(
+      renderer.root.findAllByProps({ 'aria-label': 'usage_analytics.api_key_multiplier_setting' })
+    ).toHaveLength(0);
   });
 
   it('caps API key ranking at the shared limit and exposes the filtered total', () => {

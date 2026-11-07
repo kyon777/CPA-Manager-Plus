@@ -4868,6 +4868,8 @@
     "model_compare_title": "Сравнение трендов моделей",
     "api_key_compare_title": "Тренд клиентского ключа",
     "api_key_keyword_placeholder": "Поиск по клиентскому ключу, аккаунту или auth label",
+    "api_key_multiplier_setting": "Множитель",
+    "api_key_multiplier_amount": "Множитель {{value}}",
     "api_key_rank_title": "Рейтинг клиентских ключей",
     "api_key_rank_context_top": "Топ-{{limit}} · всего клиентских ключей: {{total}} · сортировка по стоимости",
     "api_key_rank_context_total": "Всего клиентских ключей: {{total}} · сортировка по стоимости",

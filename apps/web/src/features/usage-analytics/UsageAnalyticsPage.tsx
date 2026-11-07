@@ -53,6 +53,7 @@ import {
   getUsageCacheTokens,
   hasUsageData,
   maskApiKeyHash,
+  normalizeUsageDisplayMultiplier,
   parseDateTimeLocalValue,
   resolveUsageApiKeyLabel,
   USAGE_ANALYTICS_TABS,
@@ -2354,6 +2355,7 @@ function UsageAnalyticsPageInner() {
   const [showAllModels, setShowAllModels] = useState(false);
   const [credentialWarningsForSelectionOnly, setCredentialWarningsForSelectionOnly] =
     useState(false);
+  const [apiKeyCostMultiplierInput, setApiKeyCostMultiplierInput] = useState('1');
   const [customRangeFallbackEndMs] = useState(() => Date.now());
   const customStartInputRef = useRef<HTMLInputElement | null>(null);
   const customEndInputRef = useRef<HTMLInputElement | null>(null);
@@ -2374,6 +2376,7 @@ function UsageAnalyticsPageInner() {
   const allProviderOptionLabel = t('monitoring.filter_all_providers');
   const allStatusOptionLabel = t('monitoring.filter_all_statuses');
   const allAuthFileOptionLabel = t('usage_analytics.filter_all_auth_files');
+  const apiKeyCostMultiplier = normalizeUsageDisplayMultiplier(apiKeyCostMultiplierInput);
 
   const incomingOptionCache = useMemo<StableUsageOptionCache>(() => {
     const apiKeys = mergeSelectOptions([
@@ -3250,19 +3253,35 @@ function UsageAnalyticsPageInner() {
                   <h2>{t('usage_analytics.api_key_rank_title')}</h2>
                   <p>{apiKeyRankContext}</p>
                 </div>
-                <div className={styles.apiSearchBar}>
-                  <IconSearch size={16} />
-                  <input
-                    value={usage.filters.apiKeyKeyword}
-                    onChange={(event) => updateFilters({ apiKeyKeyword: event.target.value })}
-                    placeholder={t('usage_analytics.api_key_keyword_placeholder')}
-                  />
+                <div className={styles.apiKeyToolbar}>
+                  <label className={styles.apiKeyMultiplierControl}>
+                    <span>{t('usage_analytics.api_key_multiplier_setting')}</span>
+                    <input
+                      aria-label={t('usage_analytics.api_key_multiplier_setting')}
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      value={apiKeyCostMultiplierInput}
+                      onChange={(event) => setApiKeyCostMultiplierInput(event.target.value)}
+                      onBlur={() => setApiKeyCostMultiplierInput(String(apiKeyCostMultiplier))}
+                    />
+                  </label>
+                  <div className={styles.apiSearchBar}>
+                    <IconSearch size={16} />
+                    <input
+                      value={usage.filters.apiKeyKeyword}
+                      onChange={(event) => updateFilters({ apiKeyKeyword: event.target.value })}
+                      placeholder={t('usage_analytics.api_key_keyword_placeholder')}
+                    />
+                  </div>
                 </div>
               </div>
               <RankTable
                 rows={visibleApiKeyRows}
                 type="apiKey"
                 selectedId={usage.selectedApiKey?.apiKeyHash}
+                displayCostMultiplier={apiKeyCostMultiplier}
                 onSelect={(row) => {
                   const apiKeyHash = getSelectableApiKeyHash(row.apiKeyHash);
                   if (apiKeyHash) usage.setSelectedApiKeyHash(apiKeyHash);
@@ -3720,12 +3739,14 @@ function RankTable({
   rows,
   type,
   selectedId,
+  displayCostMultiplier,
   onSelect,
   onCopyApiKey,
 }: {
   rows: UsageRankRow[];
   type: 'model' | 'apiKey' | 'credential';
   selectedId?: string;
+  displayCostMultiplier?: number;
   onSelect: (row: UsageRankRow) => void;
   onCopyApiKey?: (row: UsageRankRow) => void;
 }) {
@@ -3769,6 +3790,13 @@ function RankTable({
         <tbody>
           {rows.map((row, index) => {
             const active = selectedId === (type === 'apiKey' ? row.apiKeyHash : row.id);
+            const originalCost = formatMetricValue('estimatedCost', row.estimatedCost);
+            const multiplierCost =
+              type === 'apiKey' &&
+              displayCostMultiplier !== undefined &&
+              Number.isFinite(row.estimatedCost)
+                ? formatMetricValue('estimatedCost', row.estimatedCost * displayCostMultiplier)
+                : null;
             return (
               <tr
                 key={row.id}
@@ -3810,7 +3838,14 @@ function RankTable({
                 {type !== 'credential' ? (
                   <td>{formatPercent(computeRowCacheHitRate(row))}</td>
                 ) : null}
-                <td>{formatMetricValue('estimatedCost', row.estimatedCost)}</td>
+                <td>
+                  {originalCost}
+                  {multiplierCost !== null ? (
+                    <span className={styles.multiplierCost}>
+                      （{t('usage_analytics.api_key_multiplier_amount', { value: multiplierCost })}）
+                    </span>
+                  ) : null}
+                </td>
                 {type !== 'credential' ? (
                   <td>{formatMetricValue('estimatedCost', computeRowAverageCostPerCall(row))}</td>
                 ) : null}

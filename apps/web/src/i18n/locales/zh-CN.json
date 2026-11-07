@@ -4867,6 +4867,8 @@
     "model_compare_title": "模型趋势对比",
     "api_key_compare_title": "客户端 Key 趋势",
     "api_key_keyword_placeholder": "搜索客户端 Key、账号或认证标签",
+    "api_key_multiplier_setting": "倍率设置",
+    "api_key_multiplier_amount": "倍率 {{value}}",
     "api_key_rank_title": "客户端 Key 消耗排行",
     "api_key_rank_context_top": "Top {{limit}} · 共 {{total}} 个客户端 Key · 按费用排序",
     "api_key_rank_context_total": "共 {{total}} 个客户端 Key · 按费用排序",
