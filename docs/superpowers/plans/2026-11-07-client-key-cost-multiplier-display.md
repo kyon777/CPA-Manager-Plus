@@ -1,37 +1,37 @@
-# 客户端 Key 预估成本倍率显示 Implementation Plan
+﻿# å®¢æˆ·ç«¯ Key é¢„ä¼°æˆæœ¬å€çŽ‡æ˜¾ç¤º Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** 在 Usage Analytics 的“客户端 Key 消耗排行”表格中增加一个纯前端倍率输入，并在现有预估成本金额后以内联括号显示倍率金额。
+**Goal:** åœ¨ Usage Analytics çš„â€œå®¢æˆ·ç«¯ Key æ¶ˆè€—æŽ’è¡Œâ€è¡¨æ ¼ä¸­å¢žåŠ ä¸€ä¸ªçº¯å‰ç«¯å€çŽ‡è¾“å…¥ï¼Œå¹¶åœ¨çŽ°æœ‰é¢„ä¼°æˆæœ¬é‡‘é¢åŽä»¥å†…è”æ‹¬å·æ˜¾ç¤ºå€çŽ‡é‡‘é¢ã€‚
 
-**Architecture:** 在 `UsageAnalyticsPageInner` 保存输入框原始字符串，使用 `usageAnalyticsModel.ts` 中的纯函数将空值、非法值和负数归一化为 `1`。仅把归一化后的展示倍率传入 `RankTable` 的 `apiKey` 分支；`RankTable` 保留原始 `row.estimatedCost`，只在渲染同一个成本单元格时追加倍率金额。所有数据请求、排序、摘要和计费字段保持不变。
+**Architecture:** åœ¨ `UsageAnalyticsPageInner` ä¿å­˜è¾“å…¥æ¡†åŽŸå§‹å­—ç¬¦ä¸²ï¼Œä½¿ç”¨ `usageAnalyticsModel.ts` ä¸­çš„çº¯å‡½æ•°å°†ç©ºå€¼ã€éžæ³•å€¼å’Œè´Ÿæ•°å½’ä¸€åŒ–ä¸º `1`ã€‚ä»…æŠŠå½’ä¸€åŒ–åŽçš„å±•ç¤ºå€çŽ‡ä¼ å…¥ `RankTable` çš„ `apiKey` åˆ†æ”¯ï¼›`RankTable` ä¿ç•™åŽŸå§‹ `row.estimatedCost`ï¼Œåªåœ¨æ¸²æŸ“åŒä¸€ä¸ªæˆæœ¬å•å…ƒæ ¼æ—¶è¿½åŠ å€çŽ‡é‡‘é¢ã€‚æ‰€æœ‰æ•°æ®è¯·æ±‚ã€æŽ’åºã€æ‘˜è¦å’Œè®¡è´¹å­—æ®µä¿æŒä¸å˜ã€‚
 
-**Tech Stack:** React 19、TypeScript、React Test Renderer、Vitest、CSS Modules、i18next。
+**Tech Stack:** React 19ã€TypeScriptã€React Test Rendererã€Vitestã€CSS Modulesã€i18nextã€‚
 
 ---
 
-## 文件改动清单
+## æ–‡ä»¶æ”¹åŠ¨æ¸…å•
 
-- Modify: `apps/web/src/features/usage-analytics/usageAnalyticsModel.ts` — 增加可单测的倍率归一化纯函数；不增加服务端模型字段。
-- Modify: `apps/web/src/features/usage-analytics/usageAnalyticsModel.test.ts` — 覆盖默认值、合法小数、零值和非法输入。
-- Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.tsx` — 增加当前页面状态、倍率控件、`RankTable` 展示参数和内联金额渲染。
-- Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.test.tsx` — 覆盖默认显示、即时重算、失焦归一化、仅 apiKeys 表格生效和不触发请求。
-- Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.module.scss` — 增加倍率控件与括号金额的紧凑单行布局，不改变其他表格样式。
-- Modify: `apps/web/src/i18n/locales/zh-CN.json` — 增加倍率设置和倍率金额文案。
-- Modify: `apps/web/src/i18n/locales/zh-TW.json` — 增加繁体中文文案。
-- Modify: `apps/web/src/i18n/locales/en.json` — 增加英文文案。
-- Modify: `apps/web/src/i18n/locales/ru.json` — 增加俄文文案。
+- Modify: `apps/web/src/features/usage-analytics/usageAnalyticsModel.ts` â€” å¢žåŠ å¯å•æµ‹çš„å€çŽ‡å½’ä¸€åŒ–çº¯å‡½æ•°ï¼›ä¸å¢žåŠ æœåŠ¡ç«¯æ¨¡åž‹å­—æ®µã€‚
+- Modify: `apps/web/src/features/usage-analytics/usageAnalyticsModel.test.ts` â€” è¦†ç›–é»˜è®¤å€¼ã€åˆæ³•å°æ•°ã€é›¶å€¼å’Œéžæ³•è¾“å…¥ã€‚
+- Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.tsx` â€” å¢žåŠ å½“å‰é¡µé¢çŠ¶æ€ã€å€çŽ‡æŽ§ä»¶ã€`RankTable` å±•ç¤ºå‚æ•°å’Œå†…è”é‡‘é¢æ¸²æŸ“ã€‚
+- Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.test.tsx` â€” è¦†ç›–é»˜è®¤æ˜¾ç¤ºã€å³æ—¶é‡ç®—ã€å¤±ç„¦å½’ä¸€åŒ–ã€ä»… apiKeys è¡¨æ ¼ç”Ÿæ•ˆå’Œä¸è§¦å‘è¯·æ±‚ã€‚
+- Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.module.scss` â€” å¢žåŠ å€çŽ‡æŽ§ä»¶ä¸Žæ‹¬å·é‡‘é¢çš„ç´§å‡‘å•è¡Œå¸ƒå±€ï¼Œä¸æ”¹å˜å…¶ä»–è¡¨æ ¼æ ·å¼ã€‚
+- Modify: `apps/web/src/i18n/locales/zh-CN.json` â€” å¢žåŠ å€çŽ‡è®¾ç½®å’Œå€çŽ‡é‡‘é¢æ–‡æ¡ˆã€‚
+- Modify: `apps/web/src/i18n/locales/zh-TW.json` â€” å¢žåŠ ç¹ä½“ä¸­æ–‡æ–‡æ¡ˆã€‚
+- Modify: `apps/web/src/i18n/locales/en.json` â€” å¢žåŠ è‹±æ–‡æ–‡æ¡ˆã€‚
+- Modify: `apps/web/src/i18n/locales/ru.json` â€” å¢žåŠ ä¿„æ–‡æ–‡æ¡ˆã€‚
 
-所有命令均从 `C:\kyon\docker\cpa-manager\source` 执行。当前 `apps/manager-server/**` 的既有 WIP 不得加入本功能提交。
+æ‰€æœ‰å‘½ä»¤å‡ä»Ž `C:\kyon\docker\cpa-manager\source` æ‰§è¡Œã€‚å½“å‰ `apps/manager-server/**` çš„æ—¢æœ‰ WIP ä¸å¾—åŠ å…¥æœ¬åŠŸèƒ½æäº¤ã€‚
 
-### Task 1: 为倍率输入定义归一化契约（RED）
+### Task 1: ä¸ºå€çŽ‡è¾“å…¥å®šä¹‰å½’ä¸€åŒ–å¥‘çº¦ï¼ˆREDï¼‰
 
 **Files:**
 - Modify: `apps/web/src/features/usage-analytics/usageAnalyticsModel.test.ts`
 
-- [ ] **Step 1: 添加失败测试**
+- [x] **Step 1: æ·»åŠ å¤±è´¥æµ‹è¯•**
 
-在现有 model 测试 import 中加入 `normalizeUsageDisplayMultiplier`，并在测试文件中加入：
+åœ¨çŽ°æœ‰ model æµ‹è¯• import ä¸­åŠ å…¥ `normalizeUsageDisplayMultiplier`ï¼Œå¹¶åœ¨æµ‹è¯•æ–‡ä»¶ä¸­åŠ å…¥ï¼š
 
 ```ts
 describe('usage display multiplier', () => {
@@ -50,7 +50,7 @@ describe('usage display multiplier', () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认是预期失败**
+- [x] **Step 2: è¿è¡Œæµ‹è¯•ç¡®è®¤æ˜¯é¢„æœŸå¤±è´¥**
 
 Run:
 
@@ -58,17 +58,17 @@ Run:
 npm --workspace apps/web run test -- src/features/usage-analytics/usageAnalyticsModel.test.ts --testNamePattern="usage display multiplier"
 ```
 
-Expected: FAIL because `normalizeUsageDisplayMultiplier` has not been exported yet；不得通过修改测试来绕过缺失导出。
+Expected: FAIL because `normalizeUsageDisplayMultiplier` has not been exported yetï¼›ä¸å¾—é€šè¿‡ä¿®æ”¹æµ‹è¯•æ¥ç»•è¿‡ç¼ºå¤±å¯¼å‡ºã€‚
 
-### Task 2: 实现并验证倍率归一化纯函数（GREEN）
+### Task 2: å®žçŽ°å¹¶éªŒè¯å€çŽ‡å½’ä¸€åŒ–çº¯å‡½æ•°ï¼ˆGREENï¼‰
 
 **Files:**
 - Modify: `apps/web/src/features/usage-analytics/usageAnalyticsModel.ts`
 - Test: `apps/web/src/features/usage-analytics/usageAnalyticsModel.test.ts`
 
-- [ ] **Step 1: 添加最小实现**
+- [x] **Step 1: æ·»åŠ æœ€å°å®žçŽ°**
 
-在现有 `formatMetricValue` 附近导出以下函数：
+åœ¨çŽ°æœ‰ `formatMetricValue` é™„è¿‘å¯¼å‡ºä»¥ä¸‹å‡½æ•°ï¼š
 
 ```ts
 export const normalizeUsageDisplayMultiplier = (value: string): number => {
@@ -80,9 +80,9 @@ export const normalizeUsageDisplayMultiplier = (value: string): number => {
 };
 ```
 
-该函数只处理展示输入，不写入任何 Usage API 参数或后端模型。
+è¯¥å‡½æ•°åªå¤„ç†å±•ç¤ºè¾“å…¥ï¼Œä¸å†™å…¥ä»»ä½• Usage API å‚æ•°æˆ–åŽç«¯æ¨¡åž‹ã€‚
 
-- [ ] **Step 2: 运行同一测试确认通过**
+- [x] **Step 2: è¿è¡ŒåŒä¸€æµ‹è¯•ç¡®è®¤é€šè¿‡**
 
 Run:
 
@@ -90,16 +90,16 @@ Run:
 npm --workspace apps/web run test -- src/features/usage-analytics/usageAnalyticsModel.test.ts --testNamePattern="usage display multiplier"
 ```
 
-Expected: PASS，8 个用例全部通过。
+Expected: PASSï¼Œ8 ä¸ªç”¨ä¾‹å…¨éƒ¨é€šè¿‡ã€‚
 
-### Task 3: 先写客户端 Key 表格行为测试（RED）
+### Task 3: å…ˆå†™å®¢æˆ·ç«¯ Key è¡¨æ ¼è¡Œä¸ºæµ‹è¯•ï¼ˆREDï¼‰
 
 **Files:**
 - Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.test.tsx`
 
-- [ ] **Step 1: 添加测试辅助函数**
+- [x] **Step 1: æ·»åŠ æµ‹è¯•è¾…åŠ©å‡½æ•°**
 
-在现有 `getText`/`renderPage` 辅助函数附近添加按 aria-label 查找倍率输入和读取成本列的辅助逻辑：
+åœ¨çŽ°æœ‰ `getText`/`renderPage` è¾…åŠ©å‡½æ•°é™„è¿‘æ·»åŠ æŒ‰ aria-label æŸ¥æ‰¾å€çŽ‡è¾“å…¥å’Œè¯»å–æˆæœ¬åˆ—çš„è¾…åŠ©é€»è¾‘ï¼š
 
 ```ts
 const findApiKeyMultiplierInput = (renderer: ReactTestRenderer) => {
@@ -123,9 +123,9 @@ const getApiKeyCostCellText = (renderer: ReactTestRenderer) => {
 };
 ```
 
-- [ ] **Step 2: 添加失败测试，锁定用户可见行为**
+- [x] **Step 2: æ·»åŠ å¤±è´¥æµ‹è¯•ï¼Œé”å®šç”¨æˆ·å¯è§è¡Œä¸º**
 
-在 `UsageAnalyticsPage.test.tsx` 的 apiKeys 测试附近加入：
+åœ¨ `UsageAnalyticsPage.test.tsx` çš„ apiKeys æµ‹è¯•é™„è¿‘åŠ å…¥ï¼š
 
 ```tsx
 it('shows the original and inline multiplier cost only in the API key rank table', () => {
@@ -173,7 +173,7 @@ it('does not render the multiplier control outside the API key tab', () => {
 });
 ```
 
-- [ ] **Step 3: 运行测试确认是预期失败**
+- [x] **Step 3: è¿è¡Œæµ‹è¯•ç¡®è®¤æ˜¯é¢„æœŸå¤±è´¥**
 
 Run:
 
@@ -181,28 +181,28 @@ Run:
 npm --workspace apps/web run test -- src/features/usage-analytics/UsageAnalyticsPage.test.tsx --testNamePattern="multiplier"
 ```
 
-Expected: FAIL because the input, multiplier prop and inline rendering do not exist yet；失败原因应是找不到倍率输入，而不是测试环境启动错误。
+Expected: FAIL because the input, multiplier prop and inline rendering do not exist yetï¼›å¤±è´¥åŽŸå› åº”æ˜¯æ‰¾ä¸åˆ°å€çŽ‡è¾“å…¥ï¼Œè€Œä¸æ˜¯æµ‹è¯•çŽ¯å¢ƒå¯åŠ¨é”™è¯¯ã€‚
 
-### Task 4: 接入页面状态与 RankTable 展示（GREEN）
+### Task 4: æŽ¥å…¥é¡µé¢çŠ¶æ€ä¸Ž RankTable å±•ç¤ºï¼ˆGREENï¼‰
 
 **Files:**
 - Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.tsx`
 - Test: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.test.tsx`
 
-- [ ] **Step 1: 导入归一化函数并增加局部页面状态**
+- [x] **Step 1: å¯¼å…¥å½’ä¸€åŒ–å‡½æ•°å¹¶å¢žåŠ å±€éƒ¨é¡µé¢çŠ¶æ€**
 
-在现有 model import 中加入 `normalizeUsageDisplayMultiplier`，在 `UsageAnalyticsPageInner` 的其他 `useState` 附近加入：
+åœ¨çŽ°æœ‰ model import ä¸­åŠ å…¥ `normalizeUsageDisplayMultiplier`ï¼Œåœ¨ `UsageAnalyticsPageInner` çš„å…¶ä»– `useState` é™„è¿‘åŠ å…¥ï¼š
 
 ```tsx
 const [apiKeyCostMultiplierInput, setApiKeyCostMultiplierInput] = useState('1');
 const apiKeyCostMultiplier = normalizeUsageDisplayMultiplier(apiKeyCostMultiplierInput);
 ```
 
-输入状态只存在当前页面实例中；不写 localStorage、不写 URL、不发请求。
+è¾“å…¥çŠ¶æ€åªå­˜åœ¨å½“å‰é¡µé¢å®žä¾‹ä¸­ï¼›ä¸å†™ localStorageã€ä¸å†™ URLã€ä¸å‘è¯·æ±‚ã€‚
 
-- [ ] **Step 2: 在 API Key 标题区把倍率控件放到搜索框旁**
+- [x] **Step 2: åœ¨ API Key æ ‡é¢˜åŒºæŠŠå€çŽ‡æŽ§ä»¶æ”¾åˆ°æœç´¢æ¡†æ—**
 
-将现有单独的 `styles.apiSearchBar` 容器替换为：
+å°†çŽ°æœ‰å•ç‹¬çš„ `styles.apiSearchBar` å®¹å™¨æ›¿æ¢ä¸ºï¼š
 
 ```tsx
 <div className={styles.apiKeyToolbar}>
@@ -232,19 +232,19 @@ const apiKeyCostMultiplier = normalizeUsageDisplayMultiplier(apiKeyCostMultiplie
 </div>
 ```
 
-- [ ] **Step 3: 将倍率只传给 apiKeys 的 RankTable**
+- [x] **Step 3: å°†å€çŽ‡åªä¼ ç»™ apiKeys çš„ RankTable**
 
-在 apiKeys 分支的 `<RankTable>` 增加：
+åœ¨ apiKeys åˆ†æ”¯çš„ `<RankTable>` å¢žåŠ ï¼š
 
 ```tsx
 displayCostMultiplier={apiKeyCostMultiplier}
 ```
 
-不要给 model 或 credential 分支传该属性。
+ä¸è¦ç»™ model æˆ– credential åˆ†æ”¯ä¼ è¯¥å±žæ€§ã€‚
 
-- [ ] **Step 4: 扩展 RankTable 参数并以内联括号渲染**
+- [x] **Step 4: æ‰©å±• RankTable å‚æ•°å¹¶ä»¥å†…è”æ‹¬å·æ¸²æŸ“**
 
-在 `RankTable` 参数类型中加入 `displayCostMultiplier?: number`，并在成本单元格使用以下逻辑：
+åœ¨ `RankTable` å‚æ•°ç±»åž‹ä¸­åŠ å…¥ `displayCostMultiplier?: number`ï¼Œå¹¶åœ¨æˆæœ¬å•å…ƒæ ¼ä½¿ç”¨ä»¥ä¸‹é€»è¾‘ï¼š
 
 ```tsx
 const originalCost = formatMetricValue('estimatedCost', row.estimatedCost);
@@ -256,22 +256,22 @@ const multiplierCost =
     : null;
 ```
 
-随后将原来的成本 `<td>` 替换为：
+éšåŽå°†åŽŸæ¥çš„æˆæœ¬ `<td>` æ›¿æ¢ä¸ºï¼š
 
 ```tsx
 <td>
   {originalCost}
   {multiplierCost !== null ? (
     <span className={styles.multiplierCost}>
-      （{t('usage_analytics.api_key_multiplier_amount', { value: multiplierCost })}）
+      ï¼ˆ{t('usage_analytics.api_key_multiplier_amount', { value: multiplierCost })}ï¼‰
     </span>
   ) : null}
 </td>
 ```
 
-`row.estimatedCost` 只读不改；倍率金额不参与排序、占比、摘要或详情数据。
+`row.estimatedCost` åªè¯»ä¸æ”¹ï¼›å€çŽ‡é‡‘é¢ä¸å‚ä¸ŽæŽ’åºã€å æ¯”ã€æ‘˜è¦æˆ–è¯¦æƒ…æ•°æ®ã€‚
 
-- [ ] **Step 5: 运行页面测试确认通过**
+- [x] **Step 5: è¿è¡Œé¡µé¢æµ‹è¯•ç¡®è®¤é€šè¿‡**
 
 Run:
 
@@ -279,9 +279,9 @@ Run:
 npm --workspace apps/web run test -- src/features/usage-analytics/UsageAnalyticsPage.test.tsx --testNamePattern="multiplier"
 ```
 
-Expected: PASS；默认 `1`、`0.3` 即时重算、空值失焦回到 `1`、非 apiKeys 页面不显示控件均通过。
+Expected: PASSï¼›é»˜è®¤ `1`ã€`0.3` å³æ—¶é‡ç®—ã€ç©ºå€¼å¤±ç„¦å›žåˆ° `1`ã€éž apiKeys é¡µé¢ä¸æ˜¾ç¤ºæŽ§ä»¶å‡é€šè¿‡ã€‚
 
-### Task 5: 完成单行布局与四套语言文案
+### Task 5: å®Œæˆå•è¡Œå¸ƒå±€ä¸Žå››å¥—è¯­è¨€æ–‡æ¡ˆ
 
 **Files:**
 - Modify: `apps/web/src/features/usage-analytics/UsageAnalyticsPage.module.scss`
@@ -290,9 +290,9 @@ Expected: PASS；默认 `1`、`0.3` 即时重算、空值失焦回到 `1`、非 
 - Modify: `apps/web/src/i18n/locales/en.json`
 - Modify: `apps/web/src/i18n/locales/ru.json`
 
-- [ ] **Step 1: 增加工具栏与金额样式**
+- [x] **Step 1: å¢žåŠ å·¥å…·æ ä¸Žé‡‘é¢æ ·å¼**
 
-在现有 `.apiSearchBar` 样式附近加入等价的 CSS Module 规则：
+åœ¨çŽ°æœ‰ `.apiSearchBar` æ ·å¼é™„è¿‘åŠ å…¥ç­‰ä»·çš„ CSS Module è§„åˆ™ï¼š
 
 ```scss
 .apiKeyToolbar {
@@ -334,7 +334,7 @@ Expected: PASS；默认 `1`、`0.3` 即时重算、空值失焦回到 `1`、非 
 }
 ```
 
-在 `@media (max-width: 760px)` 中让 toolbar 占满可用宽度并保持搜索框可缩放：
+åœ¨ `@media (max-width: 760px)` ä¸­è®© toolbar å æ»¡å¯ç”¨å®½åº¦å¹¶ä¿æŒæœç´¢æ¡†å¯ç¼©æ”¾ï¼š
 
 ```scss
 .apiKeyToolbar {
@@ -347,28 +347,28 @@ Expected: PASS；默认 `1`、`0.3` 即时重算、空值失焦回到 `1`、非 
 }
 ```
 
-不得让倍率金额换成第二行；括号内容继续在同一个 `<td>` 内联显示。
+ä¸å¾—è®©å€çŽ‡é‡‘é¢æ¢æˆç¬¬äºŒè¡Œï¼›æ‹¬å·å†…å®¹ç»§ç»­åœ¨åŒä¸€ä¸ª `<td>` å†…è”æ˜¾ç¤ºã€‚
 
-- [ ] **Step 2: 添加四套 locale 键**
+- [x] **Step 2: æ·»åŠ å››å¥— locale é”®**
 
-在每个 `usage_analytics` 对象与 `api_key_keyword_placeholder` 相邻处加入同名键：
+åœ¨æ¯ä¸ª `usage_analytics` å¯¹è±¡ä¸Ž `api_key_keyword_placeholder` ç›¸é‚»å¤„åŠ å…¥åŒåé”®ï¼š
 
 ```json
-"api_key_multiplier_setting": "倍率设置",
-"api_key_multiplier_amount": "倍率 {{value}}"
+"api_key_multiplier_setting": "å€çŽ‡è®¾ç½®",
+"api_key_multiplier_amount": "å€çŽ‡ {{value}}"
 ```
 
-对应翻译：
+å¯¹åº”ç¿»è¯‘ï¼š
 
 ```text
-zh-TW: 倍率設定 / 倍率 {{value}}
+zh-TW: å€çŽ‡è¨­å®š / å€çŽ‡ {{value}}
 en: Multiplier / Multiplier {{value}}
-ru: Множитель / Множитель {{value}}
+ru: ÐœÐ½Ð¾Ð¶Ð¸Ñ‚ÐµÐ»ÑŒ / ÐœÐ½Ð¾Ð¶Ð¸Ñ‚ÐµÐ»ÑŒ {{value}}
 ```
 
-保持四个 JSON 文件语法有效、键名完全一致。
+ä¿æŒå››ä¸ª JSON æ–‡ä»¶è¯­æ³•æœ‰æ•ˆã€é”®åå®Œå…¨ä¸€è‡´ã€‚
 
-- [ ] **Step 3: 运行页面测试和类型检查**
+- [x] **Step 3: è¿è¡Œé¡µé¢æµ‹è¯•å’Œç±»åž‹æ£€æŸ¥**
 
 Run:
 
@@ -377,40 +377,40 @@ npm --workspace apps/web run test -- src/features/usage-analytics/UsageAnalytics
 npm --workspace apps/web run type-check
 ```
 
-Expected: 相关 Vitest 测试 PASS，TypeScript 无新增错误。
+Expected: ç›¸å…³ Vitest æµ‹è¯• PASSï¼ŒTypeScript æ— æ–°å¢žé”™è¯¯ã€‚
 
-### Task 6: 回归验证、差异审计与提交
+### Task 6: å›žå½’éªŒè¯ã€å·®å¼‚å®¡è®¡ä¸Žæäº¤
 
 **Files:**
 - Verify only the files listed above are part of this feature commit.
 
-- [ ] **Step 1: 运行 Usage Analytics 全量测试**
+- [x] **Step 1: è¿è¡Œ Usage Analytics å…¨é‡æµ‹è¯•**
 
 ```powershell
 npm --workspace apps/web run test -- src/features/usage-analytics
 ```
 
-Expected: 该目录测试全部 PASS；无未处理的 React、i18n 或 TypeScript 错误。
+Expected: è¯¥ç›®å½•æµ‹è¯•å…¨éƒ¨ PASSï¼›æ— æœªå¤„ç†çš„ Reactã€i18n æˆ– TypeScript é”™è¯¯ã€‚
 
-- [ ] **Step 2: 运行前端 lint 和生产构建**
+- [x] **Step 2: è¿è¡Œå‰ç«¯ lint å’Œç”Ÿäº§æž„å»º**
 
 ```powershell
 npm --workspace apps/web run lint
 npm run build
 ```
 
-Expected: lint 无 error，Vite/tsc 生产构建成功。
+Expected: lint æ—  errorï¼ŒVite/tsc ç”Ÿäº§æž„å»ºæˆåŠŸã€‚
 
-- [ ] **Step 3: 审计变更边界**
+- [x] **Step 3: å®¡è®¡å˜æ›´è¾¹ç•Œ**
 
 ```powershell
 git status --short
 git diff -- apps/web/src/features/usage-analytics apps/web/src/i18n/locales
 ```
 
-确认：没有新增服务端请求、没有修改 `row.estimatedCost`、没有触碰 CPA Core、没有把 `apps/manager-server/**` 的既有 WIP 混入暂存区。
+ç¡®è®¤ï¼šæ²¡æœ‰æ–°å¢žæœåŠ¡ç«¯è¯·æ±‚ã€æ²¡æœ‰ä¿®æ”¹ `row.estimatedCost`ã€æ²¡æœ‰è§¦ç¢° CPA Coreã€æ²¡æœ‰æŠŠ `apps/manager-server/**` çš„æ—¢æœ‰ WIP æ··å…¥æš‚å­˜åŒºã€‚
 
-- [ ] **Step 4: 创建功能提交**
+- [x] **Step 4: åˆ›å»ºåŠŸèƒ½æäº¤**
 
 ```powershell
 git add apps/web/src/features/usage-analytics/UsageAnalyticsPage.tsx `
@@ -425,4 +425,5 @@ git add apps/web/src/features/usage-analytics/UsageAnalyticsPage.tsx `
 git commit -m "feat: show client key cost multiplier inline"
 ```
 
-提交前再次确认暂存区不包含任何既有服务器 WIP；本功能不部署，除非用户另行明确要求。
+æäº¤å‰å†æ¬¡ç¡®è®¤æš‚å­˜åŒºä¸åŒ…å«ä»»ä½•æ—¢æœ‰æœåŠ¡å™¨ WIPï¼›æœ¬åŠŸèƒ½ä¸éƒ¨ç½²ï¼Œé™¤éžç”¨æˆ·å¦è¡Œæ˜Žç¡®è¦æ±‚ã€‚
+
