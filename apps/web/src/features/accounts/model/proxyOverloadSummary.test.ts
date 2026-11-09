@@ -128,7 +128,7 @@ describe('proxyOverloadSummary model', () => {
       },
     ];
 
-    expect(filterProxyOverloadRows(observed, 'enabled-one').map((row) => row.proxy_url)).toEqual([
+    expect(filterProxyOverloadRows(observed, 'enabled_one').map((row) => row.proxy_url)).toEqual([
       'http://enabled-one-current:8080',
       'http://enabled-one-legacy:8080',
     ]);

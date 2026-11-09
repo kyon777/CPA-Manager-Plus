@@ -5,7 +5,7 @@ export type ProxyOverloadFilter =
   | 'zero'
   | 'overloaded'
   | 'unenabled'
-  | 'enabled-one'
+  | 'enabled_one'
   | 'unobserved';
 export type ProxyOverloadSuccessSort = 'success-desc' | 'success-asc' | null;
 export type ProxyURLRow = Pick<ProxyOverloadSummaryRow, 'proxy_url'>;
@@ -61,7 +61,7 @@ export const filterProxyOverloadRows = (
       return rows.filter(
         (row) => (row.current_enabled_account_count ?? row.enabled_active_account_count ?? 0) === 0
       );
-    case 'enabled-one':
+    case 'enabled_one':
       return rows.filter(
         (row) => (row.current_enabled_account_count ?? row.enabled_active_account_count ?? 0) === 1
       );
