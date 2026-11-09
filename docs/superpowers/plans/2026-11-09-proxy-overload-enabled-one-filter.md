@@ -4,7 +4,7 @@
 
 **Goal:** Add a front-end-only `已启用(1)` proxy-overload filter that shows observed rows with exactly one current enabled account.
 
-**Architecture:** Extend the existing `ProxyOverloadFilter` union with `enabled-one`, then apply the same existing enabled-count compatibility resolution (`current_enabled_account_count ?? enabled_active_account_count ?? 0`) in the model predicate. The modal will include this observed-row filter after `unenabled`; it reuses the existing table, copy, sorting, and local state paths without backend changes.
+**Architecture:** Extend the existing `ProxyOverloadFilter` union with `enabled_one`, then apply the same existing enabled-count compatibility resolution (`current_enabled_account_count ?? enabled_active_account_count ?? 0`) in the model predicate. The modal will include this observed-row filter after `unenabled`; it reuses the existing table, copy, sorting, and local state paths without backend changes.
 
 **Tech Stack:** React 19, TypeScript, Vitest, react-test-renderer, i18next JSON resources.
 
@@ -12,7 +12,7 @@
 
 ## File Structure
 
-- Modify `apps/web/src/features/accounts/model/proxyOverloadSummary.ts`: define the `enabled-one` filter and exact-one predicate.
+- Modify `apps/web/src/features/accounts/model/proxyOverloadSummary.ts`: define the `enabled_one` filter and exact-one predicate.
 - Modify `apps/web/src/features/accounts/model/proxyOverloadSummary.test.ts`: prove exact-one filtering and compatibility fallback.
 - Modify `apps/web/src/features/accounts/components/ProxyOverloadSummaryModal.tsx`: render the tab after `unenabled`.
 - Modify `apps/web/src/features/accounts/components/ProxyOverloadSummaryModal.test.tsx`: prove tab activation filters locally without refresh.
@@ -29,9 +29,9 @@
 Add fixtures covering current count `0`, current count `1`, current count `2`, and legacy `enabled_active_account_count: 1`; assert:
 
 ```ts
-expect(filterProxyOverloadRows(rows, 'enabled-one').map((row) => row.proxy_url)).toEqual([
-  'http://enabled-one-current:8080',
-  'http://enabled-one-legacy:8080',
+expect(filterProxyOverloadRows(rows, 'enabled_one').map((row) => row.proxy_url)).toEqual([
+  'http://enabled_one-current:8080',
+  'http://enabled_one-legacy:8080',
 ]);
 ```
 
@@ -43,14 +43,14 @@ Run:
 npm --workspace apps/web run test -- src/features/accounts/model/proxyOverloadSummary.test.ts
 ```
 
-Expected: TypeScript/Vitest fails because `enabled-one` is not a `ProxyOverloadFilter` value.
+Expected: TypeScript/Vitest fails because `enabled_one` is not a `ProxyOverloadFilter` value.
 
 - [ ] **Step 3: Implement the minimal model predicate**
 
-Add `enabled-one` to the union and switch:
+Add `enabled_one` to the union and switch:
 
 ```ts
-case 'enabled-one':
+case 'enabled_one':
   return rows.filter(
     (row) => (row.current_enabled_account_count ?? row.enabled_active_account_count ?? 0) === 1
   );
@@ -95,7 +95,7 @@ Expected: the new button cannot be found.
 
 - [ ] **Step 3: Implement the tab and labels**
 
-Insert `enabled-one` after `unenabled` in both modal filter arrays. Add the translation key `proxy_overload_filter_enabled_one` with values `Enabled (1)`, `Enabled (1)`, `已启用(1)`, and `已啟用(1)`.
+Insert `enabled_one` after `unenabled` in both modal filter arrays. Add the translation key `proxy_overload_filter_enabled_one` with values `Enabled (1)`, `Enabled (1)`, `已启用(1)`, and `已啟用(1)`.
 
 - [ ] **Step 4: Verify focused tests, type-check, and web build**
 

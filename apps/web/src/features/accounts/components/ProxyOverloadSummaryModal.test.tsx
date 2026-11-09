@@ -176,6 +176,26 @@ describe('ProxyOverloadSummaryModal', () => {
     renderer!.unmount();
   });
 
+  it('filters locally to observed proxies with exactly one current enabled account binding', () => {
+    const onRefresh = vi.fn();
+    let renderer: ReactTestRenderer;
+    act(() => {
+      renderer = renderModal({ onRefresh });
+    });
+
+    act(() => {
+      findButton(renderer!, 'accounts.proxy_overload_filter_enabled_one').props.onClick();
+    });
+    const rows = renderer!.root.findAllByProps({ 'data-proxy-overload-row': true });
+    expect(rows.map((row) => row.props['data-proxy-url'])).toEqual([
+      'http://missing-load.example:8080',
+      'http://loaded.example:8080',
+    ]);
+    expect(rows.every((row) => row.props['data-proxy-overload-kind'] === 'observed')).toBe(true);
+    expect(onRefresh).not.toHaveBeenCalled();
+    renderer!.unmount();
+  });
+
   it('selects visible rows and copies LF-only proxy URLs', async () => {
     const onCopy = vi.fn().mockResolvedValue(undefined);
     let renderer: ReactTestRenderer;

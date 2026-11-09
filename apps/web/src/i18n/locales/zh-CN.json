@@ -1527,6 +1527,7 @@
     "proxy_overload_filter_zero": "无过载",
     "proxy_overload_filter_overloaded": "有过载",
     "proxy_overload_filter_unenabled": "未启用",
+    "proxy_overload_filter_enabled_one": "已启用(1)",
     "proxy_overload_filter_unobserved": "未统计",
     "proxy_overload_select_visible": "全选当前结果",
     "proxy_overload_clear_visible": "取消当前结果",

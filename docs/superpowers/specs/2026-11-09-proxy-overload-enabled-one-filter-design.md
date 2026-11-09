@@ -17,7 +17,7 @@ Add a local-only **Enabled (1)** filter to the proxy-overload statistics modal. 
 ## Data Flow
 
 1. CPAM already returns observed proxy rows and optional enabled-count fields.
-2. `filterProxyOverloadRows()` applies an in-memory `enabled-one` predicate using the same count resolution as the existing **Unenabled** predicate.
+2. `filterProxyOverloadRows()` applies an in-memory `enabled_one` predicate using the same count resolution as the existing **Unenabled** predicate.
 3. `ProxyOverloadSummaryModal` renders the tab after **Unenabled** and before optional **Unobserved**.
 4. Changing the tab only changes local React state; it does not invoke `onRefresh` or issue a new request.
 5. The existing checkbox and copy behavior operate on the filtered visible rows.
