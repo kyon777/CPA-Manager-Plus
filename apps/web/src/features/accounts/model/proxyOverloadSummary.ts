@@ -1,6 +1,6 @@
 ﻿import type { ProxyOverloadSummaryRow } from '@/services/api/usageService';
 
-export type ProxyOverloadFilter = 'all' | 'zero' | 'overloaded' | 'unobserved';
+export type ProxyOverloadFilter = 'all' | 'zero' | 'overloaded' | 'unenabled' | 'unobserved';
 export type ProxyOverloadSuccessSort = 'success-desc' | 'success-asc' | null;
 export type ProxyURLRow = Pick<ProxyOverloadSummaryRow, 'proxy_url'>;
 
@@ -51,6 +51,10 @@ export const filterProxyOverloadRows = (
       return rows.filter((row) => row.overloaded_account_count === 0);
     case 'overloaded':
       return rows.filter((row) => row.overloaded_account_count > 0);
+    case 'unenabled':
+      return rows.filter(
+        (row) => (row.current_enabled_account_count ?? row.enabled_active_account_count ?? 0) === 0
+      );
     default:
       return [...rows];
   }

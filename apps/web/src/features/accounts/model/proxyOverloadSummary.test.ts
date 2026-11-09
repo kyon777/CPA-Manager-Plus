@@ -50,6 +50,45 @@ describe('proxyOverloadSummary model', () => {
     expect(rows).toHaveLength(3);
   });
 
+  it('filters observed rows with no current enabled binding without including unobserved proxies', () => {
+    const observed: ProxyOverloadSummaryRow[] = [
+      {
+        proxy_url: 'http://unenabled-current:8080',
+        active_account_count: 3,
+        enabled_active_account_count: 1,
+        current_enabled_account_count: 0,
+        overloaded_account_count: 0,
+        non_overloaded_account_count: 3,
+        overloaded_rate: 0,
+      },
+      {
+        proxy_url: 'http://still-enabled:8080',
+        active_account_count: 2,
+        enabled_active_account_count: 0,
+        current_enabled_account_count: 1,
+        overloaded_account_count: 0,
+        non_overloaded_account_count: 2,
+        overloaded_rate: 0,
+      },
+      {
+        proxy_url: 'http://unenabled-legacy:8080',
+        active_account_count: 1,
+        enabled_active_account_count: 0,
+        overloaded_account_count: 0,
+        non_overloaded_account_count: 1,
+        overloaded_rate: 0,
+      },
+    ];
+    const unobserved = [{ proxy_url: 'http://never-observed:8080' }];
+
+    expect(filterProxyOverloadRows(observed, 'unenabled')).toEqual([observed[0], observed[2]]);
+    expect(visibleProxyOverloadRows(observed, unobserved, 'unenabled')).toEqual([
+      observed[0],
+      observed[2],
+    ]);
+    expect(visibleProxyOverloadRows(observed, unobserved, 'unobserved')).toEqual(unobserved);
+  });
+
   it('selects visible proxies and copies only selected URLs with LF separators and no trailing newline', () => {
     const visible = sortProxyOverloadRows(rows);
     const selected = selectAllVisibleProxyKeys(visible);
