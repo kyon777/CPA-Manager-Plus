@@ -112,8 +112,8 @@ export function ProxyOverloadSummaryModal({
   };
 
   const filters: ProxyOverloadFilter[] = savedListAvailable
-    ? ['all', 'zero', 'overloaded', 'unobserved']
-    : ['all', 'zero', 'overloaded'];
+    ? ['all', 'zero', 'overloaded', 'unenabled', 'unobserved']
+    : ['all', 'zero', 'overloaded', 'unenabled'];
   const successAriaSort =
     successSort === 'success-asc'
       ? 'ascending'

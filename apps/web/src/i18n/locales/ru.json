@@ -1531,6 +1531,7 @@
     "proxy_overload_filter_all": "All",
     "proxy_overload_filter_zero": "No overload",
     "proxy_overload_filter_overloaded": "Has overload",
+    "proxy_overload_filter_unenabled": "Unenabled",
     "proxy_overload_filter_unobserved": "Not observed",
     "proxy_overload_select_visible": "Select visible",
     "proxy_overload_clear_visible": "Clear visible",

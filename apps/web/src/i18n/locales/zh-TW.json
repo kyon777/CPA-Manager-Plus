@@ -1526,6 +1526,7 @@
     "proxy_overload_filter_all": "全部",
     "proxy_overload_filter_zero": "無過載",
     "proxy_overload_filter_overloaded": "有過載",
+    "proxy_overload_filter_unenabled": "未啟用",
     "proxy_overload_filter_unobserved": "未統計",
     "proxy_overload_select_visible": "全選目前結果",
     "proxy_overload_clear_visible": "取消目前結果",

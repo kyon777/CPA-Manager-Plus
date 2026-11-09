@@ -150,6 +150,32 @@ describe('ProxyOverloadSummaryModal', () => {
     renderer!.unmount();
   });
 
+  it('filters locally to observed proxies with no current enabled account binding', () => {
+    const onRefresh = vi.fn();
+    let renderer: ReactTestRenderer;
+    act(() => {
+      renderer = renderModal({
+        onRefresh,
+        result: {
+          ...result,
+          proxies: [
+            { ...result.proxies[0], current_enabled_account_count: 0 },
+            ...result.proxies.slice(1),
+          ],
+        },
+      });
+    });
+
+    act(() => {
+      findButton(renderer!, 'accounts.proxy_overload_filter_unenabled').props.onClick();
+    });
+    const rows = renderer!.root.findAllByProps({ 'data-proxy-overload-row': true });
+    expect(rows.map((row) => row.props['data-proxy-url'])).toEqual(['http://loaded.example:8080']);
+    expect(rows.every((row) => row.props['data-proxy-overload-kind'] === 'observed')).toBe(true);
+    expect(onRefresh).not.toHaveBeenCalled();
+    renderer!.unmount();
+  });
+
   it('selects visible rows and copies LF-only proxy URLs', async () => {
     const onCopy = vi.fn().mockResolvedValue(undefined);
     let renderer: ReactTestRenderer;
