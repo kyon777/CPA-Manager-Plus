@@ -89,6 +89,51 @@ describe('proxyOverloadSummary model', () => {
     expect(visibleProxyOverloadRows(observed, unobserved, 'unobserved')).toEqual(unobserved);
   });
 
+  it('filters observed rows with exactly one current enabled binding', () => {
+    const observed: ProxyOverloadSummaryRow[] = [
+      {
+        proxy_url: 'http://enabled-one-current:8080',
+        active_account_count: 3,
+        enabled_active_account_count: 0,
+        current_enabled_account_count: 1,
+        overloaded_account_count: 0,
+        non_overloaded_account_count: 3,
+        overloaded_rate: 0,
+      },
+      {
+        proxy_url: 'http://enabled-zero-current:8080',
+        active_account_count: 2,
+        enabled_active_account_count: 1,
+        current_enabled_account_count: 0,
+        overloaded_account_count: 0,
+        non_overloaded_account_count: 2,
+        overloaded_rate: 0,
+      },
+      {
+        proxy_url: 'http://enabled-two-current:8080',
+        active_account_count: 4,
+        enabled_active_account_count: 2,
+        current_enabled_account_count: 2,
+        overloaded_account_count: 0,
+        non_overloaded_account_count: 4,
+        overloaded_rate: 0,
+      },
+      {
+        proxy_url: 'http://enabled-one-legacy:8080',
+        active_account_count: 1,
+        enabled_active_account_count: 1,
+        overloaded_account_count: 0,
+        non_overloaded_account_count: 1,
+        overloaded_rate: 0,
+      },
+    ];
+
+    expect(filterProxyOverloadRows(observed, 'enabled-one').map((row) => row.proxy_url)).toEqual([
+      'http://enabled-one-current:8080',
+      'http://enabled-one-legacy:8080',
+    ]);
+  });
+
   it('selects visible proxies and copies only selected URLs with LF separators and no trailing newline', () => {
     const visible = sortProxyOverloadRows(rows);
     const selected = selectAllVisibleProxyKeys(visible);
