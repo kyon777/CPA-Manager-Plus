@@ -77,7 +77,10 @@ const recoveryTask = (
   ...overrides,
 });
 
-const recoveryItem = (clientKey: string, task: TokenRecoveryTask | null): TokenRecoveryBatchItem => ({
+const recoveryItem = (
+  clientKey: string,
+  task: TokenRecoveryTask | null
+): TokenRecoveryBatchItem => ({
   clientKey,
   task,
 });
@@ -111,9 +114,7 @@ describe('inspection page batch operation model', () => {
     const operation = {
       pageSignature: 'reauth-page-1',
       targets: [target('failed'), target('rejected')],
-      submissionFailures: [
-        { clientKey: 'rejected', reason: 'credential_not_found' },
-      ],
+      submissionFailures: [{ clientKey: 'rejected', reason: 'credential_not_found' }],
       submissionComplete: true,
     };
     const items = new Map<string, CredentialRuntimeMetadataItem>([
@@ -138,7 +139,11 @@ describe('inspection page batch operation model', () => {
     ]);
 
     expect(
-      buildPendingInspectionPageRecoveryOperation('reauth-page-2', [target('pending'), target('finished')], items)
+      buildPendingInspectionPageRecoveryOperation(
+        'reauth-page-2',
+        [target('pending'), target('finished')],
+        items
+      )
     ).toEqual({
       pageSignature: 'reauth-page-2',
       targets: [target('pending')],
@@ -252,9 +257,7 @@ describe('inspection page batch operation model', () => {
   });
 
   it('chunks frozen inspection snapshot targets into bounded 100-item batches', () => {
-    const chunks = chunkInspectionSnapshotTargets(
-      Array.from({ length: 201 }, (_, index) => index)
-    );
+    const chunks = chunkInspectionSnapshotTargets(Array.from({ length: 201 }, (_, index) => index));
 
     expect(chunks.map((chunk) => chunk.length)).toEqual([100, 100, 1]);
     expect(chunks[0][0]).toBe(0);
@@ -268,6 +271,7 @@ describe('inspection page batch operation model', () => {
       snapshotTarget('queued'),
       snapshotTarget('done'),
       snapshotTarget('banned'),
+      snapshotTarget('query-error'),
       snapshotTarget('missing'),
     ];
     const plan = planInspectionSnapshotRecovery({
@@ -279,7 +283,10 @@ describe('inspection page batch operation model', () => {
         ['queued', recoveryItem('queued', recoveryTask('queued', { status: 'manual_queued' }))],
         [
           'done',
-          recoveryItem('done', recoveryTask('done', { status: 'succeeded', completedAtMs: 10_001 })),
+          recoveryItem(
+            'done',
+            recoveryTask('done', { status: 'succeeded', completedAtMs: 10_001 })
+          ),
         ],
         [
           'banned',
@@ -290,6 +297,14 @@ describe('inspection page batch operation model', () => {
             })
           ),
         ],
+        [
+          'query-error',
+          {
+            clientKey: 'query-error',
+            task: null,
+            errorCode: 'recovery_unavailable',
+          },
+        ],
       ]),
     });
 
@@ -298,6 +313,7 @@ describe('inspection page batch operation model', () => {
       { clientKey: 'queued', reason: 'recovery_pending' },
       { clientKey: 'done', reason: 'recovery_succeeded' },
       { clientKey: 'banned', reason: 'account_banned' },
+      { clientKey: 'query-error', reason: 'recovery_unavailable' },
       { clientKey: 'missing', reason: 'recovery_task_unavailable' },
     ]);
   });
@@ -392,7 +408,10 @@ describe('inspection page batch operation model', () => {
 
     expect(
       mergeInspectionPageDeleteOperationResults(
-        mergeInspectionPageDeleteOperationResults(null, toInspectionPageDeleteOperationResult(first)),
+        mergeInspectionPageDeleteOperationResults(
+          null,
+          toInspectionPageDeleteOperationResult(first)
+        ),
         toInspectionPageDeleteOperationResult(second)
       )
     ).toEqual({

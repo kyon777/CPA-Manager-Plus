@@ -137,6 +137,12 @@ export const planInspectionSnapshotRecovery = ({
       return;
     }
 
+    const lookupError = normalizedText(item.errorCode);
+    if (lookupError) {
+      skipped.push({ clientKey, reason: lookupError });
+      return;
+    }
+
     const task = item.task;
     if (!task) {
       submitTargets.push(recoveryTarget);
@@ -217,7 +223,10 @@ export const planInspectionSnapshotAccountBannedDelete = ({
   const batches: AccountBannedAuthFileDeleteTargetRequest[][] = [];
   let currentBatch: AccountBannedAuthFileDeleteTargetRequest[] = [];
   completeGroups.forEach((group) => {
-    if (currentBatch.length > 0 && currentBatch.length + group.length > INSPECTION_SNAPSHOT_BATCH_LIMIT) {
+    if (
+      currentBatch.length > 0 &&
+      currentBatch.length + group.length > INSPECTION_SNAPSHOT_BATCH_LIMIT
+    ) {
       batches.push(currentBatch);
       currentBatch = [];
     }
@@ -349,9 +358,11 @@ export const selectPostInspectionManualSuccessKeys = (
   return keys;
 };
 
-const toDeleteDetail = (
-  item: { fileName: string; code?: string; message?: string }
-): InspectionPageDeleteOperationDetail => ({
+const toDeleteDetail = (item: {
+  fileName: string;
+  code?: string;
+  message?: string;
+}): InspectionPageDeleteOperationDetail => ({
   fileName: item.fileName.trim() || 'unknown.json',
   code: normalizedText(item.code) || normalizedText(item.message) || 'unknown_error',
 });

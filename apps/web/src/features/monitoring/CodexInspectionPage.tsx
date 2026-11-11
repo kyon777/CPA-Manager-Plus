@@ -93,13 +93,18 @@ import {
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import {
   buildPendingInspectionPageRecoveryOperation,
+  chunkInspectionSnapshotTargets,
   idleInspectionPageDeleteOperation,
+  mergeInspectionPageDeleteOperationResults,
+  planInspectionSnapshotAccountBannedDelete,
+  planInspectionSnapshotRecovery,
   reconcileInspectionPageDeleteResponse,
   selectPostInspectionManualSuccessKeys,
   summarizeInspectionPageRecoveryOperation,
   type InspectionPageDeleteOperation,
   type InspectionPageDeletePhase,
   type InspectionPageRecoveryOperation,
+  type InspectionSnapshotTarget,
 } from '@/features/monitoring/model/inspectionPageBatchOperation';
 import {
   resolveInspectionAccountFile,
@@ -113,9 +118,7 @@ import type {
   TokenRecoveryBatchTargetRequest,
   TokenRecoveryTask,
 } from '@/services/api';
-import {
-  usageServiceApi,
-} from '@/services/api/usageService';
+import { usageServiceApi } from '@/services/api/usageService';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
 import styles from './CodexInspectionPage.module.scss';
@@ -212,6 +215,23 @@ const buildInspectionBannedDeleteTarget = (
     recoveryTask
   );
 
+type InspectionSnapshotOperation = {
+  kind: 'recovery' | 'banned_delete';
+  phase: 'querying' | 'submitting' | 'deleting' | 'completed' | 'failed';
+  total: number;
+  completed: number;
+  eligible: number;
+  submitted: number;
+  skipped: number;
+  failed: number;
+  error: string;
+};
+
+const idleInspectionSnapshotOperation: InspectionSnapshotOperation | null = null;
+
+const boundedSnapshotFailureReasons = (reasons: readonly string[]): string[] =>
+  Array.from(new Set(reasons.map((reason) => reason.trim()).filter(Boolean))).slice(0, 6);
+
 export function CodexInspectionPage({
   embedded = false,
   modeControl,
@@ -291,6 +311,9 @@ export function CodexInspectionPage({
     useState<InspectionPageRecoveryOperation | null>(null);
   const [pageBannedDeleteOperation, setPageBannedDeleteOperation] =
     useState<InspectionPageDeleteOperation>(() => ({ ...idleInspectionPageDeleteOperation }));
+  const [snapshotOperation, setSnapshotOperation] = useState<InspectionSnapshotOperation | null>(
+    idleInspectionSnapshotOperation
+  );
   const [actionFilter, setActionFilter] = useState<ActionFilter>(() =>
     normalizeActionFilter(initialLastRun?.actionFilter ?? 'all')
   );
@@ -311,6 +334,8 @@ export function CodexInspectionPage({
   const authFilesRequestGenerationRef = useRef(0);
   const pageRecoveryGenerationRef = useRef(0);
   const pageBannedDeleteGenerationRef = useRef(0);
+  const snapshotOperationGenerationRef = useRef(0);
+  const snapshotOperationBusyRef = useRef(false);
   const pageRecoveryLockedRef = useRef(false);
   const pageBannedDeletePhaseRef = useRef<InspectionPageDeletePhase>('idle');
   const restoredConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
@@ -367,6 +392,7 @@ export function CodexInspectionPage({
     executionGenerationRef.current += 1;
     pageRecoveryGenerationRef.current += 1;
     pageBannedDeleteGenerationRef.current += 1;
+    snapshotOperationGenerationRef.current += 1;
     activeSessionIdRef.current = null;
     sessionRef.current?.stop();
     sessionRef.current = null;
@@ -375,8 +401,10 @@ export function CodexInspectionPage({
     setPageBannedDeleteSubmitting(false);
     setPageRecoveryOperation(null);
     setPageBannedDeleteOperation({ ...idleInspectionPageDeleteOperation });
+    setSnapshotOperation(idleInspectionSnapshotOperation);
     pageRecoveryLockedRef.current = false;
     pageBannedDeletePhaseRef.current = 'idle';
+    snapshotOperationBusyRef.current = false;
     setCodexReauthTarget(null);
     setProxyReplacementOpen(false);
 
@@ -1104,8 +1132,8 @@ export function CodexInspectionPage({
       // put the current row in the proxy-abnormal filter.
       const proxySuspect = Boolean(
         proxyURL &&
-          item.proxySuspect === true &&
-          hasValidCurrentProxyHealthVerification(item, proxyURL)
+        item.proxySuspect === true &&
+        hasValidCurrentProxyHealthVerification(item, proxyURL)
       );
       const raw = currentFile
         ? (() => {
@@ -1158,11 +1186,9 @@ export function CodexInspectionPage({
     }
     const groups = collectProxyHealthVerificationGroups(candidates);
     const groupsToVerify = groups.filter((group) => {
-      const signalKey = [
-        connectionFingerprint,
-        String(result.finishedAt),
-        group.fingerprint,
-      ].join('\u0000');
+      const signalKey = [connectionFingerprint, String(result.finishedAt), group.fingerprint].join(
+        '\u0000'
+      );
       if (proxyExitIPCheckKeysRef.current.has(signalKey)) return false;
       proxyExitIPCheckKeysRef.current.add(signalKey);
       return true;
@@ -1237,6 +1263,29 @@ export function CodexInspectionPage({
     () => (result ? result.results.filter(isReauthAction) : []),
     [result]
   );
+  const snapshotRecoveryTargets = useMemo<InspectionSnapshotTarget[]>(
+    () =>
+      reauthResults.flatMap((item) => {
+        const recoveryTarget = buildInspectionRecoveryTarget(item);
+        if (!recoveryTarget) return [];
+        return [
+          {
+            recoveryTarget,
+            deletionSource: {
+              clientKey: item.key,
+              fileName: item.fileName,
+              authIndex: item.authIndex,
+              accountEmail: inspectionAccountEmail(item),
+              provider: item.provider,
+              runtimeId: item.runtimeId,
+              accountId: item.accountId,
+              accountSnapshot: item.accountSnapshot,
+            },
+          },
+        ];
+      }),
+    [reauthResults]
+  );
   const filteredResults = useMemo(
     () => filterInspectionResults(displayResults, handlingFilter, actionFilter),
     [displayResults, handlingFilter, actionFilter]
@@ -1304,12 +1353,7 @@ export function CodexInspectionPage({
       }
       return removeCodexInspectionResultKeys(previous, completedRecoveryKeys);
     });
-  }, [
-    connectionFingerprint,
-    pageRuntimeItemsByClientKey,
-    result,
-    resultConnectionFingerprint,
-  ]);
+  }, [connectionFingerprint, pageRuntimeItemsByClientKey, result, resultConnectionFingerprint]);
   const pageRecoveryTargets = useMemo(
     () =>
       actionFilter === 'reauth'
@@ -1326,9 +1370,12 @@ export function CodexInspectionPage({
         actionFilter,
         String(resultPagination.currentPage),
         ...pageRecoveryTargets.map((target) =>
-          [target.clientKey, target.fileName, target.authIndex ?? '', target.accountEmail ?? ''].join(
-            '\u001f'
-          )
+          [
+            target.clientKey,
+            target.fileName,
+            target.authIndex ?? '',
+            target.accountEmail ?? '',
+          ].join('\u001f')
         ),
       ].join('\u001e'),
     [actionFilter, pageRecoveryTargets, resultPagination.currentPage]
@@ -1354,11 +1401,9 @@ export function CodexInspectionPage({
       ),
     [activePageRecoveryOperation, pageRuntimeItemsByClientKey]
   );
-  const pageRecoveryBusy =
-    pageRecoverySubmitting || pageRecoveryProgress?.active === true;
+  const pageRecoveryBusy = pageRecoverySubmitting || pageRecoveryProgress?.active === true;
   const pageBannedDeleteBusy =
-    pageBannedDeleteOperation.phase !== 'idle' &&
-    pageBannedDeleteOperation.phase !== 'completed';
+    pageBannedDeleteOperation.phase !== 'idle' && pageBannedDeleteOperation.phase !== 'completed';
   useEffect(() => {
     pageRecoveryLockedRef.current = pageRecoveryBusy;
   }, [pageRecoveryBusy]);
@@ -1407,6 +1452,7 @@ export function CodexInspectionPage({
     if (
       !managerRequestScope ||
       pageRecoveryLockedRef.current ||
+      snapshotOperationBusyRef.current ||
       pageRecoveryTargets.length === 0 ||
       activeConnectionFingerprintRef.current !== requestConnectionFingerprint
     ) {
@@ -1454,7 +1500,9 @@ export function CodexInspectionPage({
         submissionComplete: true,
       });
       const submittedCount = items.filter((item) => item.task).length;
-      const failureReasons = Array.from(new Set(submissionFailures.map((failure) => failure.reason)));
+      const failureReasons = Array.from(
+        new Set(submissionFailures.map((failure) => failure.reason))
+      );
       const summary = t('accounts.batch_recovery_result', {
         count: submittedCount,
         failed: failureReasons.length,
@@ -1563,7 +1611,11 @@ export function CodexInspectionPage({
           return;
         }
         const reason = error instanceof Error ? error.message.trim() : '';
-        setPageBannedDeleteOperationState('completed', null, reason || t('notification.delete_failed'));
+        setPageBannedDeleteOperationState(
+          'completed',
+          null,
+          reason || t('notification.delete_failed')
+        );
         showNotification(reason || t('notification.delete_failed'), 'error');
       } finally {
         if (pageBannedDeleteGenerationRef.current === requestGeneration) {
@@ -1583,6 +1635,7 @@ export function CodexInspectionPage({
   const handleDeleteCurrentPageBanned = useCallback(() => {
     if (
       pageBannedDeleteTargets.length === 0 ||
+      snapshotOperationBusyRef.current ||
       (pageBannedDeletePhaseRef.current !== 'idle' &&
         pageBannedDeletePhaseRef.current !== 'completed')
     ) {
@@ -1637,6 +1690,411 @@ export function CodexInspectionPage({
     t,
   ]);
 
+  const isCurrentSnapshotOperation = useCallback(
+    (requestConnectionFingerprint: string | null, requestGeneration: number) =>
+      activeConnectionFingerprintRef.current === requestConnectionFingerprint &&
+      snapshotOperationGenerationRef.current === requestGeneration,
+    []
+  );
+
+  const queryFrozenSnapshotRecoveryTasks = useCallback(
+    async (
+      targets: readonly InspectionSnapshotTarget[],
+      requestConnectionFingerprint: string | null,
+      requestGeneration: number,
+      kind: InspectionSnapshotOperation['kind']
+    ) => {
+      if (!managerRequestScope) return null;
+      const taskItemsByClientKey = new Map<
+        string,
+        Awaited<ReturnType<typeof usageServiceApi.queryTokenRecoveryBatch>>['items'][number]
+      >();
+      let completed = 0;
+      for (const batch of chunkInspectionSnapshotTargets(targets)) {
+        if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration))
+          return null;
+        let response: Awaited<ReturnType<typeof usageServiceApi.queryTokenRecoveryBatch>>;
+        try {
+          response = await usageServiceApi.queryTokenRecoveryBatch(
+            managerRequestScope.apiBase,
+            managerRequestScope.managementKey,
+            batch.map((target) => target.recoveryTarget)
+          );
+        } catch (error) {
+          if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration))
+            return null;
+          const reason = error instanceof Error ? error.message.trim() : '';
+          setSnapshotOperation({
+            kind,
+            phase: 'failed',
+            total: targets.length,
+            completed,
+            eligible: 0,
+            submitted: 0,
+            skipped: 0,
+            failed: 1,
+            error: reason || 'recovery_preflight_failed',
+          });
+          return null;
+        }
+        if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration))
+          return null;
+        const responseItems = response.items ?? [];
+        const returnedClientKeys = new Set(
+          responseItems.map((item) => item.clientKey.trim()).filter(Boolean)
+        );
+        const missingClientKeys = batch
+          .map((target) => target.recoveryTarget.clientKey.trim())
+          .filter((clientKey) => clientKey && !returnedClientKeys.has(clientKey));
+        if (missingClientKeys.length > 0) {
+          setSnapshotOperation({
+            kind,
+            phase: 'failed',
+            total: targets.length,
+            completed,
+            eligible: 0,
+            submitted: 0,
+            skipped: 0,
+            failed: missingClientKeys.length,
+            error: 'recovery_preflight_incomplete',
+          });
+          return null;
+        }
+        responseItems.forEach((item) => {
+          const clientKey = item.clientKey.trim();
+          if (clientKey) taskItemsByClientKey.set(clientKey, item);
+        });
+        completed += batch.length;
+        setSnapshotOperation((previous) =>
+          previous && previous.kind === kind
+            ? { ...previous, phase: 'querying', completed }
+            : previous
+        );
+      }
+      return taskItemsByClientKey;
+    },
+    [isCurrentSnapshotOperation, managerRequestScope]
+  );
+
+  const handleRecoverSnapshot = useCallback(async () => {
+    const requestConnectionFingerprint = connectionFingerprint;
+    const targets = [...snapshotRecoveryTargets];
+    if (
+      !managerRequestScope ||
+      snapshotOperationBusyRef.current ||
+      targets.length === 0 ||
+      activeConnectionFingerprintRef.current !== requestConnectionFingerprint
+    ) {
+      return;
+    }
+    const requestGeneration = snapshotOperationGenerationRef.current + 1;
+    snapshotOperationGenerationRef.current = requestGeneration;
+    snapshotOperationBusyRef.current = true;
+    setSnapshotOperation({
+      kind: 'recovery',
+      phase: 'querying',
+      total: targets.length,
+      completed: 0,
+      eligible: 0,
+      submitted: 0,
+      skipped: 0,
+      failed: 0,
+      error: '',
+    });
+    try {
+      const taskItemsByClientKey = await queryFrozenSnapshotRecoveryTasks(
+        targets,
+        requestConnectionFingerprint,
+        requestGeneration,
+        'recovery'
+      );
+      if (
+        !taskItemsByClientKey ||
+        !isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)
+      ) {
+        return;
+      }
+      const plan = planInspectionSnapshotRecovery({
+        candidates: targets,
+        taskItemsByClientKey,
+        inspectionFinishedAtMs: result?.finishedAt ?? Number.NaN,
+      });
+      const visibleKeys = new Set(pageRecoveryTargets.map((target) => target.clientKey.trim()));
+      applyPageRuntimeBatchTasks(
+        Array.from(taskItemsByClientKey.values()).filter((item) =>
+          visibleKeys.has(item.clientKey.trim())
+        )
+      );
+      let submitted = 0;
+      const failures: string[] = [];
+      setSnapshotOperation({
+        kind: 'recovery',
+        phase: 'submitting',
+        total: targets.length,
+        completed: 0,
+        eligible: plan.submitTargets.length,
+        submitted,
+        skipped: plan.skipped.length,
+        failed: 0,
+        error: '',
+      });
+      for (const batch of chunkInspectionSnapshotTargets(plan.submitTargets)) {
+        if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)) return;
+        let response: Awaited<ReturnType<typeof usageServiceApi.requestTokenRecoveryManualBatch>>;
+        try {
+          response = await usageServiceApi.requestTokenRecoveryManualBatch(
+            managerRequestScope.apiBase,
+            managerRequestScope.managementKey,
+            batch
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message.trim() : '';
+          failures.push(reason || 'recovery_submission_failed');
+          break;
+        }
+        if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)) return;
+        const responseByClientKey = new Map(
+          (response.items ?? []).map((item) => [item.clientKey.trim(), item])
+        );
+        batch.forEach((target) => {
+          const item = responseByClientKey.get(target.clientKey.trim());
+          if (item?.task) submitted += 1;
+          else failures.push(item?.errorCode?.trim() || 'recovery_task_unavailable');
+        });
+        const visibleResponseItems = (response.items ?? []).filter((item) =>
+          visibleKeys.has(item.clientKey.trim())
+        );
+        if (visibleResponseItems.length > 0) applyPageRuntimeBatchTasks(visibleResponseItems);
+        setSnapshotOperation((previous) =>
+          previous && previous.kind === 'recovery'
+            ? {
+                ...previous,
+                completed: Math.min(previous.eligible, previous.completed + batch.length),
+                submitted,
+                failed: failures.length,
+              }
+            : previous
+        );
+      }
+      if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)) return;
+      const failureReasons = boundedSnapshotFailureReasons(failures);
+      setSnapshotOperation({
+        kind: 'recovery',
+        phase: 'completed',
+        total: targets.length,
+        completed: plan.submitTargets.length,
+        eligible: plan.submitTargets.length,
+        submitted,
+        skipped: plan.skipped.length,
+        failed: failures.length,
+        error: failureReasons.join(', '),
+      });
+    } finally {
+      if (snapshotOperationGenerationRef.current === requestGeneration) {
+        snapshotOperationBusyRef.current = false;
+      }
+    }
+  }, [
+    applyPageRuntimeBatchTasks,
+    connectionFingerprint,
+    isCurrentSnapshotOperation,
+    managerRequestScope,
+    pageRecoveryTargets,
+    queryFrozenSnapshotRecoveryTasks,
+    result?.finishedAt,
+    snapshotRecoveryTargets,
+  ]);
+
+  const deleteSnapshotBannedBatches = useCallback(
+    async (
+      batches: readonly (readonly AccountBannedAuthFileDeleteTargetRequest[])[],
+      total: number,
+      requestConnectionFingerprint: string | null,
+      requestGeneration: number
+    ) => {
+      if (!managerRequestScope) return;
+      let completed = 0;
+      let mergedResult: InspectionPageDeleteOperation['result'] = null;
+      let transportError = '';
+      for (const batch of batches) {
+        if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)) return;
+        let response: Awaited<ReturnType<typeof usageServiceApi.deleteAccountBannedAuthFilesBatch>>;
+        try {
+          response = await usageServiceApi.deleteAccountBannedAuthFilesBatch(
+            managerRequestScope.apiBase,
+            managerRequestScope.managementKey,
+            [...batch]
+          );
+        } catch (error) {
+          transportError = error instanceof Error ? error.message.trim() : '';
+          break;
+        }
+        if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)) return;
+        const reconciliation = reconcileInspectionPageDeleteResponse(response);
+        const physicalNames = [...reconciliation.physicalNames];
+        if (physicalNames.length > 0) {
+          const deletedSet = new Set(physicalNames);
+          setCurrentAuthFiles((previous) =>
+            previous.filter((file) => !deletedSet.has(file.name.trim()))
+          );
+          setResult((previous) =>
+            previous ? removeCodexInspectionFiles(previous, physicalNames) : previous
+          );
+          onAuthFilesDeleted?.(physicalNames);
+        }
+        mergedResult = mergeInspectionPageDeleteOperationResults(
+          mergedResult,
+          reconciliation.result
+        );
+        completed += batch.length;
+        setSnapshotOperation({
+          kind: 'banned_delete',
+          phase: 'deleting',
+          total,
+          completed,
+          eligible: total,
+          submitted: mergedResult.deleted + mergedResult.alreadyAbsent,
+          skipped: mergedResult.skipped,
+          failed: mergedResult.failed,
+          error: '',
+        });
+      }
+      if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)) return;
+      setSnapshotOperation({
+        kind: 'banned_delete',
+        phase: transportError ? 'failed' : 'completed',
+        total,
+        completed,
+        eligible: total,
+        submitted: (mergedResult?.deleted ?? 0) + (mergedResult?.alreadyAbsent ?? 0),
+        skipped: mergedResult?.skipped ?? 0,
+        failed: (mergedResult?.failed ?? 0) + (transportError ? 1 : 0),
+        error: transportError,
+      });
+      if (transportError) showNotification(transportError, 'error');
+    },
+    [isCurrentSnapshotOperation, managerRequestScope, onAuthFilesDeleted, showNotification]
+  );
+
+  const handleDeleteSnapshotBanned = useCallback(async () => {
+    const requestConnectionFingerprint = connectionFingerprint;
+    const targets = [...snapshotRecoveryTargets];
+    if (
+      !managerRequestScope ||
+      snapshotOperationBusyRef.current ||
+      targets.length === 0 ||
+      activeConnectionFingerprintRef.current !== requestConnectionFingerprint
+    ) {
+      return;
+    }
+    const requestGeneration = snapshotOperationGenerationRef.current + 1;
+    snapshotOperationGenerationRef.current = requestGeneration;
+    snapshotOperationBusyRef.current = true;
+    setSnapshotOperation({
+      kind: 'banned_delete',
+      phase: 'querying',
+      total: targets.length,
+      completed: 0,
+      eligible: 0,
+      submitted: 0,
+      skipped: 0,
+      failed: 0,
+      error: '',
+    });
+    const taskItemsByClientKey = await queryFrozenSnapshotRecoveryTasks(
+      targets,
+      requestConnectionFingerprint,
+      requestGeneration,
+      'banned_delete'
+    );
+    if (
+      !taskItemsByClientKey ||
+      !isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)
+    ) {
+      if (snapshotOperationGenerationRef.current === requestGeneration)
+        snapshotOperationBusyRef.current = false;
+      return;
+    }
+    const plan = planInspectionSnapshotAccountBannedDelete({
+      candidates: targets,
+      taskItemsByClientKey,
+    });
+    if (plan.targetCount === 0) {
+      setSnapshotOperation({
+        kind: 'banned_delete',
+        phase: 'completed',
+        total: targets.length,
+        completed: targets.length,
+        eligible: 0,
+        submitted: 0,
+        skipped: plan.skipped.length,
+        failed: 0,
+        error: '',
+      });
+      snapshotOperationBusyRef.current = false;
+      return;
+    }
+    showConfirmation({
+      title: t('accounts.batch_delete_banned_snapshot_title', { count: plan.targetCount }),
+      message: t('accounts.batch_delete_banned_snapshot_summary', {
+        rows: plan.targetCount,
+        files: plan.fileCount,
+      }),
+      confirmText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      variant: 'danger',
+      secondConfirmation: {
+        title: t('auth_files.delete_many_second_title'),
+        message: t('auth_files.delete_many_second_confirm', {
+          count: plan.targetCount,
+          scope: t('auth_files.delete_scope_selected'),
+        }),
+        confirmText: t('auth_files.delete_second_action'),
+        cancelText: t('common.cancel'),
+        variant: 'danger',
+      },
+      onCancel: () => {
+        if (snapshotOperationGenerationRef.current !== requestGeneration) return;
+        snapshotOperationGenerationRef.current += 1;
+        snapshotOperationBusyRef.current = false;
+        setSnapshotOperation(idleInspectionSnapshotOperation);
+      },
+      onConfirm: () => {
+        if (!isCurrentSnapshotOperation(requestConnectionFingerprint, requestGeneration)) return;
+        setSnapshotOperation({
+          kind: 'banned_delete',
+          phase: 'deleting',
+          total: plan.targetCount,
+          completed: 0,
+          eligible: plan.targetCount,
+          submitted: 0,
+          skipped: plan.skipped.length,
+          failed: 0,
+          error: '',
+        });
+        void deleteSnapshotBannedBatches(
+          plan.batches,
+          plan.targetCount,
+          requestConnectionFingerprint,
+          requestGeneration
+        ).finally(() => {
+          if (snapshotOperationGenerationRef.current === requestGeneration) {
+            snapshotOperationBusyRef.current = false;
+          }
+        });
+      },
+    });
+  }, [
+    connectionFingerprint,
+    deleteSnapshotBannedBatches,
+    isCurrentSnapshotOperation,
+    managerRequestScope,
+    queryFrozenSnapshotRecoveryTasks,
+    showConfirmation,
+    snapshotRecoveryTargets,
+    t,
+  ]);
+
   const handleExecutePlanned = useCallback(() => {
     if (!result) return;
 
@@ -1682,26 +2140,6 @@ export function CodexInspectionPage({
     },
     [connectionFingerprint, executeItems, showConfirmation, t]
   );
-
-  const handleDeleteReauthPlanned = useCallback(() => {
-    if (!result) return;
-
-    const targets = reauthResults.map(toReauthDeleteExecutionItem);
-    const confirmationConnectionFingerprint = connectionFingerprint;
-    showConfirmation({
-      title: t('monitoring.codex_inspection_delete_reauth_confirm_title'),
-      message: t('monitoring.codex_inspection_delete_reauth_confirm_body', {
-        count: targets.length,
-      }),
-      confirmText: t('monitoring.codex_inspection_delete_reauth_now'),
-      cancelText: t('common.cancel'),
-      variant: 'danger',
-      onConfirm: () => {
-        if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
-        void executeItems(targets);
-      },
-    });
-  }, [connectionFingerprint, executeItems, reauthResults, result, showConfirmation, t]);
 
   const handleDeleteSingleReauth = useCallback(
     (item: CodexInspectionResultItem) => {
@@ -2102,6 +2540,41 @@ export function CodexInspectionPage({
         pageRecoverySubmitting={pageRecoveryBusy}
         pageBannedDeleteSubmitting={pageBannedDeleteSubmitting}
         pageBannedDeleteBusy={pageBannedDeleteBusy}
+        snapshotRecoveryCount={
+          result?.finishedAt && result.finishedAt > 0 ? snapshotRecoveryTargets.length : 0
+        }
+        snapshotActionBusy={
+          snapshotOperation !== null &&
+          snapshotOperation.phase !== 'completed' &&
+          snapshotOperation.phase !== 'failed'
+        }
+        snapshotFeedback={
+          snapshotOperation
+            ? snapshotOperation.phase === 'querying'
+              ? t('accounts.inspection_snapshot_querying', {
+                  completed: snapshotOperation.completed,
+                  total: snapshotOperation.total,
+                })
+              : snapshotOperation.kind === 'recovery'
+                ? snapshotOperation.phase === 'failed'
+                  ? t('accounts.inspection_snapshot_preflight_failed')
+                  : t('accounts.inspection_snapshot_submitting', {
+                      submitted: snapshotOperation.submitted,
+                      eligible: snapshotOperation.eligible,
+                      skipped: snapshotOperation.skipped,
+                    })
+                : snapshotOperation.phase === 'failed'
+                  ? t('accounts.inspection_page_delete_failed', {
+                      reason: snapshotOperation.error || 'delete_request_failed',
+                    })
+                  : snapshotOperation.eligible === 0
+                    ? t('accounts.inspection_snapshot_no_banned')
+                    : t('accounts.inspection_snapshot_deleting', {
+                        completed: snapshotOperation.completed,
+                        total: snapshotOperation.total,
+                      })
+            : undefined
+        }
         pageRecoveryProgress={pageRecoveryProgress}
         pageBannedDeleteOperation={pageBannedDeleteOperation}
         handlingFilterCounts={handlingFilterCounts}
@@ -2122,18 +2595,25 @@ export function CodexInspectionPage({
         onExecutePlanned={handleExecutePlanned}
         onExecuteSingle={handleExecuteSingle}
         onReauthAccount={handleOpenCodexReauth}
-        onRecoverCurrentPage={
-          actionFilter === 'reauth' ? handleRecoverCurrentPage : undefined
-        }
+        onRecoverCurrentPage={actionFilter === 'reauth' ? handleRecoverCurrentPage : undefined}
         onDeleteCurrentPageBanned={
           actionFilter === 'reauth' ? handleDeleteCurrentPageBanned : undefined
+        }
+        onRecoverSnapshot={
+          actionFilter === 'reauth' && result?.finishedAt && result.finishedAt > 0
+            ? handleRecoverSnapshot
+            : undefined
+        }
+        onDeleteSnapshotBanned={
+          actionFilter === 'reauth' && result?.finishedAt && result.finishedAt > 0
+            ? handleDeleteSnapshotBanned
+            : undefined
         }
         onReplaceCurrentPageProxy={
           actionFilter === 'proxy_abnormal' && pageProxyReplacementTargets.length > 0
             ? () => setProxyReplacementOpen(true)
             : undefined
         }
-        onDeleteReauthPlanned={reauthResults.length > 0 ? handleDeleteReauthPlanned : undefined}
         onDeleteReauthSingle={reauthResults.length > 0 ? handleDeleteSingleReauth : undefined}
         onOpenCredential={
           onOpenCredential
@@ -2231,7 +2711,7 @@ export function CodexInspectionPage({
             previous
               ? {
                   ...previous,
-                   results: reconcileProxyReplacementRechecks(previous.results, completion.items),
+                  results: reconcileProxyReplacementRechecks(previous.results, completion.items),
                 }
               : previous
           );

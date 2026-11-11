@@ -316,10 +316,7 @@ export function CodexInspectionResultsPanel({
                   data-inspection-page-proxy-replacement={true}
                   onClick={onReplaceCurrentPageProxy}
                   disabled={
-                    !result ||
-                    isInspectionInFlight ||
-                    executing ||
-                    pageProxyReplacementCount === 0
+                    !result || isInspectionInFlight || executing || pageProxyReplacementCount === 0
                   }
                 >
                   <IconRefreshCw size={14} />
@@ -379,6 +376,9 @@ export function CodexInspectionResultsPanel({
                     !result ||
                     isInspectionInFlight ||
                     executing ||
+                    pageRecoverySubmitting ||
+                    pageRecoveryProgress?.active === true ||
+                    pageBannedDeleteBusy ||
                     snapshotActionBusy ||
                     snapshotRecoveryCount === 0
                   }
@@ -399,6 +399,9 @@ export function CodexInspectionResultsPanel({
                     !result ||
                     isInspectionInFlight ||
                     executing ||
+                    pageRecoverySubmitting ||
+                    pageRecoveryProgress?.active === true ||
+                    pageBannedDeleteBusy ||
                     snapshotActionBusy ||
                     snapshotRecoveryCount === 0
                   }
@@ -449,7 +452,9 @@ export function CodexInspectionResultsPanel({
                   className={styles.inspectionPageOperationFeedbackItem}
                   data-inspection-snapshot-operation-status={true}
                 >
-                  <span className={styles.inspectionPageOperationFeedbackLabel}>{snapshotFeedback}</span>
+                  <span className={styles.inspectionPageOperationFeedbackLabel}>
+                    {snapshotFeedback}
+                  </span>
                 </div>
               ) : null}
               {recoveryFeedback}
@@ -458,7 +463,9 @@ export function CodexInspectionResultsPanel({
                   className={styles.inspectionPageOperationFeedbackItem}
                   data-inspection-page-banned-delete-status={true}
                 >
-                  <span className={styles.inspectionPageOperationFeedbackLabel}>{deleteFeedback}</span>
+                  <span className={styles.inspectionPageOperationFeedbackLabel}>
+                    {deleteFeedback}
+                  </span>
                   {deleteFeedbackDetails.map((detail) => (
                     <span
                       key={`${detail.fileName}\u0000${detail.code}`}

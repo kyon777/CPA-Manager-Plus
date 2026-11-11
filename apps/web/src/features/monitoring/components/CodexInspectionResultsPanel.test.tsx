@@ -241,7 +241,9 @@ describe('CodexInspectionResultsPanel', () => {
     });
     expect(onRecoverSnapshot).toHaveBeenCalledTimes(1);
     expect(onDeleteSnapshotBanned).toHaveBeenCalledTimes(1);
-    expect(snapshotRecoveryButton.props.children).toContain('accounts.batch_recovery_snapshot:1239');
+    expect(snapshotRecoveryButton.props.children).toContain(
+      'accounts.batch_recovery_snapshot:1239'
+    );
     expect(snapshotDeleteButton.props.children).toContain('accounts.batch_delete_banned_snapshot');
 
     const busyRenderer = renderPanel(createItem({ action: 'reauth' }), {
@@ -263,6 +265,26 @@ describe('CodexInspectionResultsPanel', () => {
     ].forEach((attribute) => {
       expect(busyRenderer.root.findByProps({ [attribute]: true }).props.disabled).toBe(true);
     });
+
+    const pageBusyRenderer = renderPanel(createItem({ action: 'reauth' }), {
+      actionFilter: 'reauth',
+      pageRecoveryCount: 2,
+      pageBannedDeleteCount: 1,
+      pageRecoverySubmitting: true,
+      snapshotRecoveryCount: 1239,
+      onRecoverCurrentPage: vi.fn(),
+      onDeleteCurrentPageBanned: vi.fn(),
+      onRecoverSnapshot: vi.fn(),
+      onDeleteSnapshotBanned: vi.fn(),
+    });
+    expect(
+      pageBusyRenderer.root.findByProps({ 'data-inspection-snapshot-recovery': true }).props
+        .disabled
+    ).toBe(true);
+    expect(
+      pageBusyRenderer.root.findByProps({ 'data-inspection-snapshot-banned-delete': true }).props
+        .disabled
+    ).toBe(true);
 
     const nonReauthRenderer = renderPanel(createItem(), {
       actionFilter: 'all',
