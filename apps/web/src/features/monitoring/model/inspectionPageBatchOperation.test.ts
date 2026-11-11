@@ -2,14 +2,21 @@ import { describe, expect, it } from 'vitest';
 import type {
   AccountBannedAuthFileDeleteResponse,
   CredentialRuntimeMetadataItem,
+  TokenRecoveryBatchItem,
   TokenRecoveryBatchTargetRequest,
+  TokenRecoveryTask,
 } from '@/services/api/usageService';
 import {
   buildPendingInspectionPageRecoveryOperation,
+  chunkInspectionSnapshotTargets,
+  mergeInspectionPageDeleteOperationResults,
+  planInspectionSnapshotAccountBannedDelete,
+  planInspectionSnapshotRecovery,
   reconcileInspectionPageDeleteResponse,
   selectPostInspectionManualSuccessKeys,
   summarizeInspectionPageRecoveryOperation,
   toInspectionPageDeleteOperationResult,
+  type InspectionSnapshotTarget,
 } from './inspectionPageBatchOperation';
 
 const target = (clientKey: string): TokenRecoveryBatchTargetRequest => ({
@@ -34,6 +41,45 @@ const metadata = (
     ...(options.code ? { lastErrorCode: options.code } : {}),
     ...(options.message ? { lastErrorMessage: options.message } : {}),
   },
+});
+
+const snapshotTarget = (
+  clientKey: string,
+  fileName = `${clientKey}.json`
+): InspectionSnapshotTarget => ({
+  recoveryTarget: {
+    ...target(clientKey),
+    fileName,
+    authIndex: `index-${clientKey}`,
+  },
+  deletionSource: {
+    clientKey,
+    fileName,
+    authIndex: `index-${clientKey}`,
+    accountEmail: `${clientKey}@example.com`,
+    provider: 'codex',
+    runtimeId: `runtime-${clientKey}`,
+    accountSnapshot: `${clientKey}@example.com`,
+  },
+});
+
+const recoveryTask = (
+  clientKey: string,
+  overrides: Partial<TokenRecoveryTask> = {}
+): TokenRecoveryTask => ({
+  id: 1,
+  fileName: `${clientKey}.json`,
+  authIndex: `index-${clientKey}`,
+  accountEmail: `${clientKey}@example.com`,
+  provider: 'codex',
+  status: 'manual_failed_manual_only',
+  mode: 'manual',
+  ...overrides,
+});
+
+const recoveryItem = (clientKey: string, task: TokenRecoveryTask | null): TokenRecoveryBatchItem => ({
+  clientKey,
+  task,
 });
 
 describe('inspection page batch operation model', () => {
@@ -203,5 +249,162 @@ describe('inspection page batch operation model', () => {
       { fileName: 'failed.json', code: 'delete_failed' },
       { fileName: 'kept.json', code: 'shared_file_incomplete' },
     ]);
+  });
+
+  it('chunks frozen inspection snapshot targets into bounded 100-item batches', () => {
+    const chunks = chunkInspectionSnapshotTargets(
+      Array.from({ length: 201 }, (_, index) => index)
+    );
+
+    expect(chunks.map((chunk) => chunk.length)).toEqual([100, 100, 1]);
+    expect(chunks[0][0]).toBe(0);
+    expect(chunks[2]).toEqual([200]);
+  });
+
+  it('submits only recovery candidates that are not pending, newly succeeded, banned, or unavailable', () => {
+    const candidates = [
+      snapshotTarget('new'),
+      snapshotTarget('failed'),
+      snapshotTarget('queued'),
+      snapshotTarget('done'),
+      snapshotTarget('banned'),
+      snapshotTarget('missing'),
+    ];
+    const plan = planInspectionSnapshotRecovery({
+      candidates,
+      inspectionFinishedAtMs: 10_000,
+      taskItemsByClientKey: new Map<string, TokenRecoveryBatchItem>([
+        ['new', recoveryItem('new', null)],
+        ['failed', recoveryItem('failed', recoveryTask('failed', { lastErrorCode: 'http_401' }))],
+        ['queued', recoveryItem('queued', recoveryTask('queued', { status: 'manual_queued' }))],
+        [
+          'done',
+          recoveryItem('done', recoveryTask('done', { status: 'succeeded', completedAtMs: 10_001 })),
+        ],
+        [
+          'banned',
+          recoveryItem(
+            'banned',
+            recoveryTask('banned', {
+              lastErrorCode: 'account_banned',
+            })
+          ),
+        ],
+      ]),
+    });
+
+    expect(plan.submitTargets.map((item) => item.clientKey)).toEqual(['new', 'failed']);
+    expect(plan.skipped).toEqual([
+      { clientKey: 'queued', reason: 'recovery_pending' },
+      { clientKey: 'done', reason: 'recovery_succeeded' },
+      { clientKey: 'banned', reason: 'account_banned' },
+      { clientKey: 'missing', reason: 'recovery_task_unavailable' },
+    ]);
+  });
+
+  it('keeps an entire shared physical file out of banned deletion when any frozen member is not banned', () => {
+    const candidates = [
+      snapshotTarget('shared-banned', 'shared.json'),
+      snapshotTarget('shared-not-banned', 'shared.json'),
+    ];
+    const plan = planInspectionSnapshotAccountBannedDelete({
+      candidates,
+      taskItemsByClientKey: new Map<string, TokenRecoveryBatchItem>([
+        [
+          'shared-banned',
+          recoveryItem(
+            'shared-banned',
+            recoveryTask('shared-banned', {
+              fileName: 'shared.json',
+              lastErrorCode: 'account_banned',
+            })
+          ),
+        ],
+        [
+          'shared-not-banned',
+          recoveryItem(
+            'shared-not-banned',
+            recoveryTask('shared-not-banned', {
+              fileName: 'shared.json',
+              lastErrorCode: 'http_401',
+            })
+          ),
+        ],
+      ]),
+    });
+
+    expect(plan.batches).toEqual([]);
+    expect(plan.targetCount).toBe(0);
+    expect(plan.fileCount).toBe(0);
+    expect(plan.skipped).toEqual([
+      { clientKey: 'shared-banned', reason: 'shared_file_incomplete' },
+      { clientKey: 'shared-not-banned', reason: 'shared_file_incomplete' },
+    ]);
+  });
+
+  it('does not split shared files across snapshot banned-delete batches', () => {
+    const oversized = Array.from({ length: 101 }, (_, index) =>
+      snapshotTarget(`oversized-${index}`, 'oversized.json')
+    );
+    const ninetyNine = Array.from({ length: 99 }, (_, index) =>
+      snapshotTarget(`ninety-nine-${index}`, 'ninety-nine.json')
+    );
+    const two = [snapshotTarget('two-a', 'two.json'), snapshotTarget('two-b', 'two.json')];
+    const candidates = [...oversized, ...ninetyNine, ...two];
+    const taskItemsByClientKey = new Map<string, TokenRecoveryBatchItem>(
+      candidates.map((candidate) => {
+        const clientKey = candidate.recoveryTarget.clientKey;
+        return [
+          clientKey,
+          recoveryItem(
+            clientKey,
+            recoveryTask(clientKey, {
+              fileName: candidate.recoveryTarget.fileName,
+              lastErrorCode: 'account_banned',
+            })
+          ),
+        ];
+      })
+    );
+
+    const plan = planInspectionSnapshotAccountBannedDelete({ candidates, taskItemsByClientKey });
+
+    expect(plan.batches.map((batch) => batch.length)).toEqual([99, 2]);
+    expect(plan.batches[0].every((item) => item.fileName === 'ninety-nine.json')).toBe(true);
+    expect(plan.batches[1].every((item) => item.fileName === 'two.json')).toBe(true);
+    expect(plan.skipped).toHaveLength(101);
+    expect(plan.skipped.every((item) => item.reason === 'shared_file_too_large')).toBe(true);
+  });
+
+  it('accumulates bounded deletion results across serial snapshot batches', () => {
+    const first: AccountBannedAuthFileDeleteResponse = {
+      requested: 2,
+      deleted: [{ clientKey: 'one', fileName: 'one.json' }],
+      skipped: [{ clientKey: 'two', fileName: 'two.json', code: 'credential_not_found' }],
+      failed: [],
+    };
+    const second: AccountBannedAuthFileDeleteResponse = {
+      requested: 2,
+      deleted: [],
+      skipped: [{ clientKey: 'three', fileName: 'three.json', code: 'shared_file_incomplete' }],
+      failed: [{ clientKey: 'four', fileName: 'four.json', code: 'delete_failed' }],
+    };
+
+    expect(
+      mergeInspectionPageDeleteOperationResults(
+        mergeInspectionPageDeleteOperationResults(null, toInspectionPageDeleteOperationResult(first)),
+        toInspectionPageDeleteOperationResult(second)
+      )
+    ).toEqual({
+      requested: 4,
+      deleted: 1,
+      alreadyAbsent: 1,
+      skipped: 1,
+      failed: 1,
+      details: [
+        { fileName: 'four.json', code: 'delete_failed' },
+        { fileName: 'three.json', code: 'shared_file_incomplete' },
+      ],
+    });
   });
 });

@@ -1,9 +1,40 @@
 import type {
   AccountBannedAuthFileDeleteResponse,
+  AccountBannedAuthFileDeleteTargetRequest,
   CredentialRuntimeMetadataItem,
+  TokenRecoveryBatchItem,
   TokenRecoveryBatchTargetRequest,
 } from '@/services/api/usageService';
+import {
+  buildAccountBannedDeleteTarget,
+  isTerminalAccountBannedRecoveryTask,
+  type AccountBannedDeleteSource,
+} from '@/features/authFiles/model/accountBannedDelete';
 import { isPendingRecoveryStatus } from '@/features/accounts/model/credentialRuntimeMetadata';
+
+export const INSPECTION_SNAPSHOT_BATCH_LIMIT = 100;
+
+export type InspectionSnapshotTarget = {
+  recoveryTarget: TokenRecoveryBatchTargetRequest;
+  deletionSource: AccountBannedDeleteSource;
+};
+
+export type InspectionSnapshotSkip = {
+  clientKey: string;
+  reason: string;
+};
+
+export type InspectionSnapshotRecoveryPlan = {
+  submitTargets: readonly TokenRecoveryBatchTargetRequest[];
+  skipped: readonly InspectionSnapshotSkip[];
+};
+
+export type InspectionSnapshotBannedDeletePlan = {
+  batches: readonly (readonly AccountBannedAuthFileDeleteTargetRequest[])[];
+  skipped: readonly InspectionSnapshotSkip[];
+  targetCount: number;
+  fileCount: number;
+};
 
 export type InspectionPageRecoverySubmissionFailure = {
   clientKey: string;
@@ -70,6 +101,137 @@ const maxFailureReasons = 6;
 const maxDeleteDetails = 8;
 
 const normalizedText = (value: string | null | undefined): string => value?.trim() ?? '';
+
+export const chunkInspectionSnapshotTargets = <T>(
+  targets: readonly T[],
+  limit = INSPECTION_SNAPSHOT_BATCH_LIMIT
+): T[][] => {
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error('inspection snapshot batch limit must be a positive integer');
+  }
+
+  const chunks: T[][] = [];
+  for (let offset = 0; offset < targets.length; offset += limit) {
+    chunks.push(targets.slice(offset, offset + limit));
+  }
+  return chunks;
+};
+
+export const planInspectionSnapshotRecovery = ({
+  candidates,
+  taskItemsByClientKey,
+  inspectionFinishedAtMs,
+}: {
+  candidates: readonly InspectionSnapshotTarget[];
+  taskItemsByClientKey: ReadonlyMap<string, TokenRecoveryBatchItem>;
+  inspectionFinishedAtMs: number;
+}): InspectionSnapshotRecoveryPlan => {
+  const submitTargets: TokenRecoveryBatchTargetRequest[] = [];
+  const skipped: InspectionSnapshotSkip[] = [];
+
+  candidates.forEach(({ recoveryTarget }) => {
+    const clientKey = normalizedText(recoveryTarget.clientKey);
+    const item = taskItemsByClientKey.get(clientKey);
+    if (!item) {
+      skipped.push({ clientKey, reason: 'recovery_task_unavailable' });
+      return;
+    }
+
+    const task = item.task;
+    if (!task) {
+      submitTargets.push(recoveryTarget);
+      return;
+    }
+    if (isPendingRecoveryStatus(task.status)) {
+      skipped.push({ clientKey, reason: 'recovery_pending' });
+      return;
+    }
+    if (isTerminalAccountBannedRecoveryTask(task)) {
+      skipped.push({ clientKey, reason: 'account_banned' });
+      return;
+    }
+    if (
+      task.status === 'succeeded' &&
+      Number.isFinite(inspectionFinishedAtMs) &&
+      Number.isFinite(task.completedAtMs) &&
+      (task.completedAtMs ?? 0) > inspectionFinishedAtMs
+    ) {
+      skipped.push({ clientKey, reason: 'recovery_succeeded' });
+      return;
+    }
+
+    submitTargets.push(recoveryTarget);
+  });
+
+  return { submitTargets, skipped };
+};
+
+const snapshotPhysicalFileKey = (source: AccountBannedDeleteSource, index: number): string => {
+  const fileName = normalizedText(source.fileName).toLowerCase();
+  return fileName || `__missing_file_name_${index}`;
+};
+
+export const planInspectionSnapshotAccountBannedDelete = ({
+  candidates,
+  taskItemsByClientKey,
+}: {
+  candidates: readonly InspectionSnapshotTarget[];
+  taskItemsByClientKey: ReadonlyMap<string, TokenRecoveryBatchItem>;
+}): InspectionSnapshotBannedDeletePlan => {
+  const candidateGroups = new Map<string, InspectionSnapshotTarget[]>();
+  candidates.forEach((candidate, index) => {
+    const physicalKey = snapshotPhysicalFileKey(candidate.deletionSource, index);
+    const group = candidateGroups.get(physicalKey);
+    if (group) group.push(candidate);
+    else candidateGroups.set(physicalKey, [candidate]);
+  });
+
+  const completeGroups: AccountBannedAuthFileDeleteTargetRequest[][] = [];
+  const skipped: InspectionSnapshotSkip[] = [];
+  candidateGroups.forEach((group) => {
+    const targets = group.map(({ deletionSource, recoveryTarget }) =>
+      buildAccountBannedDeleteTarget(
+        deletionSource,
+        taskItemsByClientKey.get(normalizedText(recoveryTarget.clientKey))?.task
+      )
+    );
+    if (targets.some((target) => !target)) {
+      group.forEach(({ recoveryTarget }) => {
+        skipped.push({
+          clientKey: normalizedText(recoveryTarget.clientKey),
+          reason: 'shared_file_incomplete',
+        });
+      });
+      return;
+    }
+    const strictTargets = targets as AccountBannedAuthFileDeleteTargetRequest[];
+    if (strictTargets.length > INSPECTION_SNAPSHOT_BATCH_LIMIT) {
+      strictTargets.forEach((target) => {
+        skipped.push({ clientKey: target.clientKey, reason: 'shared_file_too_large' });
+      });
+      return;
+    }
+    completeGroups.push(strictTargets);
+  });
+
+  const batches: AccountBannedAuthFileDeleteTargetRequest[][] = [];
+  let currentBatch: AccountBannedAuthFileDeleteTargetRequest[] = [];
+  completeGroups.forEach((group) => {
+    if (currentBatch.length > 0 && currentBatch.length + group.length > INSPECTION_SNAPSHOT_BATCH_LIMIT) {
+      batches.push(currentBatch);
+      currentBatch = [];
+    }
+    currentBatch.push(...group);
+  });
+  if (currentBatch.length > 0) batches.push(currentBatch);
+
+  return {
+    batches,
+    skipped,
+    targetCount: completeGroups.reduce((total, group) => total + group.length, 0),
+    fileCount: completeGroups.length,
+  };
+};
 
 const appendUniqueBounded = (items: string[], value: string): void => {
   const normalized = value.trim();
@@ -238,3 +400,15 @@ export const reconcileInspectionPageDeleteResponse = (
 export const toInspectionPageDeleteOperationResult = (
   response: AccountBannedAuthFileDeleteResponse
 ): InspectionPageDeleteOperationResult => reconcileInspectionPageDeleteResponse(response).result;
+
+export const mergeInspectionPageDeleteOperationResults = (
+  previous: InspectionPageDeleteOperationResult | null,
+  next: InspectionPageDeleteOperationResult
+): InspectionPageDeleteOperationResult => ({
+  requested: (previous?.requested ?? 0) + next.requested,
+  deleted: (previous?.deleted ?? 0) + next.deleted,
+  alreadyAbsent: (previous?.alreadyAbsent ?? 0) + next.alreadyAbsent,
+  skipped: (previous?.skipped ?? 0) + next.skipped,
+  failed: (previous?.failed ?? 0) + next.failed,
+  details: [...(previous?.details ?? []), ...next.details].slice(0, maxDeleteDetails),
+});
