@@ -1,6 +1,8 @@
 ﻿# 全量当前代理出口健康复检设计
 
-**状态：** 已确认，待实现`n**日期：** 2026-11-11`n**范围：** CPA Manager Plus（CPAM）私有二改；不触碰 CPA Core / `cli-proxy-api`。
+**状态：** 已确认，待实现
+**日期：** 2026-11-11
+**范围：** CPA Manager Plus（CPAM）私有二改；不触碰 CPA Core / `cli-proxy-api`。
 
 ## 1. 问题与目标
 
