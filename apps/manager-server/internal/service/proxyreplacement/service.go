@@ -22,8 +22,9 @@ const previewTTL = 15 * time.Minute
 const taskWorkerPollInterval = 250 * time.Millisecond
 
 const (
-	maxProxyExitIPCheckBatch    = 500
-	proxyExitIPCheckConcurrency = 8
+	maxProxyExitIPCheckBatch         = 500
+	proxyPoolExitIPCheckConcurrency  = 8
+	credentialExitIPCheckConcurrency = 40
 )
 
 var (
@@ -216,7 +217,7 @@ func (s *Service) VerifyProxyPoolExitIPs(ctx context.Context, fingerprints []str
 		proxyURL    string
 	}
 	jobs := make(chan verificationJob)
-	workerCount := proxyExitIPCheckConcurrency
+	workerCount := proxyPoolExitIPCheckConcurrency
 	if workerCount > len(selected) {
 		workerCount = len(selected)
 	}
@@ -747,7 +748,7 @@ func (s *Service) RunPending(ctx context.Context) (bool, error) {
 func (s *Service) executeTask(ctx context.Context, task model.ProxyReplacementTask) error {
 	setup, configured, err := s.setupResolver.ResolveSetup(ctx)
 	if err != nil || !configured || strings.TrimSpace(setup.CPAUpstreamURL) == "" || strings.TrimSpace(setup.ManagementKey) == "" {
-		return s.failAllTaskItems(ctx, task.ID, "cpa_not_configured", "CPA 管理连接不可用")
+		return s.failAllTaskItems(ctx, task.ID, "cpa_not_configured", "CPA ç®¡ç†è¿žæŽ¥ä¸å¯ç”¨")
 	}
 	page, err := s.tasks.GetTask(ctx, task.ID, 1, 1000)
 	if err != nil {
@@ -831,7 +832,7 @@ func (s *Service) executePhysicalItems(ctx context.Context, setup store.Setup, i
 	if err != nil {
 		for _, item := range items {
 			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriteFailed, model.ProxyReplacementItemOutcome{
-				WriteErrorCode: "lock_failed", WriteErrorMessage: "凭证写入锁不可用",
+				WriteErrorCode: "lock_failed", WriteErrorMessage: "å‡­è¯å†™å…¥é”ä¸å¯ç”¨",
 			})
 		}
 		return false
@@ -844,11 +845,11 @@ func (s *Service) executePhysicalItems(ctx context.Context, setup store.Setup, i
 		target, resolveErr := s.resolveCurrentProxyMutationTarget(ctx, setup, item.Target)
 		if resolveErr != nil {
 			outcome := model.ProxyReplacementItemOutcome{
-				WriteErrorCode: "credential_lookup_failed", WriteErrorMessage: "无法读取当前凭证",
+				WriteErrorCode: "credential_lookup_failed", WriteErrorMessage: "æ— æ³•è¯»å–å½“å‰å‡­è¯",
 			}
 			if errors.Is(resolveErr, cpaauthfiles.ErrAuthFileNotFound) || errors.Is(resolveErr, cpaauthfiles.ErrIdentityMismatch) {
 				outcome.WriteErrorCode = "credential_not_found"
-				outcome.WriteErrorMessage = "未找到当前凭证"
+				outcome.WriteErrorMessage = "æœªæ‰¾åˆ°å½“å‰å‡­è¯"
 			}
 			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemWriteFailed, outcome)
 			continue
@@ -862,7 +863,7 @@ func (s *Service) executePhysicalItems(ctx context.Context, setup store.Setup, i
 		}
 		if currentProxy != model.NormalizeProxyURL(item.OldProxyURL) {
 			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemSkippedStale, model.ProxyReplacementItemOutcome{
-				WriteErrorCode: "stale_proxy", WriteErrorMessage: "账号代理已被其他操作修改，未覆盖",
+				WriteErrorCode: "stale_proxy", WriteErrorMessage: "è´¦å·ä»£ç†å·²è¢«å…¶ä»–æ“ä½œä¿®æ”¹ï¼Œæœªè¦†ç›–",
 			})
 			continue
 		}
@@ -1036,7 +1037,7 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 		}
 		if !found {
 			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
-				RecheckErrorCode: "recheck_unavailable", RecheckErrorMessage: "出口 IP 复检未返回结果",
+				RecheckErrorCode: "recheck_unavailable", RecheckErrorMessage: "å‡ºå£ IP å¤æ£€æœªè¿”å›žç»“æžœ",
 			})
 			continue
 		}
@@ -1069,17 +1070,17 @@ func (s *Service) runRechecks(ctx context.Context, taskID int64) {
 			reason := directExitIPReason(result.Reason, "ip_echo_unavailable")
 			if reason == "credential_not_found" || reason == "credential_ambiguous" || reason == "credential_lookup_failed" {
 				_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckFailed, model.ProxyReplacementItemOutcome{
-					RecheckErrorCode: reason, RecheckErrorMessage: "当前凭证不存在或已变化，无法复检",
+					RecheckErrorCode: reason, RecheckErrorMessage: "å½“å‰å‡­è¯ä¸å­˜åœ¨æˆ–å·²å˜åŒ–ï¼Œæ— æ³•å¤æ£€",
 				})
 				continue
 			}
 			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckInconclusive, model.ProxyReplacementItemOutcome{
-				RecheckErrorCode: reason, RecheckErrorMessage: "出口 IP 复检未确认（未判定代理异常）",
+				RecheckErrorCode: reason, RecheckErrorMessage: "å‡ºå£ IP å¤æ£€æœªç¡®è®¤ï¼ˆæœªåˆ¤å®šä»£ç†å¼‚å¸¸ï¼‰",
 			})
 			clearTargets = append(clearTargets, target)
 		default:
 			_ = s.tasks.MarkItem(ctx, item.ID, model.ProxyReplacementItemRecheckInconclusive, model.ProxyReplacementItemOutcome{
-				RecheckErrorCode: "ip_echo_unavailable", RecheckErrorMessage: "出口 IP 复检未确认（未判定代理异常）",
+				RecheckErrorCode: "ip_echo_unavailable", RecheckErrorMessage: "å‡ºå£ IP å¤æ£€æœªç¡®è®¤ï¼ˆæœªåˆ¤å®šä»£ç†å¼‚å¸¸ï¼‰",
 			})
 			clearTargets = append(clearTargets, target)
 		}
@@ -1146,7 +1147,11 @@ func (s *Service) VerifyCredentialExitIPs(
 	if !configured {
 		return model.CredentialProxyExitIPCheckBatch{}, ErrUnavailable
 	}
-	return model.CredentialProxyExitIPCheckBatch{Results: s.verifyCurrentCredentialExitIPs(ctx, setup, normalized)}, nil
+	files, err := s.fetchInventory(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+	if err != nil {
+		return model.CredentialProxyExitIPCheckBatch{}, err
+	}
+	return model.CredentialProxyExitIPCheckBatch{Results: s.verifyCredentialExitIPsFromInventory(ctx, files, normalized)}, nil
 }
 
 func normalizeCredentialExitIPTargets(input []model.ProxyReplacementTarget) ([]model.ProxyReplacementTarget, error) {
@@ -1173,6 +1178,148 @@ func normalizeCredentialExitIPTargets(input []model.ProxyReplacementTarget) ([]m
 	return result, nil
 }
 
+// verifyCredentialExitIPsFromInventory checks the current proxy projection from
+// one inventory snapshot. It deliberately does not use the mutation resolver:
+// an inspection batch must not turn N browser targets into N CPA reads.
+func (s *Service) verifyCredentialExitIPsFromInventory(
+	ctx context.Context,
+	files []cpaauthfiles.File,
+	targets []model.ProxyReplacementTarget,
+) []model.CredentialProxyExitIPCheckResult {
+	results := make([]model.CredentialProxyExitIPCheckResult, len(targets))
+	if len(targets) == 0 {
+		return results
+	}
+
+	type group struct {
+		proxyURL string
+		indexes  []int
+	}
+	groupsByProxyURL := make(map[string]*group, len(targets))
+	orderedGroups := make([]*group, 0, len(targets))
+	for index, target := range targets {
+		file, reason := resolveCredentialExitIPInventoryFile(files, target)
+		if reason != "" {
+			results[index] = model.CredentialProxyExitIPCheckResult{
+				ClientKey: target.ClientKey, Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: reason,
+			}
+			continue
+		}
+		proxyURL := model.NormalizeProxyURL(file.ProxyURL)
+		if proxyURL == "" {
+			proxyURL = proxyURLFromFile(file)
+		}
+		if proxyURL == "" {
+			results[index] = model.CredentialProxyExitIPCheckResult{
+				ClientKey: target.ClientKey, Outcome: model.ProxyExitIPOutcomeNotSaved, Reason: "proxy_not_configured",
+			}
+			continue
+		}
+		entry := groupsByProxyURL[proxyURL]
+		if entry == nil {
+			entry = &group{proxyURL: proxyURL}
+			groupsByProxyURL[proxyURL] = entry
+			orderedGroups = append(orderedGroups, entry)
+		}
+		entry.indexes = append(entry.indexes, index)
+	}
+	if len(orderedGroups) == 0 {
+		return results
+	}
+
+	type job struct{ group *group }
+	jobs := make(chan job)
+	workerCount := credentialExitIPCheckConcurrency
+	if workerCount > len(orderedGroups) {
+		workerCount = len(orderedGroups)
+	}
+	var workers sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for next := range jobs {
+				check := normalizeProxyExitIPCheckResult(s.exitIPChecker.Check(ctx, next.group.proxyURL))
+				for _, index := range next.group.indexes {
+					results[index] = model.CredentialProxyExitIPCheckResult{
+						ClientKey: targets[index].ClientKey,
+						Outcome:   check.Outcome,
+						ExitIP:    check.ExitIP,
+						LatencyMS: check.LatencyMS,
+						Reason:    check.Reason,
+					}
+				}
+			}
+		}()
+	}
+	for groupIndex, entry := range orderedGroups {
+		select {
+		case <-ctx.Done():
+			for _, remaining := range orderedGroups[groupIndex:] {
+				for _, index := range remaining.indexes {
+					results[index] = model.CredentialProxyExitIPCheckResult{
+						ClientKey: targets[index].ClientKey, Outcome: model.ProxyExitIPOutcomeInconclusive, Reason: "check_cancelled",
+					}
+				}
+			}
+			close(jobs)
+			workers.Wait()
+			return results
+		case jobs <- job{group: entry}:
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	return results
+}
+
+func resolveCredentialExitIPInventoryFile(
+	files []cpaauthfiles.File,
+	target model.ProxyReplacementTarget,
+) (cpaauthfiles.File, string) {
+	candidates := make([]cpaauthfiles.File, 0, 1)
+	runtimeID := strings.TrimSpace(target.RuntimeID)
+	for _, file := range files {
+		if runtimeID != "" {
+			if strings.TrimSpace(file.ID) != runtimeID {
+				continue
+			}
+		} else if strings.TrimSpace(file.Name) != strings.TrimSpace(target.FileName) {
+			continue
+		}
+		if authIndex := strings.TrimSpace(target.AuthIndex); authIndex != "" && strings.TrimSpace(file.AuthIndex) != authIndex {
+			continue
+		}
+		candidates = append(candidates, file)
+	}
+	if len(candidates) == 0 {
+		return cpaauthfiles.File{}, "credential_not_found"
+	}
+	if len(candidates) != 1 {
+		return cpaauthfiles.File{}, "credential_ambiguous"
+	}
+	file := candidates[0]
+	identitySnapshot := strings.TrimSpace(target.AccountSnapshot)
+	if identitySnapshot == "" {
+		identitySnapshot = strings.TrimSpace(target.AccountEmail)
+	}
+	if err := cpaauthfiles.VerifyResolvedIdentity(file, cpaauthfiles.Identity{
+		AuthFileName:      target.FileName,
+		RuntimeID:         target.RuntimeID,
+		AuthIndex:         target.AuthIndex,
+		Provider:          target.Provider,
+		AccountSnapshot:   identitySnapshot,
+		AccountIDSnapshot: target.AccountID,
+	}); err != nil {
+		return cpaauthfiles.File{}, "credential_ambiguous"
+	}
+	if expectedEmail := strings.TrimSpace(target.AccountEmail); expectedEmail != "" &&
+		!strings.EqualFold(strings.TrimSpace(file.AccountSnapshot), expectedEmail) {
+		return cpaauthfiles.File{}, "credential_ambiguous"
+	}
+	return file, ""
+}
+
 func (s *Service) verifyCurrentCredentialExitIPs(
 	ctx context.Context,
 	setup store.Setup,
@@ -1184,7 +1331,7 @@ func (s *Service) verifyCurrentCredentialExitIPs(
 	}
 	type job struct{ index int }
 	jobs := make(chan job)
-	workerCount := proxyExitIPCheckConcurrency
+	workerCount := proxyPoolExitIPCheckConcurrency
 	if workerCount > len(targets) {
 		workerCount = len(targets)
 	}
@@ -1261,7 +1408,7 @@ func directExitIPReason(value, fallback string) string {
 }
 
 func directExitIPFailureMessage(reason string) string {
-	return "出口 IP 复检确认代理不可用：" + strings.TrimSpace(reason)
+	return "å‡ºå£ IP å¤æ£€ç¡®è®¤ä»£ç†ä¸å¯ç”¨ï¼š" + strings.TrimSpace(reason)
 }
 
 func safeTaskError(err error) string {

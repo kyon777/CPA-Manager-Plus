@@ -591,6 +591,122 @@ func TestCreatePreviewKeepsPendingVerificationProxyEligible(t *testing.T) {
 	}
 }
 
+func TestVerifyCredentialExitIPsFetchesSingleProjectionAndFansOutSharedCurrentProxy(t *testing.T) {
+	const sharedProxyURL = "http://shared.example:8080"
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", sharedProxyURL, true),
+		proxyTestFile("runtime-2", "two.json", "2", "two@example.com", sharedProxyURL, false),
+	}}
+	checker := &recordingExitIPChecker{results: map[string]model.ProxyExitIPCheckResult{
+		sharedProxyURL: {Outcome: model.ProxyExitIPOutcomeProxyFailed, Reason: "proxy_auth_407"},
+	}}
+	service := NewWithOptions(Options{
+		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:     authFiles,
+		ExitIPChecker: checker,
+	})
+
+	batch, err := service.VerifyCredentialExitIPs(context.Background(), []model.ProxyReplacementTarget{
+		{ClientKey: "disabled-http-200", FileName: "one.json", AuthIndex: "1", AccountEmail: "one@example.com", Provider: "codex", RuntimeID: "runtime-1"},
+		{ClientKey: "enabled-http-200", FileName: "two.json", AuthIndex: "2", AccountEmail: "two@example.com", Provider: "codex", RuntimeID: "runtime-2"},
+	})
+	if err != nil {
+		t.Fatalf("VerifyCredentialExitIPs() error = %v", err)
+	}
+	if got := authFiles.fetchWithProxyURLCalls; got != 1 {
+		t.Fatalf("proxy inventory fetches = %d, want 1", got)
+	}
+	if got := authFiles.proxyResolveCalls; got != 0 {
+		t.Fatalf("per-credential proxy lookups = %d, want 0", got)
+	}
+	if got := len(checker.calls); got != 1 {
+		t.Fatalf("direct exit-IP checks = %d, want 1", got)
+	}
+	if got := batch.Results; len(got) != 2 || got[0].ClientKey != "disabled-http-200" || got[1].ClientKey != "enabled-http-200" ||
+		got[0].Outcome != model.ProxyExitIPOutcomeProxyFailed || got[1].Outcome != model.ProxyExitIPOutcomeProxyFailed {
+		t.Fatalf("credential exit-IP batch = %#v", got)
+	}
+}
+
+func TestVerifyCredentialExitIPsRunsFortyDistinctCurrentProxiesConcurrently(t *testing.T) {
+	const proxyCount = credentialExitIPCheckConcurrency + 1
+	files := make([]cpaauthfiles.File, 0, proxyCount)
+	targets := make([]model.ProxyReplacementTarget, 0, proxyCount)
+	for index := 0; index < proxyCount; index++ {
+		files = append(files, proxyTestFile(
+			fmt.Sprintf("runtime-%d", index),
+			fmt.Sprintf("credential-%d.json", index),
+			fmt.Sprintf("%d", index),
+			fmt.Sprintf("credential-%d@example.com", index),
+			fmt.Sprintf("http://proxy-%d.example:8080", index),
+			false,
+		))
+		targets = append(targets, model.ProxyReplacementTarget{
+			ClientKey: fmt.Sprintf("row-%d", index), FileName: fmt.Sprintf("credential-%d.json", index), AuthIndex: fmt.Sprintf("%d", index),
+			AccountEmail: fmt.Sprintf("credential-%d@example.com", index), Provider: "codex", RuntimeID: fmt.Sprintf("runtime-%d", index),
+		})
+	}
+	checker := &blockingExitIPChecker{started: make(chan struct{}, proxyCount), release: make(chan struct{})}
+	service := NewWithOptions(Options{
+		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:     &previewAuthFiles{files: files},
+		ExitIPChecker: checker,
+	})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := service.VerifyCredentialExitIPs(context.Background(), targets)
+		finished <- err
+	}()
+
+	for started := 0; started < credentialExitIPCheckConcurrency; started++ {
+		select {
+		case <-checker.started:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d credential checks started before timeout", started)
+		}
+	}
+	select {
+	case <-checker.started:
+		t.Fatal("more than forty credential exit-IP checks ran concurrently")
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(checker.release)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("VerifyCredentialExitIPs() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("credential verification did not finish")
+	}
+}
+
+func TestVerifyCredentialExitIPsDoesNotProbeAmbiguousCurrentCredential(t *testing.T) {
+	authFiles := &previewAuthFiles{files: []cpaauthfiles.File{
+		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", "http://first.example:8080", false),
+		proxyTestFile("runtime-1", "one.json", "1", "one@example.com", "http://second.example:8080", false),
+	}}
+	checker := &recordingExitIPChecker{}
+	service := NewWithOptions(Options{
+		SetupResolver: staticSetupResolver{setup: store.Setup{CPAUpstreamURL: "http://cpa.internal:8317", ManagementKey: "manager-key"}},
+		AuthFiles:     authFiles,
+		ExitIPChecker: checker,
+	})
+
+	batch, err := service.VerifyCredentialExitIPs(context.Background(), []model.ProxyReplacementTarget{{
+		ClientKey: "ambiguous", FileName: "one.json", AuthIndex: "1", AccountEmail: "one@example.com", Provider: "codex", RuntimeID: "runtime-1",
+	}})
+	if err != nil {
+		t.Fatalf("VerifyCredentialExitIPs() error = %v", err)
+	}
+	if len(batch.Results) != 1 || batch.Results[0].Outcome != model.ProxyExitIPOutcomeInconclusive || batch.Results[0].Reason != "credential_ambiguous" {
+		t.Fatalf("ambiguous result = %#v", batch.Results)
+	}
+	if len(checker.calls) != 0 {
+		t.Fatalf("ambiguous credential invoked direct check: %#v", checker.calls)
+	}
+}
+
 func TestVerifyProxyPoolExitIPsUsesSavedURLAndRestoresHealthy(t *testing.T) {
 	proxyURL := "http://user:secret@proxy.example:8080/"
 	fingerprint := model.ProxyFingerprint(proxyURL)
@@ -676,7 +792,7 @@ func TestVerifyProxyPoolExitIPsMarksOnlyDirectFailureSuspect(t *testing.T) {
 }
 
 func TestVerifyProxyPoolExitIPsLimitsConcurrentChecksToEight(t *testing.T) {
-	const proxyCount = proxyExitIPCheckConcurrency + 1
+	const proxyCount = proxyPoolExitIPCheckConcurrency + 1
 	urls := make([]string, 0, proxyCount)
 	fingerprints := make([]string, 0, proxyCount)
 	for index := 0; index < proxyCount; index++ {
@@ -699,7 +815,7 @@ func TestVerifyProxyPoolExitIPsLimitsConcurrentChecksToEight(t *testing.T) {
 		finished <- err
 	}()
 
-	for started := 0; started < proxyExitIPCheckConcurrency; started++ {
+	for started := 0; started < proxyPoolExitIPCheckConcurrency; started++ {
 		select {
 		case <-checker.started:
 		case <-time.After(time.Second):
@@ -957,14 +1073,20 @@ func (s staticSetupResolver) ResolveSetup(context.Context) (store.Setup, bool, e
 }
 
 type previewAuthFiles struct {
-	files                 []cpaauthfiles.File
-	expectedBaseURL       string
-	expectedManagementKey string
-	fetchCalls            int
-	failFullFetchAfter    int
-	proxyResolveCalls     int
-	patchCalls            int
-	lastPatch             map[string]string
+	files                  []cpaauthfiles.File
+	expectedBaseURL        string
+	expectedManagementKey  string
+	fetchCalls             int
+	fetchWithProxyURLCalls int
+	failFullFetchAfter     int
+	proxyResolveCalls      int
+	patchCalls             int
+	lastPatch              map[string]string
+}
+
+func (s *previewAuthFiles) FetchWithProxyURLs(ctx context.Context, baseURL, managementKey string) ([]cpaauthfiles.File, error) {
+	s.fetchWithProxyURLCalls++
+	return s.Fetch(ctx, baseURL, managementKey)
 }
 
 func (s *previewAuthFiles) Fetch(_ context.Context, baseURL, managementKey string) ([]cpaauthfiles.File, error) {
