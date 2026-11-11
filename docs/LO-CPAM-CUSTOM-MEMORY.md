@@ -1258,3 +1258,38 @@ becomes `proxy_failed`/`proxySuspect`; an inconclusive result never becomes an
 anomaly; server inventory is fetched once per batch; raw URLs never cross the
 browser/server boundary or durable browser storage; a changed fingerprint
 causes a recheck.
+
+## 2026-11-11: 巡检快照全量重新登录与确认封禁删除（must retain）
+
+This is a CPAM-browser-inspection-only action path. It must never alter, build,
+restart, proxy through, or deploy CPA Core / `cli-proxy-api`; it must not
+change usage pricing, quota acquisition, billing facts, derived databases,
+Token Acquisition's 40-way gate, or CPA auth-file write concurrency.
+
+- Only a completed local Codex inspection's frozen `reauth` result snapshot can
+  expose **更新全部需重新登录凭证 (N)** and **删除所有已确认封禁账号**. It is neither
+  the visible page nor a fresh full credential inventory; first paint, filtering,
+  and paging must never start a snapshot-wide `token-recovery/query`.
+- Every browser-to-Manager snapshot query, manual recovery submission, and
+  confirmed-banned deletion is limited to **100** logical targets and processed
+  serially by the outer browser loop. Do not change the Manager's Token
+  Acquisition 40-way gate or CPA write 8-way gate.
+- Recovery preflight skips a pending durable task, a task that succeeded after
+  this inspection, `account_banned`, and an unavailable query response. Only a
+  missing task, an ordinary terminal failure, or a success older than the
+  frozen inspection can be submitted again. Visible-page runtime metadata stays
+  visible-page-only; never cache all snapshot task records in that map.
+- Confirmed-banned deletion must preflight all frozen rows, group by normalized
+  physical filename, and submit a physical file only when every frozen member
+  yields an exact terminal `account_banned` delete target. Never split a shared
+  file across 100-item batches; skip incomplete groups and groups larger than
+  100. Keep one destructive confirmation plus the existing `secondConfirmation`;
+  the Manager's current-inventory, identity, lock, and shared-file checks remain
+  final authority.
+- Remove only local inspection/current-list rows whose Manager response confirms
+  a physical deletion or `credential_not_found`; skipped/failed rows remain.
+  Browser connection fingerprint plus per-operation generation protects all
+  query, submission, delete, and reconciliation state from an old CPA scope.
+- The old local global "delete all re-login" toolbar entry must remain hidden.
+  Server inspection compatibility props may retain their legacy behavior; the
+  local destructive bulk route is strictly confirmed `account_banned` only.
