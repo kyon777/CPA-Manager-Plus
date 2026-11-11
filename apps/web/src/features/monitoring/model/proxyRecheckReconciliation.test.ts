@@ -50,6 +50,10 @@ describe('reconcileProxyReplacementRechecks', () => {
       createResult('already-normal', false),
     ];
     rows[0].proxyVerificationSource = 'exit_ip';
+    rows[0].proxyVerificationOutcome = 'proxy_failed';
+    rows[0].proxyVerificationReason = 'proxy_connect_timeout';
+    rows[0].proxyVerificationFingerprint = 'a'.repeat(64);
+    rows[0].proxyVerificationCheckedAtMs = 1_700_000_000_000;
     rows[1].proxyVerificationSource = 'exit_ip';
     rows[2].proxyVerificationSource = 'exit_ip';
 
@@ -69,6 +73,10 @@ describe('reconcileProxyReplacementRechecks', () => {
     expect(reconciled[0].proxyRecheckSucceeded).toBe(true);
     expect(reconciled[1].proxyRecheckSucceeded).toBeUndefined();
     expect(reconciled[0].proxyVerificationSource).toBeUndefined();
+    expect(reconciled[0].proxyVerificationOutcome).toBeUndefined();
+    expect(reconciled[0].proxyVerificationReason).toBeUndefined();
+    expect(reconciled[0].proxyVerificationFingerprint).toBeUndefined();
+    expect(reconciled[0].proxyVerificationCheckedAtMs).toBeUndefined();
     expect(reconciled[1].proxyVerificationSource).toBeUndefined();
     expect(reconciled[2]).toBe(rows[2]);
   });

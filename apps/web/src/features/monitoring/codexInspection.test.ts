@@ -27,6 +27,7 @@ import {
   removeCodexInspectionFiles,
   removeCodexInspectionResultKeys,
   saveCodexInspectionLastRun,
+  serializeCodexInspectionLastRun,
   toReauthDeleteExecutionItem,
   type CodexInspectionAction,
   type CodexInspectionResultItem,
@@ -148,6 +149,10 @@ const createResultItem = (
   errorDetail: overrides.errorDetail ?? '',
   proxySuspect: overrides.proxySuspect ?? false,
   proxyVerificationSource: overrides.proxyVerificationSource,
+  proxyVerificationOutcome: overrides.proxyVerificationOutcome,
+  proxyVerificationReason: overrides.proxyVerificationReason,
+  proxyVerificationFingerprint: overrides.proxyVerificationFingerprint,
+  proxyVerificationCheckedAtMs: overrides.proxyVerificationCheckedAtMs,
   actionHandled: overrides.actionHandled ?? false,
 });
 
@@ -6828,7 +6833,7 @@ describe('Codex inspection last-run cache', () => {
     expect(countHandlingStates(loaded?.result.results ?? []).pending).toBe(0);
   });
 
-  it('drops legacy inferred proxy flags and restores only direct exit-IP proof', () => {
+  it('drops legacy inferred and fingerprint-less proxy flags so they are rechecked against the current proxy', () => {
     const baseResult = createRunResult();
     const restored = hydrateCodexInspectionLastRun({
       version: 1,
@@ -6855,8 +6860,50 @@ describe('Codex inspection last-run cache', () => {
     const byKey = new Map((restored?.result.results ?? []).map((item) => [item.key, item]));
     expect(byKey.get('legacy')).toEqual(expect.objectContaining({ proxySuspect: false }));
     expect(byKey.get('legacy')?.proxyVerificationSource).toBeUndefined();
-    expect(byKey.get('direct')).toEqual(
-      expect.objectContaining({ proxySuspect: true, proxyVerificationSource: 'exit_ip' })
+    expect(byKey.get('direct')).toEqual(expect.objectContaining({ proxySuspect: false }));
+    expect(byKey.get('direct')?.proxyVerificationSource).toBeUndefined();
+  });
+
+  it('persists only safe fingerprinted exit-IP evidence and never a raw proxy URL', () => {
+    const rawProxyURL = 'http://user:secret@proxy.example.test:8080';
+    const payload = serializeCodexInspectionLastRun({
+      result: {
+        ...createRunResult(),
+        results: [
+          createResultItem('keep', {
+            raw: { name: 'keep.json', proxy_url: rawProxyURL } as AuthFileItem,
+            proxySuspect: true,
+            proxyVerificationSource: 'exit_ip',
+            proxyVerificationOutcome: 'proxy_failed',
+            proxyVerificationReason: `proxy returned 407 through ${rawProxyURL}`,
+            proxyVerificationFingerprint: 'a'.repeat(64),
+            proxyVerificationCheckedAtMs: 1_700_000_000_000,
+          }),
+        ],
+      },
+    });
+
+    expect(JSON.stringify(payload)).not.toContain(rawProxyURL);
+    expect(payload.result.results[0]).toEqual(
+      expect.objectContaining({
+        proxySuspect: true,
+        proxyVerificationSource: 'exit_ip',
+        proxyVerificationOutcome: 'proxy_failed',
+        proxyVerificationFingerprint: 'a'.repeat(64),
+        proxyVerificationCheckedAtMs: 1_700_000_000_000,
+        proxyVerificationReason: expect.not.stringContaining(rawProxyURL),
+      })
+    );
+
+    const restored = hydrateCodexInspectionLastRun(payload);
+    expect(restored?.result.results[0]).toEqual(
+      expect.objectContaining({
+        proxySuspect: true,
+        proxyVerificationSource: 'exit_ip',
+        proxyVerificationOutcome: 'proxy_failed',
+        proxyVerificationFingerprint: 'a'.repeat(64),
+        proxyVerificationCheckedAtMs: 1_700_000_000_000,
+      })
     );
   });
 

@@ -30,6 +30,7 @@ import {
   readNullableString,
   readString,
 } from './codexInspectionSettings';
+import { sanitizeProxyHealthVerificationReason } from './proxyHealthVerification';
 
 export const CODEX_INSPECTION_LAST_RUN_STORAGE_KEY = 'cli-proxy-codex-inspection-last-run-v1';
 
@@ -114,6 +115,39 @@ const normalizeStoredSettings = (value: unknown): CodexInspectionSettings => {
 
 type StoredCodexInspectionResultItem = Omit<CodexInspectionResultItem, 'raw'> & {
   note?: string;
+};
+
+const PROXY_HEALTH_VERIFICATION_OUTCOMES = new Set([
+  'healthy',
+  'proxy_failed',
+  'inconclusive',
+  'not_saved',
+] as const);
+const PROXY_HEALTH_VERIFICATION_FINGERPRINT = /^[a-f0-9]{64}$/i;
+
+const normalizeStoredProxyHealthVerification = (value: unknown) => {
+  if (!isRecord(value) || value.proxyVerificationSource !== 'exit_ip') return null;
+  const outcome = readString(value.proxyVerificationOutcome);
+  const fingerprint = readString(value.proxyVerificationFingerprint).toLowerCase();
+  const checkedAtMs = readNonNegativeInteger(value.proxyVerificationCheckedAtMs, 0);
+  if (
+    !PROXY_HEALTH_VERIFICATION_OUTCOMES.has(
+      outcome as (typeof PROXY_HEALTH_VERIFICATION_OUTCOMES extends Set<infer T> ? T : never)
+    ) ||
+    !PROXY_HEALTH_VERIFICATION_FINGERPRINT.test(fingerprint) ||
+    checkedAtMs <= 0
+  ) {
+    return null;
+  }
+  const reason = sanitizeProxyHealthVerificationReason(value.proxyVerificationReason);
+  return {
+    proxySuspect: outcome === 'proxy_failed',
+    proxyVerificationSource: 'exit_ip' as const,
+    proxyVerificationOutcome: outcome as CodexInspectionResultItem['proxyVerificationOutcome'],
+    ...(reason ? { proxyVerificationReason: reason } : {}),
+    proxyVerificationFingerprint: fingerprint,
+    proxyVerificationCheckedAtMs: checkedAtMs,
+  };
 };
 
 const normalizeStoredCreditsBalance = (value: unknown): string | number | null => {
@@ -301,6 +335,7 @@ const serializeResultItemForStorage = (
   item: CodexInspectionResultItem
 ): StoredCodexInspectionResultItem => {
   const note = readString(item.raw.note);
+  const proxyHealthVerification = normalizeStoredProxyHealthVerification(item);
   return {
     key: item.key,
     fileName: item.fileName,
@@ -329,9 +364,7 @@ const serializeResultItemForStorage = (
     quotaInventoryObserved: item.quotaInventoryObserved === true,
     errorKind: readString(item.errorKind),
     errorDetail: sanitizeStoredText(item.errorDetail),
-    ...(item.proxySuspect === true && item.proxyVerificationSource === 'exit_ip'
-      ? { proxySuspect: true, proxyVerificationSource: 'exit_ip' as const }
-      : {}),
+    ...(proxyHealthVerification ?? {}),
     actionHandled: item.actionHandled === true,
     ...(note ? { note } : {}),
   };
@@ -350,9 +383,7 @@ const hydrateStoredResultItem = (
   const disabled = readBoolean(value.disabled, false);
   const key = readString(value.key) || `${fileName}::${authIndex || '-'}`;
   const note = readString(value.note);
-  const proxyVerificationSource = value.proxyVerificationSource === 'exit_ip' ? 'exit_ip' : undefined;
-  const proxySuspect =
-    proxyVerificationSource === 'exit_ip' && readBoolean(value.proxySuspect, false);
+  const proxyHealthVerification = normalizeStoredProxyHealthVerification(value);
 
   return {
     key,
@@ -394,8 +425,8 @@ const hydrateStoredResultItem = (
     quotaInventoryObserved: readBoolean(value.quotaInventoryObserved, false),
     errorKind: readString(value.errorKind),
     errorDetail: sanitizeStoredText(value.errorDetail),
-    proxySuspect,
-    ...(proxyVerificationSource ? { proxyVerificationSource } : {}),
+    proxySuspect: proxyHealthVerification?.proxySuspect ?? false,
+    ...(proxyHealthVerification ?? {}),
     actionHandled: readBoolean(value.actionHandled, false),
   };
 };

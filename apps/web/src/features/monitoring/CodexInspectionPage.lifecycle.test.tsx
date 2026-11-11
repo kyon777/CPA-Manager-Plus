@@ -291,11 +291,34 @@ describe('CodexInspectionPage connection lifecycle', () => {
     };
   };
 
-  it('uses a strict credential locator for the direct exit-IP check and only trusts the server proof', async () => {
+  it('checks disabled HTTP-200 credentials through one strict locator per current shared proxy and fans direct failure back to both rows', async () => {
     mocks.featureAvailability.managerServiceBase = 'http://manager.local:18317';
     const currentFingerprint = fingerprint(mocks.authState.apiBase, mocks.authState.managementKey);
     const state = lastRun(currentFingerprint);
     const currentProxy = 'http://user:secret@proxy.current.test:8080';
+    const secondResult = {
+      ...state.result.results[0],
+      key: 'second.json::auth-2',
+      runtimeId: 'runtime-2',
+      fileName: 'second.json',
+      displayAccount: 'second@example.com',
+      accountSnapshot: 'second@example.com',
+      authIndex: 'auth-2',
+      disabled: false,
+      raw: {
+        id: 'runtime-2',
+        name: 'second.json',
+        type: 'codex',
+        authIndex: 'auth-2',
+        disabled: false,
+      } as AuthFileItem,
+      action: 'keep' as const,
+      actionReason: 'no action',
+      statusCode: 200,
+      errorKind: '',
+      errorDetail: '',
+      error: '',
+    };
     mocks.loadLastRun.mockImplementation((connectionFingerprint?: string | null) =>
       connectionFingerprint === currentFingerprint
         ? {
@@ -305,25 +328,36 @@ describe('CodexInspectionPage connection lifecycle', () => {
               results: [
                 {
                   ...state.result.results[0],
-                  disabled: false,
+                  disabled: true,
                   action: 'keep',
                   actionReason: 'no action',
-                  statusCode: 502,
-                  errorKind: 'request_error',
-                  errorDetail: 'api-call failed: 502 {"error":"request failed"}',
-                  error: 'HTTP 502',
+                  statusCode: 200,
+                  errorKind: '',
+                  errorDetail: '',
+                  error: '',
                   raw: {
-                    ...file(false),
+                    ...file(true),
                     proxy_url: 'http://old-user:old-secret@proxy.old.test:8080',
                   },
                 },
+                secondResult,
               ],
             },
           }
         : null
     );
     mocks.authFilesList.mockResolvedValue({
-      files: [{ ...file(false), proxy_url: currentProxy }],
+      files: [
+        { ...file(true), proxy_url: currentProxy },
+        {
+          id: 'runtime-2',
+          name: 'second.json',
+          type: 'codex',
+          authIndex: 'auth-2',
+          disabled: false,
+          proxy_url: currentProxy,
+        },
+      ],
     });
     mocks.verifyCredentialExitIPs.mockResolvedValue({
       results: [
@@ -367,6 +401,15 @@ describe('CodexInspectionPage connection lifecycle', () => {
         key: 'codex.json::auth-1',
         proxySuspect: true,
         proxyVerificationSource: 'exit_ip',
+        proxyVerificationOutcome: 'proxy_failed',
+      })
+    );
+    expect(persistedResults).toContainEqual(
+      expect.objectContaining({
+        key: 'second.json::auth-2',
+        proxySuspect: true,
+        proxyVerificationSource: 'exit_ip',
+        proxyVerificationOutcome: 'proxy_failed',
       })
     );
     act(() => renderer.unmount());

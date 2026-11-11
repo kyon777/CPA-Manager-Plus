@@ -185,6 +185,13 @@ export interface CodexInspectionResultItem extends CodexInspectionAccount {
   // server-side proxy and the fixed exit-IP echo fails through it.
   proxySuspect?: boolean;
   proxyVerificationSource?: 'exit_ip';
+  // Browser-local direct exit-IP evidence is safe to persist only as a
+  // normalized outcome, a redacted reason, and the current proxy fingerprint.
+  // The raw proxy URL must never become part of an inspection result.
+  proxyVerificationOutcome?: 'healthy' | 'proxy_failed' | 'inconclusive' | 'not_saved';
+  proxyVerificationReason?: string;
+  proxyVerificationFingerprint?: string;
+  proxyVerificationCheckedAtMs?: number;
   // Browser-local result only: a directed proxy replacement recheck succeeded
   // after this inspection, so the historical transport failure must not be
   // re-derived against the newly written proxy URL.

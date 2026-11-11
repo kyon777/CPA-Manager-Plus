@@ -23,7 +23,14 @@ export const reconcileProxyReplacementRechecks = (
   return rows.map((row) => {
     const status = resolvedStatuses.get(row.key.trim());
     if (!status) return row;
-    const { proxyVerificationSource: _source, ...withoutVerification } = row;
+    const {
+      proxyVerificationSource: _source,
+      proxyVerificationOutcome: _outcome,
+      proxyVerificationReason: _reason,
+      proxyVerificationFingerprint: _fingerprint,
+      proxyVerificationCheckedAtMs: _checkedAtMs,
+      ...withoutVerification
+    } = row;
     return {
       ...withoutVerification,
       proxySuspect: false,
