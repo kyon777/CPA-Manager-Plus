@@ -1,8 +1,6 @@
 ﻿# 全量当前代理出口健康复检设计
 
-**状态：** 已确认，待实现  
-**日期：** 2026-11-11  
-**范围：** CPA Manager Plus（CPAM）私有二改；不触碰 CPA Core / `cli-proxy-api`。
+**状态：** 已确认，待实现`n**日期：** 2026-11-11`n**范围：** CPA Manager Plus（CPAM）私有二改；不触碰 CPA Core / `cli-proxy-api`。
 
 ## 1. 问题与目标
 
@@ -97,3 +95,4 @@ proxyVerificationCheckedAtMs: number
 5. `healthy`、`inconclusive`、空代理、旧 fingerprint 都不会制造假异常。
 6. 结果可安全保存/恢复；存储文本中不出现原始代理 URL。
 7. Web 定向测试、Go 定向测试、type-check 和构建通过；部署必须另行明确批准。
+
