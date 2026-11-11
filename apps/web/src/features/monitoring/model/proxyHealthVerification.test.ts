@@ -87,6 +87,12 @@ describe('proxy health verification', () => {
     expect(updated?.proxySuspect).toBe(false);
     expect(updated?.proxyVerificationOutcome).toBe('healthy');
     expect(hasValidCurrentProxyHealthVerification(updated!, 'http://healthy.example:8080/')).toBe(true);
+    expect(
+      hasValidCurrentProxyHealthVerification(
+        { ...updated!, proxyVerificationOutcome: undefined },
+        'http://healthy.example:8080/'
+      )
+    ).toBe(false);
     expect(hasValidCurrentProxyHealthVerification(updated!, 'http://changed.example:8080')).toBe(false);
     expect(collectProxyHealthVerificationGroups([
       { item: updated!, proxyURL: 'http://changed.example:8080', target: createTarget(row.key) },

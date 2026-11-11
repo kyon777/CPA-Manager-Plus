@@ -53,11 +53,13 @@ export const hasValidCurrentProxyHealthVerification = (
   currentProxyURL: string
 ): boolean => {
   const fingerprint = proxyReplacementFingerprint(currentProxyURL);
+  const outcome = item.proxyVerificationOutcome;
   return Boolean(
     fingerprint &&
       item.proxyVerificationSource === 'exit_ip' &&
       item.proxyVerificationFingerprint === fingerprint &&
-      VALID_OUTCOMES.has(item.proxyVerificationOutcome ?? 'inconclusive')
+      outcome &&
+      VALID_OUTCOMES.has(outcome)
   );
 };
 
