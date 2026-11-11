@@ -213,6 +213,71 @@ describe('CodexInspectionResultsPanel', () => {
     ).toHaveLength(0);
   });
 
+  it('shows frozen-snapshot recovery actions only for reauth and locks page actions while the snapshot runs', () => {
+    const onRecoverSnapshot = vi.fn();
+    const onDeleteSnapshotBanned = vi.fn();
+    const renderer = renderPanel(createItem({ action: 'reauth' }), {
+      actionFilter: 'reauth',
+      pageRecoveryCount: 2,
+      pageBannedDeleteCount: 1,
+      snapshotRecoveryCount: 1239,
+      onRecoverCurrentPage: vi.fn(),
+      onDeleteCurrentPageBanned: vi.fn(),
+      onRecoverSnapshot,
+      onDeleteSnapshotBanned,
+    });
+
+    const snapshotRecoveryButton = renderer.root.findByProps({
+      'data-inspection-snapshot-recovery': true,
+    });
+    const snapshotDeleteButton = renderer.root.findByProps({
+      'data-inspection-snapshot-banned-delete': true,
+    });
+    expect(snapshotRecoveryButton.props.disabled).toBe(false);
+    expect(snapshotDeleteButton.props.disabled).toBe(false);
+    act(() => {
+      snapshotRecoveryButton.props.onClick();
+      snapshotDeleteButton.props.onClick();
+    });
+    expect(onRecoverSnapshot).toHaveBeenCalledTimes(1);
+    expect(onDeleteSnapshotBanned).toHaveBeenCalledTimes(1);
+    expect(snapshotRecoveryButton.props.children).toContain('accounts.batch_recovery_snapshot:1239');
+    expect(snapshotDeleteButton.props.children).toContain('accounts.batch_delete_banned_snapshot');
+
+    const busyRenderer = renderPanel(createItem({ action: 'reauth' }), {
+      actionFilter: 'reauth',
+      pageRecoveryCount: 2,
+      pageBannedDeleteCount: 1,
+      snapshotRecoveryCount: 1239,
+      snapshotActionBusy: true,
+      onRecoverCurrentPage: vi.fn(),
+      onDeleteCurrentPageBanned: vi.fn(),
+      onRecoverSnapshot: vi.fn(),
+      onDeleteSnapshotBanned: vi.fn(),
+    });
+    [
+      'data-inspection-page-recovery',
+      'data-inspection-page-banned-delete',
+      'data-inspection-snapshot-recovery',
+      'data-inspection-snapshot-banned-delete',
+    ].forEach((attribute) => {
+      expect(busyRenderer.root.findByProps({ [attribute]: true }).props.disabled).toBe(true);
+    });
+
+    const nonReauthRenderer = renderPanel(createItem(), {
+      actionFilter: 'all',
+      snapshotRecoveryCount: 1239,
+      onRecoverSnapshot,
+      onDeleteSnapshotBanned,
+    });
+    expect(
+      nonReauthRenderer.root.findAllByProps({ 'data-inspection-snapshot-recovery': true })
+    ).toHaveLength(0);
+    expect(
+      nonReauthRenderer.root.findAllByProps({ 'data-inspection-snapshot-banned-delete': true })
+    ).toHaveLength(0);
+  });
+
   it('renders durable recovery and banned-delete feedback below the page actions', () => {
     const renderer = renderPanel(createItem({ action: 'reauth' }), {
       actionFilter: 'reauth',

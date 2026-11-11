@@ -43,6 +43,11 @@ type CodexInspectionResultsPanelProps = {
   reauthActionCount?: number;
   pageRecoveryCount?: number;
   pageBannedDeleteCount?: number;
+  snapshotRecoveryCount?: number;
+  snapshotActionBusy?: boolean;
+  snapshotRecoveryLabel?: string;
+  snapshotDeleteLabel?: string;
+  snapshotFeedback?: ReactNode;
   pageProxyReplacementCount?: number;
   pageRecoverySubmitting?: boolean;
   pageBannedDeleteSubmitting?: boolean;
@@ -72,6 +77,8 @@ type CodexInspectionResultsPanelProps = {
   onDeleteReauthSingle?: (item: CodexInspectionResultItem) => void;
   onRecoverCurrentPage?: () => void;
   onDeleteCurrentPageBanned?: () => void;
+  onRecoverSnapshot?: () => void;
+  onDeleteSnapshotBanned?: () => void;
   onReplaceCurrentPageProxy?: () => void;
   onOpenCredential?: (item: CodexInspectionResultItem) => void;
   filterLabel: (filter: ActionFilter) => string;
@@ -95,6 +102,11 @@ export function CodexInspectionResultsPanel({
   reauthActionCount = 0,
   pageRecoveryCount = 0,
   pageBannedDeleteCount = 0,
+  snapshotRecoveryCount = 0,
+  snapshotActionBusy = false,
+  snapshotRecoveryLabel,
+  snapshotDeleteLabel,
+  snapshotFeedback,
   pageProxyReplacementCount = 0,
   pageRecoverySubmitting = false,
   pageBannedDeleteSubmitting = false,
@@ -121,6 +133,8 @@ export function CodexInspectionResultsPanel({
   onDeleteReauthSingle,
   onRecoverCurrentPage,
   onDeleteCurrentPageBanned,
+  onRecoverSnapshot,
+  onDeleteSnapshotBanned,
   onReplaceCurrentPageProxy,
   onOpenCredential,
   filterLabel,
@@ -326,6 +340,7 @@ export function CodexInspectionResultsPanel({
                     isInspectionInFlight ||
                     executing ||
                     pageRecoverySubmitting ||
+                    snapshotActionBusy ||
                     pageRecoveryCount === 0
                   }
                 >
@@ -345,11 +360,51 @@ export function CodexInspectionResultsPanel({
                     isInspectionInFlight ||
                     executing ||
                     pageBannedDeleteBusy ||
+                    snapshotActionBusy ||
                     pageBannedDeleteCount === 0
                   }
                 >
                   {!pageBannedDeleteSubmitting ? <IconTrash2 size={14} /> : null}
                   {t('accounts.batch_delete_banned_page', { count: pageBannedDeleteCount })}
+                </Button>
+              ) : null}
+              {actionFilter === 'reauth' && onRecoverSnapshot ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-inspection-snapshot-recovery={true}
+                  onClick={onRecoverSnapshot}
+                  loading={snapshotActionBusy}
+                  disabled={
+                    !result ||
+                    isInspectionInFlight ||
+                    executing ||
+                    snapshotActionBusy ||
+                    snapshotRecoveryCount === 0
+                  }
+                >
+                  {!snapshotActionBusy ? <IconRefreshCw size={14} /> : null}
+                  {snapshotRecoveryLabel ??
+                    t('accounts.batch_recovery_snapshot', { count: snapshotRecoveryCount })}
+                </Button>
+              ) : null}
+              {actionFilter === 'reauth' && onDeleteSnapshotBanned ? (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  data-inspection-snapshot-banned-delete={true}
+                  onClick={onDeleteSnapshotBanned}
+                  loading={snapshotActionBusy}
+                  disabled={
+                    !result ||
+                    isInspectionInFlight ||
+                    executing ||
+                    snapshotActionBusy ||
+                    snapshotRecoveryCount === 0
+                  }
+                >
+                  {!snapshotActionBusy ? <IconTrash2 size={14} /> : null}
+                  {snapshotDeleteLabel ?? t('accounts.batch_delete_banned_snapshot')}
                 </Button>
               ) : null}
               <Button
@@ -387,8 +442,16 @@ export function CodexInspectionResultsPanel({
             </div>
           </div>
 
-          {actionFilter === 'reauth' && (recoveryFeedback || deleteFeedback) ? (
+          {actionFilter === 'reauth' && (snapshotFeedback || recoveryFeedback || deleteFeedback) ? (
             <div className={styles.inspectionPageOperationFeedback} aria-live="polite">
+              {snapshotFeedback ? (
+                <div
+                  className={styles.inspectionPageOperationFeedbackItem}
+                  data-inspection-snapshot-operation-status={true}
+                >
+                  <span className={styles.inspectionPageOperationFeedbackLabel}>{snapshotFeedback}</span>
+                </div>
+              ) : null}
               {recoveryFeedback}
               {deleteFeedback ? (
                 <div
