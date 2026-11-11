@@ -1,6 +1,6 @@
 ﻿# 全量当前代理出口健康复检 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在 Codex 巡检完成后复检全部当前 `proxy_url`，让失效旧代理即使账户探测 HTTP 200 也进入既有“代理异常”筛选，同时保持零计费和无原始 URL 泄露。
 
@@ -31,7 +31,7 @@
 - Modify: `apps/manager-server/internal/service/proxyreplacement/service_test.go`
 - Modify: `apps/manager-server/internal/service/proxyreplacement/service.go`
 
-- [ ] **Step 1: 写失败测试：同一当前代理只查一次且 inventory 只抓一次**
+- [x] **Step 1: 写失败测试：同一当前代理只查一次且 inventory 只抓一次**
 
 在 `service_test.go` 构造支持 `FetchWithProxyURLs` 的 fake auth-files：两个严格不同的
 `ProxyReplacementTarget` 对应同一个当前 proxy；fake exit checker 记录 URL 调用次数并
@@ -48,7 +48,7 @@ for _, result := range batch.Results {
 }
 ```
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run:
 ```powershell
@@ -56,7 +56,7 @@ cd apps/manager-server; go test ./internal/service/proxyreplacement -run 'TestVe
 ```
 Expected: FAIL，因为当前实现对每个 target 调用 `ResolveProxyURLMutationTarget`，而不是一次 projection + grouped check。
 
-- [ ] **Step 3: 实现最小单快照解析与分组**
+- [x] **Step 3: 实现最小单快照解析与分组**
 
 在 `VerifyCredentialExitIPs` 的 setup 解析之后调用一次 `s.fetchInventory(ctx, setup)`。
 新增一个只在内存工作的严格解析函数：按 `RuntimeID`/物理文件名/provider/auth index
@@ -64,7 +64,7 @@ Expected: FAIL，因为当前实现对每个 target 调用 `ResolveProxyURLMutat
 `inconclusive` 结果。将有效 `ProxyURL` 用既有规范化规则分组。worker job 是一组 URL，
 完成后复制 outcome/reason 到该组的所有 `ClientKey`。不改变 handler、上限或返回 schema。
 
-- [ ] **Step 4: 运行 GREEN**
+- [x] **Step 4: 运行 GREEN**
 
 Run:
 ```powershell
@@ -72,7 +72,7 @@ cd apps/manager-server; go test ./internal/service/proxyreplacement -run 'TestVe
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 提交该可独立验证的后端单元**
+- [x] **Step 5: 提交该可独立验证的后端单元**
 
 ```powershell
 git add apps/manager-server/internal/service/proxyreplacement/service.go apps/manager-server/internal/service/proxyreplacement/service_test.go
@@ -85,13 +85,13 @@ git commit -m "feat: group credential proxy exit checks"
 - Modify: `apps/manager-server/internal/service/proxyreplacement/service_test.go`
 - Modify: `apps/manager-server/internal/service/proxyreplacement/service.go`
 
-- [ ] **Step 1: 写失败测试：credential 40 路、代理池不变、歧义不探测**
+- [x] **Step 1: 写失败测试：credential 40 路、代理池不变、歧义不探测**
 
 使用 41 个不同的唯一 proxy 及会阻塞到 gate 的 fake checker。观察在释放 gate 前至少 40
 个已进入 checker；另写一个含两个相同 identity 候选的 inventory，期望该 target 为
 `inconclusive` 且 checker 调用数为 0。已有 pool checker 测试仍应验证其原 8 路语义。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run:
 ```powershell
@@ -99,13 +99,13 @@ cd apps/manager-server; go test ./internal/service/proxyreplacement -run 'TestVe
 ```
 Expected: FAIL，现有共享 `proxyExitIPCheckConcurrency` 是 8 且 per-target resolution 可绕开快照歧义检测。
 
-- [ ] **Step 3: 实现独立 credential worker 常量**
+- [x] **Step 3: 实现独立 credential worker 常量**
 
 将通用常量拆为 `proxyPoolExitIPCheckConcurrency = 8` 与
 `credentialExitIPCheckConcurrency = 40`。仅 credential grouped jobs 使用 40；pool 路径
 保持 8。严格解析失败返回只含 client key/outcome/reason 的 `inconclusive`，不得调用 checker。
 
-- [ ] **Step 4: 运行 GREEN 及包回归**
+- [x] **Step 4: 运行 GREEN 及包回归**
 
 Run:
 ```powershell
@@ -113,7 +113,7 @@ cd apps/manager-server; go test ./internal/service/proxyreplacement -count=1
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add apps/manager-server/internal/service/proxyreplacement/service.go apps/manager-server/internal/service/proxyreplacement/service_test.go
@@ -127,7 +127,7 @@ git commit -m "perf: raise grouped credential proxy checks to forty"
 - Create: `apps/web/src/features/monitoring/model/proxyHealthVerification.test.ts`
 - Modify: `apps/web/src/features/monitoring/codexInspection.ts`
 
-- [ ] **Step 1: 写失败测试：HTTP 200/禁用行和重复代理被安全合并**
+- [x] **Step 1: 写失败测试：HTTP 200/禁用行和重复代理被安全合并**
 
 构造两个具有当前代理投影的结果：一个 `statusCode: 200, disabled: true`，另一个任意
 状态；它们共享同一 current proxy。期望 `collectCurrentProxyHealthGroups` 返回一组、只含
@@ -135,7 +135,7 @@ git commit -m "perf: raise grouped credential proxy checks to forty"
 `proxySuspect: true` 且有相同 fingerprint；把 `healthy` 应用后两个都是 false。再断言
 fingerprint 不同时 `hasValidProxyHealthVerification` 为 false。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run:
 ```powershell
@@ -143,7 +143,7 @@ npm --workspace apps/web run test -- src/features/monitoring/model/proxyHealthVe
 ```
 Expected: FAIL，因为 module 和字段尚不存在。
 
-- [ ] **Step 3: 最小实现纯函数与类型**
+- [x] **Step 3: 最小实现纯函数与类型**
 
 在结果类型加入：
 
@@ -158,7 +158,7 @@ proxyVerificationCheckedAtMs?: number;
 result 通过 `clientKey` 映射到组后扇出。未知/缺失 outcome 规范为 `inconclusive`；仅
 `proxy_failed` 设置 `proxySuspect`。不要把 URL 放进公开结果或持久化对象。
 
-- [ ] **Step 4: 运行 GREEN**
+- [x] **Step 4: 运行 GREEN**
 
 Run:
 ```powershell
@@ -166,7 +166,7 @@ npm --workspace apps/web run test -- src/features/monitoring/model/proxyHealthVe
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add apps/web/src/features/monitoring/codexInspection.ts apps/web/src/features/monitoring/model/proxyHealthVerification.ts apps/web/src/features/monitoring/model/proxyHealthVerification.test.ts
@@ -179,13 +179,13 @@ git commit -m "feat: model current proxy health evidence"
 - Modify: `apps/web/src/features/monitoring/model/codexInspectionStorage.ts`
 - Modify: `apps/web/src/features/monitoring/codexInspection.test.ts`
 
-- [ ] **Step 1: 写失败测试：安全字段往返且 raw proxy 不入存储**
+- [x] **Step 1: 写失败测试：安全字段往返且 raw proxy 不入存储**
 
 保存包含 outcome、reason、fingerprint、timestamp 的结果，读取后断言字段存在。对序列化
 文本断言不包含测试 URL。加载旧式 `proxySuspect: true` 但无 fingerprint 的记录，断言
 其没有有效可复用的 exit-IP 证据。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run:
 ```powershell
@@ -193,12 +193,12 @@ npm --workspace apps/web run test -- src/features/monitoring/codexInspection.tes
 ```
 Expected: FAIL，因为 storage 尚未读写新增字段。
 
-- [ ] **Step 3: 最小 storage 修改**
+- [x] **Step 3: 最小 storage 修改**
 
 将新增字段限定为上述 enum、净化 reason、64 位 hex fingerprint、非负毫秒值。旧 schema
 不进行 raw URL migration；缺 fingerprint 的旧 exit-IP 标记只作为待复检记录。
 
-- [ ] **Step 4: 运行 GREEN**
+- [x] **Step 4: 运行 GREEN**
 
 Run:
 ```powershell
@@ -206,7 +206,7 @@ npm --workspace apps/web run test -- src/features/monitoring/codexInspection.tes
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add apps/web/src/features/monitoring/model/codexInspectionStorage.ts apps/web/src/features/monitoring/codexInspection.test.ts
@@ -219,14 +219,14 @@ git commit -m "feat: persist safe proxy health evidence"
 - Modify: `apps/web/src/features/monitoring/CodexInspectionPage.lifecycle.test.tsx`
 - Modify: `apps/web/src/features/monitoring/CodexInspectionPage.tsx`
 
-- [ ] **Step 1: 写失败生命周期测试**
+- [x] **Step 1: 写失败生命周期测试**
 
 让已有页面 harness 返回一个禁用且 probe HTTP 200 的 current-proxy credential，以及另一
 个共享当前代理的 credential。mock `verifyCredentialExitIPs` 并断言浏览器只提交一个
 strict target（请求体无 `proxy_url`），且返回 `proxy_failed` 后两个行均显示/可筛选为
 proxy abnormal。旧的“只在网络失败候选时调用”断言改为“不依赖 probe status”。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run:
 ```powershell
@@ -234,7 +234,7 @@ npm --workspace apps/web run test -- src/features/monitoring/CodexInspectionPage
 ```
 Expected: FAIL，因为现有效果依赖 `isLocalProxyExitIPCandidate`。
 
-- [ ] **Step 3: 接入纯模型**
+- [x] **Step 3: 接入纯模型**
 
 页面在巡检最终结果和 current auth projection 都可用时，收集无有效同指纹证据的全部组，
 按 500 顺序调用现有 `usageService.verifyCredentialExitIPs`，每批返回立即扇出并更新
@@ -242,7 +242,7 @@ state。保留 cancellation guard 和一次运行去重 ref，但 key 改为 fin
 不可让旧代理证据污染新 current proxy。展示过滤时只信任指纹仍匹配的证据。移除该效果对
 `isLocalProxyExitIPCandidate` 的依赖；不要改变原账户探测分类。
 
-- [ ] **Step 4: 运行 GREEN 和 monitoring 定向测试**
+- [x] **Step 4: 运行 GREEN 和 monitoring 定向测试**
 
 Run:
 ```powershell
@@ -250,7 +250,7 @@ npm --workspace apps/web run test -- src/features/monitoring/CodexInspectionPage
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add apps/web/src/features/monitoring/CodexInspectionPage.tsx apps/web/src/features/monitoring/CodexInspectionPage.lifecycle.test.tsx
@@ -264,7 +264,7 @@ git commit -m "feat: inspect every current credential proxy"
 - Create: `docs/superpowers/specs/2026-11-11-inspection-full-current-proxy-health-design.md`
 - Create: `docs/superpowers/plans/2026-11-11-inspection-full-current-proxy-health.md`
 
-- [ ] **Step 1: 运行后端与前端定向验证**
+- [x] **Step 1: 运行后端与前端定向验证**
 
 ```powershell
 cd apps/manager-server; go test ./internal/service/proxyreplacement ./internal/http/controller/proxyreplacement -count=1
@@ -273,14 +273,14 @@ npm --workspace apps/web run type-check
 ```
 Expected: 全部 PASS。
 
-- [ ] **Step 2: 运行构建验证**
+- [x] **Step 2: 运行构建验证**
 
 ```powershell
 npm --workspace apps/web run build
 ```
 Expected: production build 成功。
 
-- [ ] **Step 3: 复查边界**
+- [x] **Step 3: 复查边界**
 
 ```powershell
 git diff --check
@@ -289,13 +289,28 @@ git status --short
 ```
 Expected: 无空白错误；只含 CPAM web/manager-server/docs；不会出现 CPA Core 或 `cli-proxy-api` 文件。
 
-- [ ] **Step 4: 最终提交（如前序任务未逐项提交则合并一次）**
+- [x] **Step 4: 最终提交（如前序任务未逐项提交则合并一次）**
 
 ```powershell
 git add docs/LO-CPAM-CUSTOM-MEMORY.md docs/superpowers/specs/2026-11-11-inspection-full-current-proxy-health-design.md docs/superpowers/plans/2026-11-11-inspection-full-current-proxy-health.md
 git commit -m "docs: record full current proxy health inspection"
 ```
 
-- [ ] **Step 5: 交付但不部署**
+- [x] **Step 5: 交付但不部署**
 
 报告 commit、定向测试、type-check/build 结果和“未部署”。只有用户明确说“部署”时，才按 CPAM 双端部署约定操作。
+
+## 执行记录（2026-11-11）
+
+- [x] 后端：单批 `FetchWithProxyURLs` 快照、严格身份校验、相同当前代理去重扇出；credential
+  exit-IP 检查并发为 40，保存代理池检查继续为 8。
+- [x] 前端：所有有当前代理的巡检行（含禁用和 HTTP 200）进入独立复检；每个当前代理指纹
+  只提交一个严格 locator，最多 500 组/请求。
+- [x] 持久化：只保存 outcome、净化 reason、fingerprint、timestamp；旧的无 fingerprint
+  标记会在当前代理投影到达后重检，不再作为异常展示。
+- [x] TDD：新增回归先失败后实现；涵盖共享代理、禁用 HTTP 200、40 路上限、歧义拒绝、
+  fingerprint 失效、raw URL 不持久化。
+- [x] 验证：`go test ./internal/service/proxyreplacement ./internal/http/controller/proxyreplacement -count=1`
+  通过；`npm --workspace apps/web run test -- src/features/monitoring` 通过（58 files / 715 tests）；
+  `npm --workspace apps/web run build` 以 `EXIT:0` 完成。
+- [x] 实现提交：`b2484b5e`、`137388fc`、`c38e15f3`。未部署；部署需要用户单独确认。
