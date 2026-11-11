@@ -1217,3 +1217,44 @@ or deploy CPA Core / `cli-proxy-api`.
 - Derive both counts from the single existing inventory fetch. Do not add a
   per-account CPA call or SQLite query, and do not create a row for a proxy
   with current bindings only and no 72-hour active evidence.
+
+## 2026-11-11: 巡检全量当前代理出口健康复检（must retain）
+
+This is a CPAM-only inspection feature. It must never alter, build, restart,
+proxy through, or deploy CPA Core / `cli-proxy-api`; it must not change usage
+pricing, quota acquisition, billing facts, token recovery, priority policy, or
+auth-file contents.
+
+- After every successful Codex browser inspection, independently health-check
+the **current** `proxy_url` of every inspected credential with a configured
+proxy, including disabled, historic, and HTTP-200 accounts. This is no longer
+gated by an account probe failure. A proxy does not need to exist in the saved
+proxy-pool list.
+- The browser sends only strict credential locators to the Manager server,
+never a raw proxy URL. The Manager resolves those locators from one complete
+current CPA auth-file projection per request, validates identity, groups equal
+normalized proxy URLs, and tests each unique URL once. Do not issue one CPA
+credential/proxy lookup per account.
+- Credential direct checks use the fixed exit-IP probe (`https://api.ipify.org?format=json`),
+two attempts and five seconds per attempt. Credential checks may run at **40**
+workers; saved-pool manual checks retain their independent existing worker
+limit. The browser splits endpoint calls into at most 500 strict targets, and
+the server repeats grouping defensively for each batch.
+- Only direct outcome `proxy_failed` (407/authentication failure, connection
+refused, DNS/TLS/transport failure, or timeout) sets `proxySuspect=true` and
+feeds the existing `代理异常` filter. `healthy`, `inconclusive`, `not_saved`,
+unresolved, and cancelled outcomes must not mark a proxy abnormal.
+- Persist only safe local inspection evidence: source `exit_ip`, outcome,
+sanitized reason, SHA-256 fingerprint of the normalized proxy URL, and checked
+millisecond timestamp. Never persist a raw proxy URL. A fresh run has no proof
+and checks again; a reopened completed run may reuse a matching fingerprint;
+a changed current proxy invalidates the old proof and is checked again.
+- Existing account-probe classification and action rules remain unchanged. A
+usage HTTP 200 does not prove that a current configured proxy is healthy; it
+must still receive the independent exit-IP verification.
+- Required regressions: disabled/current HTTP-200 accounts are included;
+identical URLs make one direct check and fan out to all bound accounts; a 407
+becomes `proxy_failed`/`proxySuspect`; an inconclusive result never becomes an
+anomaly; server inventory is fetched once per batch; raw URLs never cross the
+browser/server boundary or durable browser storage; a changed fingerprint
+causes a recheck.
