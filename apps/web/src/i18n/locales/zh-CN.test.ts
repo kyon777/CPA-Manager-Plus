@@ -27,3 +27,24 @@ describe('zh-CN account policy copy', () => {
     ]);
   });
 });
+
+describe('zh-CN proxy replacement copy', () => {
+  it('keeps inspection replacement guidance and result labels readable', () => {
+    const copy = zhCN.proxy_replacement;
+    const fields = [
+      copy.inspection_hint,
+      copy.inspection_recheck,
+      copy.mapping_account,
+      copy.mapping_old_proxy,
+      copy.mapping_new_proxy,
+      copy.mapping_recheck,
+      copy.completed_summary,
+      copy.item_status_recheck_inconclusive,
+    ];
+
+    expect(fields.some((field) => field.includes('?'))).toBe(false);
+    expect(copy.inspection_hint).toBe(
+      '仅向当前代理经直接出口 IP 检查失败的凭证分配代理池中的正常代理。写入后，仅写入成功的凭证会使用新代理进行一次直接出口 IP 复检。只有直接出口 IP 检查失败才会标记为代理异常；结果未确定不会标记。不会自动更换或重试。'
+    );
+  });
+});
