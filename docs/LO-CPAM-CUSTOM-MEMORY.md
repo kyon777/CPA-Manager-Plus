@@ -2,7 +2,7 @@
 
 > 这是 CPAM 二次修改的**规范清单**。执行“更新 CPAM”前必须先阅读本文件；上游代码只能合并进来，不能覆盖下面列出的行为。
 
-更新时间：2026-10-13  
+更新时间：2026-11-12
 项目：`seakee/CPA-Manager-Plus` 的 LO 私有分支  
 个人仓库：`https://github.com/kyon777/CPA-Manager-Plus`  
 工作分支：`lo/custom`  
@@ -140,6 +140,14 @@ USAGE_QUERY_LIMIT=50000
 7. 部署后检查 Manager `/health`、容器健康状态、启动日志，并确认 `cli-proxy-api` 容器 ID 和 `StartedAt` 未改变。
 8. 只推送个人仓库：`git push origin lo/custom`；严禁 `git push upstream`。
 9. 若增加或改变二改功能，先更新本文件和持久化记忆，再提交代码；不要只依赖聊天记录。
+
+### 双端部署的固定目标（2026-11-12 起）
+
+- **本地端不变**：继续在 `C:\kyon\docker\cpa-manager\compose.yaml` 中仅定向部署 Docker 服务 `cpa-manager-plus`；部署前后必须核对 `cli-proxy-api` 容器 ID 与 `StartedAt` 未变化。
+- **服务器端已迁移**：后续所有“部署”“双端部署”与“更新 CPAM”的服务器动作一律使用 SSH MCP **`LACPA-NEW`**，原生目标固定为 `/home/cpam/app/cpa-manager-plus` 与 `cpam.service`。
+- 服务器端只允许原子替换已在本地验证的同一候选二进制，并且只重启 `cpam.service`；绝不修改、重启、构建或部署 `/home/cpa`、`cpa.service`、CPA Core 或 `cli-proxy-api`。
+- `LACPA-VPS` 是已迁移的旧机：不得将其作为默认发布、健康检查、回滚或配置修改目标；只有 LO 明确要求旧机归档、取证或救援时才可连接。
+- 新服务器必须继续保留 `/home/cpam/config/cpam.env`、`/home/cpam/secrets/*`、`/home/cpam/data/*`（包括新的 `usage.sqlite`、独立 `usage-derived.sqlite` 及其 WAL/SHM、`data.key`）、OpenResty 与证书配置；不得从旧机覆盖或迁移历史用量库。
 
 ## 4. 明确禁止事项
 
